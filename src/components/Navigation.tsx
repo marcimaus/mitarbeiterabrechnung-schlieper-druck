@@ -10,7 +10,8 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Start', icon: '🏠' },
-  { to: '/zeiterfassung', label: 'Zeiterfassung', icon: '⏱' },
+  { to: '/zeiterfassung', label: 'Stempeluhr', icon: '⏱' },
+  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', adminOnly: true },
   { to: '/mitarbeiter', label: 'Mitarbeiter', icon: '👥', adminOnly: true },
   { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', adminOnly: true },
   { to: '/touren', label: 'Touren', icon: '🗺', adminOnly: true },

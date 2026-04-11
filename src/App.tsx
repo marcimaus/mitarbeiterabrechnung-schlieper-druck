@@ -4,6 +4,7 @@ import Navigation from './components/Navigation';
 import OfflineBanner from './components/OfflineBanner';
 import HomeScreen from './screens/HomeScreen';
 import ZeiterfassungScreen from './screens/ZeiterfassungScreen';
+import ZeitübersichtScreen from './screens/ZeitübersichtScreen';
 import MitarbeiterScreen from './screens/MitarbeiterScreen';
 import TeilgebieteScreen from './screens/TeilgebieteScreen';
 import TourenScreen from './screens/TourenScreen';
@@ -23,6 +24,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<HomeScreen />} />
                 <Route path="/zeiterfassung" element={<ZeiterfassungScreen />} />
+                <Route path="/zeitübersicht" element={<ZeitübersichtScreen />} />
                 <Route path="/mitarbeiter" element={<MitarbeiterScreen />} />
                 <Route path="/teilgebiete" element={<TeilgebieteScreen />} />
                 <Route path="/touren" element={<TourenScreen />} />
