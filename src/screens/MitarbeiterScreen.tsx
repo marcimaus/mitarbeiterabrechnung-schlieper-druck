@@ -7,6 +7,7 @@ import {
   aktualisiereMitarbeiter,
   deaktiviereMitarbeiter,
 } from '../lib/db';
+import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
 import type { Mitarbeiter, Rolle, Abrechnungstyp } from '../types';
 import { ROLLEN_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
@@ -176,13 +177,14 @@ function MitarbeiterInhalt() {
                       {m.isActive ? 'Aktiv' : 'Inaktiv'}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-3 flex items-center gap-3">
                     <button
                       onClick={() => oeffneBearbeiten(m)}
                       className="text-blue-600 hover:text-blue-800 text-xs font-medium"
                     >
                       Bearbeiten
                     </button>
+                    <NfcSchreibenButton mitarbeiterId={m.id} />
                   </td>
                 </tr>
               );
@@ -495,3 +497,38 @@ function FormField({
 
 const inputClass =
   'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+
+// ---- NFC-Chip beschreiben ----------------------------------
+
+function NfcSchreibenButton({ mitarbeiterId }: { mitarbeiterId: string }) {
+  const [status, setStatus] = useState<'idle' | 'schreibt' | 'ok' | 'fehler'>('idle');
+
+  if (!nfcVerfuegbar()) return null;
+
+  async function handleSchreiben() {
+    setStatus('schreibt');
+    try {
+      await beschreibeNfcTag(mitarbeiterId);
+      setStatus('ok');
+      setTimeout(() => setStatus('idle'), 3000);
+    } catch {
+      setStatus('fehler');
+      setTimeout(() => setStatus('idle'), 3000);
+    }
+  }
+
+  return (
+    <button
+      onClick={handleSchreiben}
+      disabled={status === 'schreibt'}
+      title="NFC-Chip beschreiben"
+      className={`text-xs font-medium transition-colors ${
+        status === 'ok' ? 'text-green-600' :
+        status === 'fehler' ? 'text-red-600' :
+        'text-gray-400 hover:text-gray-700'
+      }`}
+    >
+      {status === 'schreibt' ? '📲...' : status === 'ok' ? '✓ NFC' : status === 'fehler' ? '✗ NFC' : '📲 NFC'}
+    </button>
+  );
+}
