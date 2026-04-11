@@ -1,0 +1,422 @@
+// Firestore CRUD-Operationen
+
+import {
+  collection,
+  doc,
+  getDocs,
+  getDoc,
+  addDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  orderBy,
+  onSnapshot,
+  type Unsubscribe,
+} from 'firebase/firestore';
+import { db } from './firebase';
+import type {
+  Mitarbeiter,
+  Tour,
+  Teilgebiet,
+  Sondervereinbarung,
+  Ausgabe,
+  Beilage,
+  Abrechnungsperiode,
+  Einsatz,
+  Arbeitszeit,
+  Fahrtkosten,
+  Parameter,
+  AuditLog,
+} from '../types';
+import { berechneStapel } from './berechnung';
+
+// ---- Hilfsfunktionen ---------------------------------------
+
+function now(): number {
+  return Date.now();
+}
+
+// ---- Parameter (Singleton in meta/parameter) ---------------
+
+export async function ladeParameter(): Promise<Parameter | null> {
+  const snap = await getDoc(doc(db, 'meta', 'parameter'));
+  if (!snap.exists()) return null;
+  return snap.data() as Parameter;
+}
+
+export async function speichereParameter(params: Partial<Parameter>): Promise<void> {
+  await setDoc(doc(db, 'meta', 'parameter'), params, { merge: true });
+}
+
+export function parameterListener(cb: (p: Parameter | null) => void): Unsubscribe {
+  return onSnapshot(doc(db, 'meta', 'parameter'), (snap) => {
+    cb(snap.exists() ? (snap.data() as Parameter) : null);
+  });
+}
+
+// ---- Mitarbeiter -------------------------------------------
+
+export async function ladeMitarbeiter(): Promise<Mitarbeiter[]> {
+  const q = query(collection(db, 'mitarbeiter'), orderBy('name'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Mitarbeiter));
+}
+
+export function mitarbeiterListener(cb: (list: Mitarbeiter[]) => void): Unsubscribe {
+  const q = query(collection(db, 'mitarbeiter'), orderBy('name'));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Mitarbeiter)));
+  });
+}
+
+export async function erstelleMitarbeiter(
+  data: Omit<Mitarbeiter, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'mitarbeiter'), {
+    ...data,
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereMitarbeiter(
+  id: string,
+  data: Partial<Mitarbeiter>
+): Promise<void> {
+  await updateDoc(doc(db, 'mitarbeiter', id), {
+    ...data,
+    aktualisiertAm: now(),
+  });
+}
+
+export async function deaktiviereMitarbeiter(id: string): Promise<void> {
+  await updateDoc(doc(db, 'mitarbeiter', id), {
+    isActive: false,
+    aktualisiertAm: now(),
+  });
+}
+
+// ---- Touren ------------------------------------------------
+
+export async function ladeTouren(): Promise<Tour[]> {
+  const q = query(collection(db, 'touren'), orderBy('name'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Tour));
+}
+
+export function tourenListener(cb: (list: Tour[]) => void): Unsubscribe {
+  const q = query(collection(db, 'touren'), orderBy('name'));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Tour)));
+  });
+}
+
+export async function erstelleTour(data: Omit<Tour, 'id' | 'erstelltAm'>): Promise<string> {
+  const ref = await addDoc(collection(db, 'touren'), {
+    ...data,
+    erstelltAm: now(),
+  });
+  return ref.id;
+}
+
+export async function aktualisiereTour(id: string, data: Partial<Tour>): Promise<void> {
+  await updateDoc(doc(db, 'touren', id), data);
+}
+
+export async function loescheTour(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'touren', id));
+}
+
+// ---- Teilgebiete -------------------------------------------
+
+export async function ladeTeilgebiete(): Promise<Teilgebiet[]> {
+  const q = query(collection(db, 'teilgebiete'), orderBy('name'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Teilgebiet));
+}
+
+export function teilgebieteListener(cb: (list: Teilgebiet[]) => void): Unsubscribe {
+  const q = query(collection(db, 'teilgebiete'), orderBy('name'));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Teilgebiet)));
+  });
+}
+
+export async function erstelleTeilgebiet(
+  data: Omit<Teilgebiet, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'teilgebiete'), {
+    ...data,
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereTeilgebiet(
+  id: string,
+  data: Partial<Teilgebiet>
+): Promise<void> {
+  await updateDoc(doc(db, 'teilgebiete', id), {
+    ...data,
+    aktualisiertAm: now(),
+  });
+}
+
+// ---- Sondervereinbarungen ----------------------------------
+
+export async function ladeSondervereinbarungen(): Promise<Sondervereinbarung[]> {
+  const snap = await getDocs(collection(db, 'sondervereinbarungen'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Sondervereinbarung));
+}
+
+export async function erstelleSondervereinbarung(
+  data: Omit<Sondervereinbarung, 'id' | 'erstelltAm'>
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'sondervereinbarungen'), {
+    ...data,
+    erstelltAm: now(),
+  });
+  return ref.id;
+}
+
+export async function aktualisiereSondervereinbarung(
+  id: string,
+  data: Partial<Sondervereinbarung>
+): Promise<void> {
+  await updateDoc(doc(db, 'sondervereinbarungen', id), data);
+}
+
+export async function loescheSondervereinbarung(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'sondervereinbarungen', id));
+}
+
+// ---- Ausgaben ----------------------------------------------
+
+export async function ladeAusgaben(): Promise<Ausgabe[]> {
+  const q = query(collection(db, 'ausgaben'), orderBy('jahr', 'desc'), orderBy('kw', 'desc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Ausgabe));
+}
+
+export function ausgabenListener(cb: (list: Ausgabe[]) => void): Unsubscribe {
+  const q = query(collection(db, 'ausgaben'), orderBy('jahr', 'desc'), orderBy('kw', 'desc'));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Ausgabe)));
+  });
+}
+
+export async function erstelleAusgabe(
+  data: Omit<Ausgabe, 'id' | 'stapel' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const stapel = berechneStapel(data.seitenzahl);
+  const ref = await addDoc(collection(db, 'ausgaben'), {
+    ...data,
+    stapel,
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereAusgabe(
+  id: string,
+  data: Partial<Ausgabe>
+): Promise<void> {
+  const update: Partial<Ausgabe> & { aktualisiertAm: number } = {
+    ...data,
+    aktualisiertAm: now(),
+  };
+  if (data.seitenzahl !== undefined) {
+    update.stapel = berechneStapel(data.seitenzahl);
+  }
+  await updateDoc(doc(db, 'ausgaben', id), update);
+}
+
+// ---- Beilagen ----------------------------------------------
+
+export async function ladeBeilagen(ausgabeId?: string): Promise<Beilage[]> {
+  const q = ausgabeId
+    ? query(collection(db, 'beilagen'), where('ausgabeId', '==', ausgabeId))
+    : query(collection(db, 'beilagen'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Beilage));
+}
+
+export async function erstelleBeilage(
+  data: Omit<Beilage, 'id' | 'erstelltAm'>
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'beilagen'), {
+    ...data,
+    erstelltAm: now(),
+  });
+  return ref.id;
+}
+
+export async function aktualisiereBeilage(
+  id: string,
+  data: Partial<Beilage>
+): Promise<void> {
+  await updateDoc(doc(db, 'beilagen', id), data);
+}
+
+export async function loescheBeilage(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'beilagen', id));
+}
+
+// ---- Abrechnungsperioden -----------------------------------
+
+export async function ladeAbrechnungsperioden(): Promise<Abrechnungsperiode[]> {
+  const q = query(
+    collection(db, 'abrechnungsperioden'),
+    orderBy('jahr', 'desc'),
+    orderBy('monat', 'desc')
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Abrechnungsperiode));
+}
+
+export function abrechnungsperiodenListener(
+  cb: (list: Abrechnungsperiode[]) => void
+): Unsubscribe {
+  const q = query(
+    collection(db, 'abrechnungsperioden'),
+    orderBy('jahr', 'desc'),
+    orderBy('monat', 'desc')
+  );
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Abrechnungsperiode)));
+  });
+}
+
+export async function erstelleAbrechnungsperiode(
+  data: Omit<Abrechnungsperiode, 'id' | 'erstelltAm'>
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'abrechnungsperioden'), {
+    ...data,
+    erstelltAm: now(),
+  });
+  return ref.id;
+}
+
+export async function aktualisiereAbrechnungsperiode(
+  id: string,
+  data: Partial<Abrechnungsperiode>
+): Promise<void> {
+  await updateDoc(doc(db, 'abrechnungsperioden', id), data);
+}
+
+// ---- Einsätze (Austragen) ----------------------------------
+
+export async function ladeEinsaetze(ausgabeId?: string): Promise<Einsatz[]> {
+  const q = ausgabeId
+    ? query(collection(db, 'einsaetze'), where('ausgabeId', '==', ausgabeId))
+    : query(collection(db, 'einsaetze'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz));
+}
+
+export async function setzeEinsatz(
+  data: Omit<Einsatz, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  // Prüfe ob bereits ein Einsatz für dieses Teilgebiet in dieser Ausgabe existiert
+  const q = query(
+    collection(db, 'einsaetze'),
+    where('ausgabeId', '==', data.ausgabeId),
+    where('teilgebietId', '==', data.teilgebietId)
+  );
+  const snap = await getDocs(q);
+  const ts = now();
+  if (!snap.empty) {
+    const existingId = snap.docs[0].id;
+    await updateDoc(doc(db, 'einsaetze', existingId), {
+      ...data,
+      aktualisiertAm: ts,
+    });
+    return existingId;
+  }
+  const ref = await addDoc(collection(db, 'einsaetze'), {
+    ...data,
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+// ---- Arbeitszeiten -----------------------------------------
+
+export async function ladeArbeitszeiten(mitarbeiterId?: string): Promise<Arbeitszeit[]> {
+  const q = mitarbeiterId
+    ? query(
+        collection(db, 'arbeitszeiten'),
+        where('mitarbeiterId', '==', mitarbeiterId),
+        orderBy('startTime', 'desc')
+      )
+    : query(collection(db, 'arbeitszeiten'), orderBy('startTime', 'desc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
+}
+
+export async function erstelleArbeitszeit(
+  data: Omit<Arbeitszeit, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'arbeitszeiten'), {
+    ...data,
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereArbeitszeit(
+  id: string,
+  data: Partial<Arbeitszeit>
+): Promise<void> {
+  await updateDoc(doc(db, 'arbeitszeiten', id), {
+    ...data,
+    aktualisiertAm: now(),
+  });
+}
+
+// ---- Fahrtkosten -------------------------------------------
+
+export async function ladeFahrtkosten(mitarbeiterId?: string): Promise<Fahrtkosten[]> {
+  const q = mitarbeiterId
+    ? query(
+        collection(db, 'fahrtkosten'),
+        where('mitarbeiterId', '==', mitarbeiterId),
+        orderBy('datum', 'desc')
+      )
+    : query(collection(db, 'fahrtkosten'), orderBy('datum', 'desc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Fahrtkosten));
+}
+
+export async function erstelleFahrtkosten(
+  data: Omit<Fahrtkosten, 'id' | 'erstelltAm'>
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'fahrtkosten'), {
+    ...data,
+    erstelltAm: now(),
+  });
+  return ref.id;
+}
+
+export async function loescheFahrtkosten(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'fahrtkosten', id));
+}
+
+// ---- Audit-Log (nur schreiben, nicht ändern) ---------------
+
+export async function schreibeAuditLog(
+  data: Omit<AuditLog, 'id'>
+): Promise<void> {
+  await addDoc(collection(db, 'auditlog'), data);
+}

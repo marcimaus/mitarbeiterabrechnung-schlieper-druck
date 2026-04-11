@@ -1,0 +1,45 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "arbeitszeiten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "mitarbeiterId", "order": "ASCENDING" },
+        { "fieldPath": "startTime", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "einsaetze",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "ausgabeId", "order": "ASCENDING" },
+        { "fieldPath": "teilgebietId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fahrtkosten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "mitarbeiterId", "order": "ASCENDING" },
+        { "fieldPath": "datum", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "abrechnungsperioden",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "jahr", "order": "DESCENDING" },
+        { "fieldPath": "monat", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "ausgaben",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "jahr", "order": "DESCENDING" },
+        { "fieldPath": "kw", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Alle Daten sind nur intern (kein öffentlicher Zugriff nötig)
+    // Da keine Firebase Auth verwendet wird, erlauben wir alle Lese/Schreibzugriffe
+    // (Die Absicherung erfolgt über PIN im Frontend)
+    // HINWEIS: Für Produktion ggf. IP-Restriction oder andere Maßnahmen prüfen
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
