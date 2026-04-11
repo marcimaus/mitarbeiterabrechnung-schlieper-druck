@@ -16,6 +16,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', adminOnly: true },
   { to: '/touren', label: 'Touren', icon: '🗺', adminOnly: true },
   { to: '/ausgaben', label: 'Ausgaben', icon: '📄', adminOnly: true },
+  { to: '/einsaetze', label: 'Einsätze', icon: '🗓', adminOnly: true },
   { to: '/abrechnung', label: 'Abrechnung', icon: '💰', adminOnly: true },
   { to: '/parameter', label: 'Parameter', icon: '⚙️', adminOnly: true },
 ];

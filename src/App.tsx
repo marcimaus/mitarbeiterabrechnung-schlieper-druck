@@ -9,6 +9,7 @@ import MitarbeiterScreen from './screens/MitarbeiterScreen';
 import TeilgebieteScreen from './screens/TeilgebieteScreen';
 import TourenScreen from './screens/TourenScreen';
 import AusgabenScreen from './screens/AusgabenScreen';
+import EinsaetzeScreen from './screens/EinsaetzeScreen';
 import AbrechnungScreen from './screens/AbrechnungScreen';
 import ParameterScreen from './screens/ParameterScreen';
 
@@ -29,6 +30,7 @@ export default function App() {
                 <Route path="/teilgebiete" element={<TeilgebieteScreen />} />
                 <Route path="/touren" element={<TourenScreen />} />
                 <Route path="/ausgaben" element={<AusgabenScreen />} />
+                <Route path="/einsaetze" element={<EinsaetzeScreen />} />
                 <Route path="/abrechnung" element={<AbrechnungScreen />} />
                 <Route path="/parameter" element={<ParameterScreen />} />
                 <Route path="/admin" element={<AdminLoginPage />} />

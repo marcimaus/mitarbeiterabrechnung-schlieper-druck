@@ -349,6 +349,10 @@ export async function setzeEinsatz(
   return ref.id;
 }
 
+export async function loescheEinsatz(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'einsaetze', id));
+}
+
 // ---- Arbeitszeiten -----------------------------------------
 
 export async function ladeArbeitszeiten(mitarbeiterId?: string): Promise<Arbeitszeit[]> {
