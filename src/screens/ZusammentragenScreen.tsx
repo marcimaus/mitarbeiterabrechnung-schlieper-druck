@@ -110,7 +110,7 @@ function ZusammentragenInhalt() {
         ausgabeId: selectedAusgabe.id,
         teilgebietId: VORARBEIT_TG_ID,
         mitarbeiterId: vorarbeitNeuMA,
-        stapelBearbeitet: selectedAusgabe.stapel.length,
+        stapelBearbeitet: selectedAusgabe.stapelAnzahl,
         istVorarbeit: true,
         vorarbeitMinuten: minuten,
       });
@@ -159,7 +159,7 @@ function ZusammentragenInhalt() {
         ausgabeId: selectedAusgabe.id,
         teilgebietId,
         mitarbeiterId,
-        stapelBearbeitet: selectedAusgabe.stapel.length,
+        stapelBearbeitet: selectedAusgabe.stapelAnzahl,
         istVorarbeit: false,
       });
       await reload();
@@ -186,13 +186,13 @@ function ZusammentragenInhalt() {
           >
             {ausgaben.map((a) => (
               <option key={a.id} value={a.id}>
-                {kwLabel(a.kw, a.jahr)} — {a.stapel.length} Stapel ({a.seitenzahl} S.)
+                {kwLabel(a.kw, a.jahr)} — {a.stapelAnzahl} Stapel ({a.seitenzahl} S.)
               </option>
             ))}
           </select>
           {selectedAusgabe && (
             <span className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-1 rounded-full">
-              📦 {selectedAusgabe.stapel.length} Stapel je Teilgebiet
+              📦 {selectedAusgabe.stapelAnzahl} Stapel je Teilgebiet
             </span>
           )}
           {!loading && (
@@ -221,7 +221,7 @@ function ZusammentragenInhalt() {
                   type="checkbox"
                   checked={vorarbeitAktiv}
                   onChange={(e) => {
-                    if (!e.target.checked) handleVorarbeitToggle(false);
+                    handleVorarbeitToggle(e.target.checked);
                     // Aktivieren: kein Action nötig, User fügt Einträge hinzu
                   }}
                   className="w-4 h-4 accent-amber-600"
