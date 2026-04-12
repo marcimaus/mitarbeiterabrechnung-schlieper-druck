@@ -19,6 +19,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/ausgaben', label: 'Ausgaben', icon: '📄', roles: ['admin', 'abrechnung'] },
   { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
   { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung'] },
+  { to: '/fahrten', label: 'Fahrtkosten', icon: '🚗', roles: ['admin', 'abrechnung'] },
   { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin', 'abrechnung'] },
   { to: '/parameter', label: 'Parameter', icon: '⚙️', roles: ['admin'] },
 ];

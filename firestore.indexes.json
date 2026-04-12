@@ -41,6 +41,22 @@
       ]
     },
     {
+      "collectionGroup": "fahrten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "mitarbeiterId", "order": "ASCENDING" },
+        { "fieldPath": "datum", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fahrten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "abrechnungsperiodeId", "order": "ASCENDING" },
+        { "fieldPath": "datum", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "zusammentragezeiten",
       "queryScope": "COLLECTION",
       "fields": [

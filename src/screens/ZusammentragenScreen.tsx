@@ -168,6 +168,7 @@ function ZusammentragenInhalt() {
     }
   }
 
+  const istGesperrt = selectedAusgabe?.status === 'abgeschlossen';
   const zugewiesen = normalEinsaetze.length;
   const gesamt = aktiveTeilgebiete.length;
 
@@ -211,18 +212,24 @@ function ZusammentragenInhalt() {
 
       {loading && <div className="text-center py-8 text-gray-400">Lade Daten...</div>}
 
+      {istGesperrt && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 flex items-center gap-2">
+          🔒 Diese Ausgabe gehört zu einer <strong>abgeschlossenen Abrechnungsperiode</strong> — keine Änderungen mehr möglich.
+        </div>
+      )}
+
       {!loading && selectedAusgabe && (
         <>
           {/* ---- VORARBEIT-SEKTION ---- */}
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-5">
             <div className="flex items-center gap-3 mb-4">
-              <label className="flex items-center gap-2 cursor-pointer">
+              <label className={`flex items-center gap-2 ${!istGesperrt ? 'cursor-pointer' : 'opacity-60'}`}>
                 <input
                   type="checkbox"
                   checked={vorarbeitAktiv}
+                  disabled={istGesperrt}
                   onChange={(e) => {
-                    handleVorarbeitToggle(e.target.checked);
-                    // Aktivieren: kein Action nötig, User fügt Einträge hinzu
+                    if (!istGesperrt) handleVorarbeitToggle(e.target.checked);
                   }}
                   className="w-4 h-4 accent-amber-600"
                 />
@@ -250,7 +257,8 @@ function ZusammentragenInhalt() {
                       />
                       <button
                         onClick={() => handleVorarbeitLoeschen(e.id)}
-                        className="ml-auto text-red-400 hover:text-red-600 text-sm px-2 py-1 rounded hover:bg-red-50 transition-colors"
+                        disabled={istGesperrt}
+                        className="ml-auto text-red-400 hover:text-red-600 text-sm px-2 py-1 rounded hover:bg-red-50 transition-colors disabled:opacity-40"
                         title="Eintrag löschen"
                       >
                         ✕
@@ -279,7 +287,7 @@ function ZusammentragenInhalt() {
                     />
                     <button
                       onClick={handleVorarbeitHinzufuegen}
-                      disabled={!vorarbeitNeuMA || vorarbeitSaving}
+                      disabled={!vorarbeitNeuMA || vorarbeitSaving || istGesperrt}
                       className="ml-2 bg-amber-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 transition-colors"
                     >
                       + Hinzufügen
@@ -340,7 +348,7 @@ function ZusammentragenInhalt() {
                           <select
                             value={e?.mitarbeiterId ?? ''}
                             onChange={(ev) => handleTgChange(tg.id, ev.target.value)}
-                            disabled={isSaving}
+                            disabled={isSaving || istGesperrt}
                             className={`border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                               e ? 'border-green-300 bg-green-50' : 'border-gray-300'
                             }`}

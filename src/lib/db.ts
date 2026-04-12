@@ -20,13 +20,15 @@ import type {
   Mitarbeiter,
   Tour,
   Teilgebiet,
+  TeilgebietSnapshot,
+  PeriodeSnapshot,
   Sondervereinbarung,
   Ausgabe,
   Beilage,
   Abrechnungsperiode,
   Einsatz,
   Arbeitszeit,
-  Fahrtkosten,
+  Fahrt,
   Parameter,
   AuditLog,
 } from '../types';
@@ -241,8 +243,9 @@ export async function aktualisiereAusgabe(
     aktualisiertAm: now(),
   };
   // Stapel nur auto-berechnen wenn nicht explizit mitgegeben
-  if (data.seitenzahl !== undefined && data.stapel === undefined) {
-    update.stapel = berechneStapel(data.seitenzahl);
+  // Stapelanzahl auto-vorbelegen wenn nicht explizit mitgegeben
+  if (data.seitenzahl !== undefined && data.stapelAnzahl === undefined) {
+    update.stapelAnzahl = berechneStapel(data.seitenzahl).length;
   }
   await updateDoc(doc(db, 'ausgaben', id), update);
 }
@@ -439,32 +442,138 @@ export async function aktualisiereArbeitszeit(
   });
 }
 
-// ---- Fahrtkosten -------------------------------------------
+// ---- Fahrt-Erfassung (neue Collection) ----------------------
 
-export async function ladeFahrtkosten(mitarbeiterId?: string): Promise<Fahrtkosten[]> {
-  const q = mitarbeiterId
-    ? query(
-        collection(db, 'fahrtkosten'),
-        where('mitarbeiterId', '==', mitarbeiterId),
-        orderBy('datum', 'desc')
-      )
-    : query(collection(db, 'fahrtkosten'), orderBy('datum', 'desc'));
+export async function ladeFahrten(filter?: {
+  mitarbeiterId?: string;
+  abrechnungsperiodeId?: string;
+}): Promise<Fahrt[]> {
+  let q;
+  if (filter?.mitarbeiterId) {
+    q = query(
+      collection(db, 'fahrten'),
+      where('mitarbeiterId', '==', filter.mitarbeiterId),
+      orderBy('datum', 'desc')
+    );
+  } else if (filter?.abrechnungsperiodeId) {
+    q = query(
+      collection(db, 'fahrten'),
+      where('abrechnungsperiodeId', '==', filter.abrechnungsperiodeId),
+      orderBy('datum', 'desc')
+    );
+  } else {
+    q = query(collection(db, 'fahrten'), orderBy('datum', 'desc'));
+  }
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Fahrtkosten));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Fahrt));
 }
 
-export async function erstelleFahrtkosten(
-  data: Omit<Fahrtkosten, 'id' | 'erstelltAm'>
+export async function erstelleFahrt(
+  data: Omit<Fahrt, 'id' | 'erstelltAm' | 'aktualisiertAm'>
 ): Promise<string> {
-  const ref = await addDoc(collection(db, 'fahrtkosten'), {
-    ...data,
-    erstelltAm: now(),
+  const ts = now();
+  const ref = await addDoc(collection(db, 'fahrten'), {
+    ...stripUndef(data as Record<string, unknown>),
+    erstelltAm: ts,
+    aktualisiertAm: ts,
   });
   return ref.id;
 }
 
-export async function loescheFahrtkosten(id: string): Promise<void> {
-  await deleteDoc(doc(db, 'fahrtkosten', id));
+export async function aktualisiereFahrt(
+  id: string,
+  data: Partial<Fahrt>
+): Promise<void> {
+  await updateDoc(doc(db, 'fahrten', id), {
+    ...stripUndef(data as Record<string, unknown>),
+    aktualisiertAm: now(),
+  });
+}
+
+export async function loescheFahrt(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'fahrten', id));
+}
+
+export async function weisFahrtPeriodeZu(
+  fahrtId: string,
+  periodeId: string
+): Promise<void> {
+  await updateDoc(doc(db, 'fahrten', fahrtId), {
+    abrechnungsperiodeId: periodeId,
+    aktualisiertAm: now(),
+  });
+}
+
+export async function entferneFahrtPeriode(fahrtId: string): Promise<void> {
+  await updateDoc(doc(db, 'fahrten', fahrtId), {
+    abrechnungsperiodeId: null,
+    aktualisiertAm: now(),
+  });
+}
+
+// ---- Periode abschließen (mit Snapshot) --------------------
+
+export async function schliessePeriodeAb(
+  periodeId: string,
+  teilgebiete: Teilgebiet[]
+): Promise<void> {
+  const ts = now();
+
+  // Periode laden
+  const periodeSnap = await getDoc(doc(db, 'abrechnungsperioden', periodeId));
+  if (!periodeSnap.exists()) throw new Error('Periode nicht gefunden');
+  const periode = { id: periodeId, ...periodeSnap.data() } as Abrechnungsperiode;
+
+  // Teilgebiet-Snapshot erstellen
+  const teilgebietSnapshots: TeilgebietSnapshot[] = teilgebiete.map((tg) => ({
+    id: tg.id,
+    name: tg.name,
+    plz: tg.plz,
+    stueckzahl: tg.stueckzahl,
+    wegstreckeM: tg.wegstreckeM,
+    tourId: tg.tourId,
+    standardAustraegerId: tg.standardAustraegerId,
+  }));
+
+  const periodeSnapshot: PeriodeSnapshot = {
+    teilgebietSnapshots,
+    erstelltAm: ts,
+  };
+
+  // Periode aktualisieren
+  await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
+    status: 'abgeschlossen',
+    periodeSnapshot,
+    gesperrtAm: ts,
+  });
+
+  // Alle Ausgaben dieser Periode auf 'abgeschlossen' setzen
+  if (periode.kalenderwochen.length > 0) {
+    const ausSnap = await getDocs(
+      query(
+        collection(db, 'ausgaben'),
+        where('jahr', '==', periode.jahr),
+        where('kw', 'in', periode.kalenderwochen)
+      )
+    );
+    await Promise.all(
+      ausSnap.docs.map((d) =>
+        updateDoc(doc(db, 'ausgaben', d.id), {
+          status: 'abgeschlossen',
+          aktualisiertAm: ts,
+        })
+      )
+    );
+  }
+}
+
+// ---- Periode wieder öffnen (nur Admin) ---------------------
+
+export async function oeffnePeriodeWieder(periodeId: string): Promise<void> {
+  await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
+    status: 'offen',
+    gesperrtAm: null,
+  });
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

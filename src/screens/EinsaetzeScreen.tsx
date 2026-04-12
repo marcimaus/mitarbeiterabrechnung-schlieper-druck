@@ -147,6 +147,8 @@ function EinsaetzeInhalt() {
     setSpringerDialog(null);
   }
 
+  const istGesperrt = selectedAusgabe?.status === 'abgeschlossen';
+
   // Statistiken
   const stats = aktiveTeilgebiete.reduce(
     (acc, tg) => {
@@ -191,6 +193,12 @@ function EinsaetzeInhalt() {
           )}
         </div>
       </div>
+
+      {istGesperrt && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-sm text-amber-800 flex items-center gap-2">
+          🔒 Diese Ausgabe gehört zu einer <strong>abgeschlossenen Abrechnungsperiode</strong> — keine Änderungen mehr möglich.
+        </div>
+      )}
 
       {/* Tabelle */}
       {loading ? (
@@ -269,38 +277,42 @@ function EinsaetzeInhalt() {
 
                     {/* Aktionen */}
                     <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => oeffneSpringerDialog(tg)}
-                          className="text-xs px-2 py-1 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
-                          title="Springer einsetzen"
-                        >
-                          Springer
-                        </button>
-                        <button
-                          onClick={() => handleSetzeAusfall(tg)}
-                          className="text-xs px-2 py-1 rounded bg-red-50 text-red-700 hover:bg-red-100 transition-colors"
-                          title="Als Ausfall markieren"
-                        >
-                          Ausfall
-                        </button>
-                        <button
-                          onClick={() => handleSetzeUngeklaert(tg)}
-                          className="text-xs px-2 py-1 rounded bg-yellow-50 text-yellow-700 hover:bg-yellow-100 transition-colors"
-                          title="Als ungeklärt markieren"
-                        >
-                          ?
-                        </button>
-                        {einsatz && (
+                      {istGesperrt ? (
+                        <span className="text-xs text-gray-400">gesperrt</span>
+                      ) : (
+                        <div className="flex items-center justify-end gap-1">
                           <button
-                            onClick={() => handleResetStandard(tg)}
-                            className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
-                            title="Auf Standardausträger zurücksetzen"
+                            onClick={() => oeffneSpringerDialog(tg)}
+                            className="text-xs px-2 py-1 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+                            title="Springer einsetzen"
                           >
-                            ↩
+                            Springer
                           </button>
-                        )}
-                      </div>
+                          <button
+                            onClick={() => handleSetzeAusfall(tg)}
+                            className="text-xs px-2 py-1 rounded bg-red-50 text-red-700 hover:bg-red-100 transition-colors"
+                            title="Als Ausfall markieren"
+                          >
+                            Ausfall
+                          </button>
+                          <button
+                            onClick={() => handleSetzeUngeklaert(tg)}
+                            className="text-xs px-2 py-1 rounded bg-yellow-50 text-yellow-700 hover:bg-yellow-100 transition-colors"
+                            title="Als ungeklärt markieren"
+                          >
+                            ?
+                          </button>
+                          {einsatz && (
+                            <button
+                              onClick={() => handleResetStandard(tg)}
+                              className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+                              title="Auf Standardausträger zurücksetzen"
+                            >
+                              ↩
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

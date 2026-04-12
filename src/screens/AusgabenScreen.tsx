@@ -476,18 +476,27 @@ function BeilagenVerwaltung({ ausgabe }: { ausgabe: Ausgabe }) {
     return ((b.gewichtGStk * anzahl) / 1000).toFixed(2);
   };
 
+  const istGesperrt = ausgabe.status === 'abgeschlossen';
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      {istGesperrt && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4 text-xs text-amber-800 flex items-center gap-1">
+          🔒 Abgeschlossene Periode — keine Änderungen möglich
+        </div>
+      )}
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-semibold text-gray-800">
           Beilagen <span className="text-gray-400 font-normal text-sm">({beilagen.length})</span>
         </h3>
-        <button
-          onClick={() => { setEditTarget(null); setShowForm(true); }}
-          className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
-        >
-          + Beilage hinzufügen
-        </button>
+        {!istGesperrt && (
+          <button
+            onClick={() => { setEditTarget(null); setShowForm(true); }}
+            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
+          >
+            + Beilage hinzufügen
+          </button>
+        )}
       </div>
 
       {loading && <div className="text-gray-400 text-sm">Lädt...</div>}
@@ -515,18 +524,22 @@ function BeilagenVerwaltung({ ausgabe }: { ausgabe: Ausgabe }) {
                 </div>
               </div>
               <div className="flex gap-2 ml-3">
-                <button
-                  onClick={() => { setEditTarget(b); setShowForm(true); }}
-                  className="text-xs text-blue-600 hover:text-blue-800"
-                >
-                  Bearbeiten
-                </button>
-                <button
-                  onClick={() => handleLoeschen(b.id)}
-                  className="text-xs text-red-500 hover:text-red-700"
-                >
-                  Löschen
-                </button>
+                {!istGesperrt && (
+                  <>
+                    <button
+                      onClick={() => { setEditTarget(b); setShowForm(true); }}
+                      className="text-xs text-blue-600 hover:text-blue-800"
+                    >
+                      Bearbeiten
+                    </button>
+                    <button
+                      onClick={() => handleLoeschen(b.id)}
+                      className="text-xs text-red-500 hover:text-red-700"
+                    >
+                      Löschen
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>

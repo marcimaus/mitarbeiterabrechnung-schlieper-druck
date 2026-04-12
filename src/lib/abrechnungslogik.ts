@@ -11,12 +11,14 @@ import { db } from './firebase';
 import type {
   Mitarbeiter,
   Teilgebiet,
+  TeilgebietSnapshot,
   Ausgabe,
   Beilage,
   Einsatz,
   Abrechnungsperiode,
   Parameter,
   Sondervereinbarung,
+  Fahrt,
 } from '../types';
 import {
   berechneAustraegerLohn,
@@ -24,7 +26,7 @@ import {
   type AustraegerLohnDetail,
 } from './berechnung';
 import { berechneNettoMinuten } from './zeiterfassung';
-import type { Arbeitszeit, ZusammentragenEinsatz, Fahrtkosten } from '../types';
+import type { Arbeitszeit, ZusammentragenEinsatz } from '../types';
 
 // ---- Ergebnistypen -----------------------------------------
 
@@ -60,9 +62,10 @@ export interface MitarbeiterAbrechnung {
   zeitLohn: number;
   // Fixes Gehalt
   fixesGehalt: number;
-  // Fahrtkosten
-  fahrtkosten: Fahrtkosten[];
-  fahrtkostenGesamt: number;
+  // Fahrtkosten (neue Fahrt-Erfassung)
+  fahrten: Fahrt[];
+  fahrtSatzEurProKm: number;       // Verwendeter Kilometersatz
+  fahrtkostenGesamt: number;       // Betrag in EUR (für Abwärtskompatibilität in UI)
   // Gesamt
   gesamt: number;
 }
@@ -75,7 +78,7 @@ export interface PeriodeData {
   einsaetze: Einsatz[];
   arbeitszeiten: Arbeitszeit[];
   zusammentragenEinsaetze: ZusammentragenEinsatz[];
-  fahrtkosten: Fahrtkosten[];
+  fahrten: Fahrt[];
   sondervereinbarungen: Sondervereinbarung[];
 }
 
@@ -100,7 +103,6 @@ export async function ladePeriodeData(
   // Alle Einsätze dieser Ausgaben
   let einsaetze: Einsatz[] = [];
   if (ausgabeIds.length > 0) {
-    // Firestore 'in' maximal 30 Einträge
     for (let i = 0; i < ausgabeIds.length; i += 30) {
       const chunk = ausgabeIds.slice(i, i + 30);
       const snap = await getDocs(
@@ -151,32 +153,28 @@ export async function ladePeriodeData(
     }
   }
 
-  // Fahrtkosten des Monats
-  const fkSnap = await getDocs(
-    query(
-      collection(db, 'fahrtkosten'),
-      where('datum', '>=', new Date(periode.jahr, periode.monat - 1, 1).toISOString().slice(0, 10)),
-      where('datum', '<=', new Date(periode.jahr, periode.monat, 0).toISOString().slice(0, 10))
-    )
+  // Fahrten dieser Abrechnungsperiode
+  const fahrtenSnap = await getDocs(
+    query(collection(db, 'fahrten'), where('abrechnungsperiodeId', '==', periode.id))
   );
-  const fahrtkosten = fkSnap.docs.map(
-    (d) => ({ id: d.id, ...d.data() } as Fahrtkosten)
+  const fahrten = fahrtenSnap.docs.map(
+    (d) => ({ id: d.id, ...d.data() } as Fahrt)
   );
 
-  // Sondervereinbarungen (alle, gefiltert werden sie in der Berechnung)
+  // Sondervereinbarungen (alle, gefiltert in der Berechnung)
   const svSnap = await getDocs(collection(db, 'sondervereinbarungen'));
   const sondervereinbarungen = svSnap.docs.map(
     (d) => ({ id: d.id, ...d.data() } as Sondervereinbarung)
   );
 
-  return { ausgaben, beilagen, einsaetze, arbeitszeiten, zusammentragenEinsaetze, fahrtkosten, sondervereinbarungen };
+  return { ausgaben, beilagen, einsaetze, arbeitszeiten, zusammentragenEinsaetze, fahrten, sondervereinbarungen };
 }
 
 // ---- Abrechnung berechnen ----------------------------------
 
 export function berechneAbrechnung(
   mitarbeiterListe: Mitarbeiter[],
-  teilgebiete: Teilgebiet[],
+  teilgebiete: Teilgebiet[] | TeilgebietSnapshot[],
   data: PeriodeData,
   params: Parameter,
   periode?: Abrechnungsperiode
@@ -185,6 +183,13 @@ export function berechneAbrechnung(
   const effParams: Parameter = periode?.paramSnapshot
     ? { ...params, ...periode.paramSnapshot }
     : params;
+
+  // Snapshot-Teilgebiete bevorzugen wenn vorhanden (historische Richtigkeit)
+  const effTeilgebiete: (Teilgebiet | TeilgebietSnapshot)[] =
+    periode?.periodeSnapshot?.teilgebietSnapshots?.length
+      ? periode.periodeSnapshot.teilgebietSnapshots
+      : teilgebiete;
+
   const ergebnisse: MitarbeiterAbrechnung[] = [];
 
   for (const ma of mitarbeiterListe) {
@@ -201,7 +206,7 @@ export function berechneAbrechnung(
 
       for (const einsatz of springerEinsaetze) {
         const ausgabe = data.ausgaben.find((a) => a.id === einsatz.ausgabeId);
-        const tg = teilgebiete.find((t) => t.id === einsatz.teilgebietId);
+        const tg = effTeilgebiete.find((t) => t.id === einsatz.teilgebietId);
         if (!ausgabe || !tg) continue;
 
         const beilagenFuerAusgabe = data.beilagen.filter(
@@ -212,7 +217,7 @@ export function berechneAbrechnung(
         );
 
         const detail = berechneAustraegerLohn(
-          ma, tg, ausgabe, beilagenFuerAusgabe, einsatz, sv, effParams
+          ma, tg as Teilgebiet, ausgabe, beilagenFuerAusgabe, einsatz, sv, effParams
         );
         austraegerEinsaetze.push({
           kw: einsatz.kw,
@@ -225,8 +230,9 @@ export function berechneAbrechnung(
       }
 
       // Standardausträger-Einsätze (Teilgebiete wo dieser MA Standardausträger ist)
-      const meineGebiete = teilgebiete.filter(
-        (tg) => tg.standardAustraegerId === ma.id && tg.isActive
+      const meineGebiete = effTeilgebiete.filter(
+        (tg) => (tg as Teilgebiet).standardAustraegerId === ma.id &&
+                (tg as Teilgebiet).isActive !== false
       );
 
       for (const tg of meineGebiete) {
@@ -237,7 +243,6 @@ export function berechneAbrechnung(
           );
 
           if (expliziterEinsatz) {
-            // Ausfall, Springer oder ungeklärt → dieser MA hat nicht ausgetragen
             if (
               expliziterEinsatz.typ === 'ausfall' ||
               expliziterEinsatz.typ === 'ungeklärt' ||
@@ -267,8 +272,9 @@ export function berechneAbrechnung(
             (s) => s.mitarbeiterId === ma.id && s.teilgebietId === tg.id
           );
 
+          // BUG-FIX: effParams statt params (historisch korrekte Parameter)
           const detail = berechneAustraegerLohn(
-            ma, tg, ausgabe, beilagenFuerAusgabe, fakeEinsatz, sv, params
+            ma, tg as Teilgebiet, ausgabe, beilagenFuerAusgabe, fakeEinsatz, sv, effParams
           );
           austraegerEinsaetze.push({
             kw: ausgabe.kw,
@@ -297,7 +303,8 @@ export function berechneAbrechnung(
       const ausgabe = data.ausgaben.find((a) => a.id === z.ausgabeId);
       if (!ausgabe) continue;
 
-      if (z.istVorarbeit && z.vorarbeitMinuten) {
+      // BUG-FIX: vorarbeitMinuten != null && > 0 (0 wäre falsy ohne diesen Fix)
+      if (z.istVorarbeit && z.vorarbeitMinuten != null && z.vorarbeitMinuten > 0) {
         // Vorarbeit: manuell eingegebene Zeit × Stundenlohn
         const stunden = z.vorarbeitMinuten / 60;
         const lohn = stunden * stundenlohn;
@@ -309,9 +316,8 @@ export function berechneAbrechnung(
           lohn,
           stunden,
         });
-      } else {
-        // Normales Zusammentragen: Stapel × Pauschale (aus Parameter)
-        // Vereinfachung: Stapel × 0.25h × Stundenlohn
+      } else if (!z.istVorarbeit) {
+        // Normales Zusammentragen: Stapel × 0.25h × Stundenlohn
         const lohn = z.stapelBearbeitet * 0.25 * stundenlohn;
         zusammentragenEinsaetze.push({
           ausgabeId: z.ausgabeId,
@@ -345,12 +351,11 @@ export function berechneAbrechnung(
         ? (ma.fixesGehalt ?? 0)
         : 0;
 
-    // --- Fahrtkosten ---
-    const maFahrtkosten = data.fahrtkosten.filter(
-      (f) => f.mitarbeiterId === ma.id
-    );
-    const fahrtkostenGesamt = maFahrtkosten.reduce(
-      (s, f) => s + f.betragEur, 0
+    // --- Fahrtkosten (neue Fahrt-Erfassung) ---
+    const maFahrten = data.fahrten.filter((f) => f.mitarbeiterId === ma.id);
+    const fahrtSatz = ma.fahrkostenEurProKm ?? effParams.fahrkostenEurProKm ?? 0.30;
+    const fahrtkostenGesamt = maFahrten.reduce(
+      (s, f) => s + f.streckKm * fahrtSatz, 0
     );
 
     // --- Gesamt ---
@@ -361,8 +366,13 @@ export function berechneAbrechnung(
       fixesGehalt +
       fahrtkostenGesamt;
 
-    // Nur aufnehmen wenn irgendwas zu abrechnen ist
-    if (gesamt > 0 || austraegerEinsaetze.length > 0 || maArbeitszeiten.length > 0) {
+    // BUG-FIX: Auch reine Zusammenträger aufnehmen (keine Austräger-Einsätze, keine AZ)
+    if (
+      gesamt > 0 ||
+      austraegerEinsaetze.length > 0 ||
+      zusammentragenEinsaetze.length > 0 ||
+      maArbeitszeiten.length > 0
+    ) {
       ergebnisse.push({
         mitarbeiter: ma,
         austraegerEinsaetze,
@@ -373,7 +383,8 @@ export function berechneAbrechnung(
         zeitStunden,
         zeitLohn,
         fixesGehalt,
-        fahrtkosten: maFahrtkosten,
+        fahrten: maFahrten,
+        fahrtSatzEurProKm: fahrtSatz,
         fahrtkostenGesamt,
         gesamt,
       });

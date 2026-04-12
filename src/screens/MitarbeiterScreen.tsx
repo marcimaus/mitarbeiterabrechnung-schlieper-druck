@@ -7,6 +7,7 @@ import {
   aktualisiereMitarbeiter,
   deaktiviereMitarbeiter,
 } from '../lib/db';
+import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
 import type { Mitarbeiter, Rolle, Abrechnungstyp } from '../types';
 import { ROLLEN_LABELS } from '../types';
@@ -442,6 +443,24 @@ function MitarbeiterForm({
           )}
       </FormField>
 
+      <FormField
+        label="Individueller Fahrkostensatz (EUR/km)"
+        hint={`Leer lassen für globalen Standardsatz (${parameter?.fahrkostenEurProKm ?? 0.30} €/km)`}
+      >
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          value={(form as any).fahrkostenEurProKm ?? ''}
+          onChange={(e) => setForm((f) => ({
+            ...f,
+            fahrkostenEurProKm: e.target.value ? parseFloat(e.target.value) : undefined,
+          } as any))}
+          placeholder="Leer = Standard"
+          className={inputClass}
+        />
+      </FormField>
+
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
       <div className="flex items-center justify-between pt-2">
@@ -473,7 +492,147 @@ function MitarbeiterForm({
           </button>
         </div>
       </div>
+
+      {/* PIN-Verwaltung (nur bei bestehenden Mitarbeitern) */}
+      {initial && (
+        <PinVerwaltung mitarbeiter={initial} />
+      )}
     </form>
+  );
+}
+
+// ---- PIN-Verwaltung für Mitarbeiter ------------------------
+
+function PinVerwaltung({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
+  const [neuerPin, setNeuerPin] = useState('');
+  const [pinBestaetigung, setPinBestaetigung] = useState('');
+  const [showPinForm, setShowPinForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const hatPin = !!mitarbeiter.pinHash;
+
+  async function handlePinSetzen(e: FormEvent) {
+    e.preventDefault();
+    if (neuerPin.length < 4) { setMessage('PIN muss mindestens 4 Stellen haben.'); return; }
+    if (neuerPin !== pinBestaetigung) { setMessage('PINs stimmen nicht überein.'); return; }
+    setSaving(true);
+    setMessage('');
+    try {
+      const hash = await hashPin(neuerPin);
+      await aktualisiereMitarbeiter(mitarbeiter.id, { pinHash: hash });
+      setNeuerPin('');
+      setPinBestaetigung('');
+      setShowPinForm(false);
+      setMessage('✓ PIN gesetzt');
+      setTimeout(() => setMessage(''), 3000);
+    } catch {
+      setMessage('Fehler beim Speichern.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handlePinLoeschen() {
+    if (!confirm(`PIN von "${mitarbeiter.name}" wirklich löschen?`)) return;
+    setSaving(true);
+    try {
+      await aktualisiereMitarbeiter(mitarbeiter.id, { pinHash: undefined });
+      setMessage('✓ PIN gelöscht');
+      setTimeout(() => setMessage(''), 3000);
+    } catch {
+      setMessage('Fehler beim Löschen.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 pt-4 border-t border-gray-200">
+      <div className="flex items-center gap-3 mb-2">
+        <h4 className="text-sm font-semibold text-gray-700">Mitarbeiter-PIN (Selbstschutz)</h4>
+        {hatPin ? (
+          <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">🔒 PIN gesetzt</span>
+        ) : (
+          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">Kein PIN</span>
+        )}
+      </div>
+      <p className="text-xs text-gray-400 mb-3">
+        Wenn ein PIN gesetzt ist, können die eigenen Daten dieses Mitarbeiters durch ihn selbst geschützt werden.
+      </p>
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setShowPinForm(!showPinForm)}
+          className="text-xs text-blue-600 hover:text-blue-800 underline"
+        >
+          {hatPin ? 'PIN ändern' : 'PIN setzen'}
+        </button>
+        {hatPin && (
+          <button
+            type="button"
+            onClick={handlePinLoeschen}
+            disabled={saving}
+            className="text-xs text-red-500 hover:text-red-700 underline"
+          >
+            PIN löschen
+          </button>
+        )}
+      </div>
+
+      {showPinForm && (
+        <form onSubmit={handlePinSetzen} className="mt-3 bg-gray-50 rounded-lg p-3 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Neuer PIN (min. 4 Stellen)</label>
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={8}
+                value={neuerPin}
+                onChange={(e) => setNeuerPin(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Bestätigung</label>
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={8}
+                value={pinBestaetigung}
+                onChange={(e) => setPinBestaetigung(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••"
+                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2 items-center">
+            <button
+              type="submit"
+              disabled={saving || neuerPin.length < 4}
+              className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? '...' : 'PIN setzen'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowPinForm(false); setNeuerPin(''); setPinBestaetigung(''); }}
+              className="text-xs text-gray-500 hover:text-gray-700"
+            >
+              Abbrechen
+            </button>
+          </div>
+        </form>
+      )}
+      {message && (
+        <p className={`text-xs mt-1 ${message.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>
+          {message}
+        </p>
+      )}
+    </div>
   );
 }
 

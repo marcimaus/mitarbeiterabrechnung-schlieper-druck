@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import { ladePeriodeData, berechneAbrechnung, eur, stdMin } from '../lib/abrechnungslogik';
 import { exportiereAbrechnung } from '../lib/exportXlsx';
-import { aktualisiereAbrechnungsperiode } from '../lib/db';
+import { schliessePeriodeAb, oeffnePeriodeWieder } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
 
 export default function AbrechnungScreen() {
@@ -61,8 +61,18 @@ function AbrechnungInhalt() {
 
   async function handlePeriodeAbschliessen() {
     if (!selectedPeriode) return;
-    await aktualisiereAbrechnungsperiode(selectedPeriode.id, { status: 'abgeschlossen' });
+    try {
+      await schliessePeriodeAb(selectedPeriode.id, teilgebiete);
+    } catch (e: any) {
+      alert('Fehler beim Abschließen: ' + (e.message ?? e));
+    }
     setAbschliessenBestaetigt(false);
+  }
+
+  async function handlePeriodeWiederOeffnen() {
+    if (!selectedPeriode) return;
+    if (!confirm(`Periode "${selectedPeriode.bezeichnung}" wieder öffnen? Alle Daten bleiben erhalten, Eingaben sind wieder möglich.`)) return;
+    await oeffnePeriodeWieder(selectedPeriode.id);
   }
 
   const gesamtSumme = ergebnisse?.reduce((s, e) => s + e.gesamt, 0) ?? 0;
@@ -139,9 +149,18 @@ function AbrechnungInhalt() {
                 )
               )}
               {selectedPeriode?.status === 'abgeschlossen' && (
-                <span className="ml-auto text-sm bg-green-100 text-green-700 px-3 py-1.5 rounded-lg font-medium">
-                  ✓ Abgeschlossen
-                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="text-sm bg-green-100 text-green-700 px-3 py-1.5 rounded-lg font-medium">
+                    ✓ Abgeschlossen
+                  </span>
+                  <button
+                    onClick={handlePeriodeWiederOeffnen}
+                    className="text-xs text-gray-500 hover:text-orange-600 underline"
+                    title="Periode wieder öffnen (Admin)"
+                  >
+                    Entsperren
+                  </button>
+                </div>
               )}
             </>
           )}
@@ -378,7 +397,7 @@ function DetailAnsicht({ ergebnis: er }: { ergebnis: MitarbeiterAbrechnung }) {
       )}
 
       {/* Fixes Gehalt & Fahrtkosten */}
-      {(er.fixesGehalt > 0 || er.fahrtkosten.length > 0) && (
+      {(er.fixesGehalt > 0 || er.fahrten.length > 0) && (
         <div>
           {er.fixesGehalt > 0 && (
             <div className="bg-white rounded px-3 py-2 border border-gray-200 mb-2">
@@ -388,16 +407,24 @@ function DetailAnsicht({ ergebnis: er }: { ergebnis: MitarbeiterAbrechnung }) {
               </div>
             </div>
           )}
-          {er.fahrtkosten.length > 0 && (
+          {er.fahrten.length > 0 && (
             <div>
-              <h4 className="font-semibold text-gray-700 mb-1 text-sm">Fahrtkosten ({er.fahrtkosten.length})</h4>
+              <h4 className="font-semibold text-gray-700 mb-1 text-sm">
+                Fahrtkosten ({er.fahrten.length} Fahrten · {er.fahrtSatzEurProKm.toFixed(2)} €/km)
+              </h4>
               <div className="space-y-1">
-                {er.fahrtkosten.map((f, i) => (
+                {er.fahrten.map((f, i) => (
                   <div key={i} className="flex justify-between bg-white rounded px-3 py-1.5 border border-gray-200">
-                    <span className="text-gray-600">{f.datum} · {f.von} → {f.nach}</span>
-                    <span className="font-medium text-gray-900">{eur(f.betragEur)}</span>
+                    <span className="text-gray-600">
+                      {f.datum} · {f.streckKm} km → {f.ziel}
+                      {f.bemerkung && <span className="text-gray-400 ml-1">({f.bemerkung})</span>}
+                    </span>
+                    <span className="font-medium text-gray-900">{eur(f.streckKm * er.fahrtSatzEurProKm)}</span>
                   </div>
                 ))}
+              </div>
+              <div className="mt-1 text-right font-semibold text-gray-800 pr-1">
+                ∑ {er.fahrten.reduce((s, f) => s + f.streckKm, 0)} km · {eur(er.fahrtkostenGesamt)}
               </div>
             </div>
           )}

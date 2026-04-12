@@ -44,9 +44,10 @@ export interface Mitarbeiter {
   geburtsdatum: string;   // ISO-Date YYYY-MM-DD
   rollen: Rolle[];
   nfcUid?: string;
-  pinHash?: string;       // SHA-256 des optionalen 4-stelligen Mitarbeiter-PINs
+  pinHash?: string;       // SHA-256 des optionalen Mitarbeiter-PINs (Selbstschutz)
   stundenlohnIndividuell?: number;
   fixesGehalt?: number;
+  fahrkostenEurProKm?: number;   // Überschreibt den globalen Kilomtersatz
   abrechnungstyp: Abrechnungstyp;
   isActive: boolean;
   erstelltAm: number;     // Unix-Timestamp ms
@@ -105,7 +106,7 @@ export interface Ausgabe {
   kw: number;
   jahr: number;
   seitenzahl: number;         // 8, 10, 12, 14, ...
-  stapel: number[];           // berechnet aus Seitenzahl, z.B. [8,4,2]
+  stapelAnzahl: number;       // Anzahl Stapel für Zusammentragen (manuell eingebbar)
   grammaturGqm: number;       // Standard: 65 g/m²
   seitenformatMm: { breite: number; hoehe: number }; // Standard: 305×215
   status: AusgabeStatus;
@@ -142,6 +143,8 @@ export interface Abrechnungsperiode {
   kalenderwochen: number[];   // manuell zugeordnete KWs
   status: PeriodeStatus;
   paramSnapshot?: Partial<Parameter>; // Parameter zum Zeitpunkt der Erstellung
+  periodeSnapshot?: PeriodeSnapshot;  // Vollständiger Snapshot beim Abschluss
+  gesperrtAm?: number;                // Zeitstempel des Abschlusses
   erstelltAm: number;
 }
 
@@ -213,25 +216,25 @@ export interface ZusammentragenEinsatz {
   ausgabeId: string;
   teilgebietId: string;        // welches Teilgebiet wurde zusammengetragen
   mitarbeiterId: string;
-  stapelBearbeitet: number;    // Anzahl Stapel (= ausgabe.stapel.length)
+  stapelBearbeitet: number;    // Anzahl Stapel (= ausgabe.stapelAnzahl)
   istVorarbeit: boolean;
   vorarbeitMinuten?: number;   // manuelle Eingabe bei Vorarbeit
   erstelltAm: number;
   aktualisiertAm: number;
 }
 
-// ---- Fahrtkosten -------------------------------------------
+// ---- Fahrtkosten (neue Struktur) ----------------------------
 
-export interface Fahrtkosten {
+export interface Fahrt {
   id: string;
   mitarbeiterId: string;
   datum: string;               // ISO-Date YYYY-MM-DD
-  von: string;
-  nach: string;
-  km: number;
-  betragEur: number;
+  streckKm: number;
+  ziel: string;
   bemerkung?: string;
+  abrechnungsperiodeId?: string;  // gesetzt wenn der Abrechnungsperiode zugeordnet
   erstelltAm: number;
+  aktualisiertAm: number;
 }
 
 // ---- Systemparameter ---------------------------------------
@@ -253,12 +256,31 @@ export interface Parameter {
   standardGrammurGqm: number;             // 65 g/m²
   standardSeitenformatBreiteMm: number;   // 305 mm
   standardSeitenformatHoeheMm: number;    // 215 mm
+  // Fahrtkosten
+  fahrkostenEurProKm: number;             // Standard: 0.30 EUR/km
   // Auth
   adminPinHash: string;
   adminName: string;
   abrechnungPinHash?: string;  // Zweiter PIN für "Mitarbeiter Abrechnung"-Rolle
   // Beilagenformate & Preise (JSON-serialisiert)
   beilagenPreise: BeilagenPreis[];
+}
+
+// ---- Historisierungs-Snapshot (beim Periodenabschluss) -----
+
+export interface TeilgebietSnapshot {
+  id: string;
+  name: string;
+  plz: string;
+  stueckzahl: number;
+  wegstreckeM: number;
+  tourId: string | null;
+  standardAustraegerId: string | null;
+}
+
+export interface PeriodeSnapshot {
+  teilgebietSnapshots: TeilgebietSnapshot[];
+  erstelltAm: number;
 }
 
 export interface BeilagenPreis {

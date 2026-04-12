@@ -17,6 +17,7 @@ const STANDARD_PARAMETER: Omit<Parameter, 'adminPinHash' | 'adminName' | 'beilag
   standardGrammurGqm: 65,
   standardSeitenformatBreiteMm: 305,
   standardSeitenformatHoeheMm: 215,
+  fahrkostenEurProKm: 0.30,
 };
 
 export default function ParameterScreen() {
@@ -42,6 +43,7 @@ function ParameterInhalt() {
     standardGrammurGqm: STANDARD_PARAMETER.standardGrammurGqm,
     standardSeitenformatBreiteMm: STANDARD_PARAMETER.standardSeitenformatBreiteMm,
     standardSeitenformatHoeheMm: STANDARD_PARAMETER.standardSeitenformatHoeheMm,
+    fahrkostenEurProKm: STANDARD_PARAMETER.fahrkostenEurProKm,
     adminName: adminName || '',
   });
 
@@ -68,6 +70,7 @@ function ParameterInhalt() {
         standardGrammurGqm: parameter.standardGrammurGqm,
         standardSeitenformatBreiteMm: parameter.standardSeitenformatBreiteMm,
         standardSeitenformatHoeheMm: parameter.standardSeitenformatHoeheMm,
+        fahrkostenEurProKm: parameter.fahrkostenEurProKm ?? 0.30,
         adminName: parameter.adminName || '',
       }));
     }
@@ -238,6 +241,20 @@ function ParameterInhalt() {
               />
             </Field>
           </div>
+        </Section>
+
+        {/* Fahrtkosten */}
+        <Section title="Fahrtkosten">
+          <Field label="Standardsatz (EUR/km)" hint="Standard: 0,30 €/km — kann je Mitarbeiter überschrieben werden">
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.fahrkostenEurProKm}
+              onChange={(e) => setForm((f) => ({ ...f, fahrkostenEurProKm: num(e.target.value) }))}
+              className={inputClass}
+            />
+          </Field>
         </Section>
 
         {/* Ausgabe-Standardwerte */}

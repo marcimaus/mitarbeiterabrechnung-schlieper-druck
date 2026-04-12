@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(gh pr create --title 'Phase 1: Infrastruktur & Stammdaten' --body ':*)",
+      "Bash(gh pr create --title 'Phase 4: Abrechnung & Excel-Export' --body ':*)",
+      "Bash(where gh:*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(firebase deploy:*)"
+    ]
+  }
+}

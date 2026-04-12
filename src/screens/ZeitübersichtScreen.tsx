@@ -10,10 +10,10 @@ import {
   formatierDauer,
   korrigiereSession,
 } from '../lib/zeiterfassung';
-import { erstelleFahrtkosten, ladeFahrtkosten, loescheFahrtkosten } from '../lib/db';
+import { ladeFahrten } from '../lib/db';
 import { MONATSNAMEN } from '../lib/kalender';
 import { ermittleStundenlohn } from '../lib/berechnung';
-import type { Arbeitszeit, Fahrtkosten } from '../types';
+import type { Arbeitszeit, Fahrt } from '../types';
 
 export default function ZeitübersichtScreen() {
   return (
@@ -30,7 +30,7 @@ function ZeitübersichtInhalt() {
   const [monat, setMonat] = useState(heute.getMonth() + 1);
   const [jahr, setJahr] = useState(heute.getFullYear());
   const [sessions, setSessions] = useState<Arbeitszeit[]>([]);
-  const [fahrtkosten, setFahrtkosten] = useState<Fahrtkosten[]>([]);
+  const [fahrten, setFahrten] = useState<Fahrt[]>([]);
   const [loading, setLoading] = useState(false);
   const [editSession, setEditSession] = useState<Arbeitszeit | null>(null);
 
@@ -41,14 +41,14 @@ function ZeitübersichtInhalt() {
     setLoading(true);
     Promise.all([
       ladeMonatsarbeitszeiten(selectedMaId, jahr, monat),
-      ladeFahrtkosten(selectedMaId),
-    ]).then(([sess, fk]) => {
+      ladeFahrten({ mitarbeiterId: selectedMaId }),
+    ]).then(([sess, fList]) => {
       setSessions(sess);
-      const monatsFk = fk.filter((f) => {
+      const monatsFahrten = fList.filter((f) => {
         const d = new Date(f.datum);
         return d.getFullYear() === jahr && d.getMonth() + 1 === monat;
       });
-      setFahrtkosten(monatsFk);
+      setFahrten(monatsFahrten);
       setLoading(false);
     });
   }, [selectedMaId, monat, jahr]);
@@ -61,7 +61,8 @@ function ZeitübersichtInhalt() {
 
   const stundenlohn = ma && parameter ? ermittleStundenlohn(ma, parameter) : null;
   const lohnGesamt = stundenlohn ? (gesamtNettoMinuten / 60) * stundenlohn : null;
-  const fahrtkostenGesamt = fahrtkosten.reduce((s, f) => s + f.betragEur, 0);
+  const fahrtSatz = (ma?.fahrkostenEurProKm ?? parameter?.fahrkostenEurProKm ?? 0.30);
+  const fahrtkostenGesamt = fahrten.reduce((s, f) => s + f.streckKm * fahrtSatz, 0);
 
   const jahre = [heute.getFullYear() - 1, heute.getFullYear(), heute.getFullYear() + 1];
 
@@ -188,14 +189,8 @@ function ZeitübersichtInhalt() {
             )}
           </div>
 
-          {/* Fahrtkosten */}
-          <FahrtkostenBereich
-            mitarbeiterId={selectedMaId}
-            monat={monat}
-            jahr={jahr}
-            fahrtkosten={fahrtkosten}
-            onUpdate={setFahrtkosten}
-          />
+          {/* Fahrten (read-only — Erfassung über Fahrtkosten-Screen) */}
+          <FahrtenÜbersicht fahrten={fahrten} fahrtSatz={fahrtSatz} />
         </>
       )}
 
@@ -237,113 +232,51 @@ function SummaryCard({ label, value, sub }: { label: string; value: string; sub?
   );
 }
 
-// ---- Fahrtkosten -------------------------------------------
+// ---- Fahrten-Übersicht (read-only) -------------------------
 
-function FahrtkostenBereich({
-  mitarbeiterId,
-  monat: _monat,
-  jahr: _jahr,
-  fahrtkosten,
-  onUpdate,
-}: {
-  mitarbeiterId: string;
-  monat: number;
-  jahr: number;
-  fahrtkosten: Fahrtkosten[];
-  onUpdate: (fk: Fahrtkosten[]) => void;
-}) {
-  const [showForm, setShowForm] = useState(false);
-  const [von, setVon] = useState('');
-  const [nach, setNach] = useState('');
-  const [km, setKm] = useState('');
-  const [betrag, setBetrag] = useState('');
-  const [datum, setDatum] = useState(new Date().toISOString().split('T')[0]);
-  const [saving, setSaving] = useState(false);
-
-  const gesamt = fahrtkosten.reduce((s, f) => s + f.betragEur, 0);
-
-  async function handleAdd() {
-    if (!von || !nach || !km) return;
-    setSaving(true);
-    const id = await erstelleFahrtkosten({
-      mitarbeiterId,
-      datum,
-      von,
-      nach,
-      km: parseFloat(km),
-      betragEur: parseFloat(betrag) || 0,
-    });
-    onUpdate([...fahrtkosten, { id, mitarbeiterId, datum, von, nach, km: parseFloat(km), betragEur: parseFloat(betrag) || 0, erstelltAm: Date.now() }]);
-    setVon(''); setNach(''); setKm(''); setBetrag('');
-    setShowForm(false);
-    setSaving(false);
-  }
-
-  async function handleLoeschen(id: string) {
-    if (!confirm('Fahrt löschen?')) return;
-    await loescheFahrtkosten(id);
-    onUpdate(fahrtkosten.filter((f) => f.id !== id));
-  }
-
-  if (fahrtkosten.length === 0 && !showForm) {
+function FahrtenÜbersicht({ fahrten, fahrtSatz }: { fahrten: Fahrt[]; fahrtSatz: number }) {
+  if (fahrten.length === 0) {
     return (
-      <div className="bg-white rounded-xl border border-gray-200 p-4 flex items-center justify-between">
-        <span className="text-sm text-gray-500">Keine Fahrtkosten in diesem Monat</span>
-        <button onClick={() => setShowForm(true)} className="text-sm text-blue-600 hover:text-blue-800">
-          + Fahrt erfassen
-        </button>
+      <div className="bg-white rounded-xl border border-gray-200 p-4 text-center text-sm text-gray-400">
+        Keine Fahrten in diesem Monat — Erfassung über den Menüpunkt "Fahrtkosten"
       </div>
     );
   }
+
+  const gesamt = fahrten.reduce((s, f) => s + f.streckKm * fahrtSatz, 0);
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
         <span className="font-medium text-sm text-gray-600">
-          Fahrtkosten ({gesamt.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })})
+          Fahrten ({fahrten.reduce((s, f) => s + f.streckKm, 0)} km ·&nbsp;
+          {gesamt.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
+          &nbsp;bei {fahrtSatz.toFixed(2)} €/km)
         </span>
-        <button onClick={() => setShowForm(true)} className="text-sm text-blue-600 hover:text-blue-800">
-          + Fahrt hinzufügen
-        </button>
       </div>
-
-      {showForm && (
-        <div className="p-4 border-b border-gray-100 bg-blue-50">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-            <input type="date" value={datum} onChange={(e) => setDatum(e.target.value)} className={inputClass} />
-            <input type="text" placeholder="Von" value={von} onChange={(e) => setVon(e.target.value)} className={inputClass} />
-            <input type="text" placeholder="Nach" value={nach} onChange={(e) => setNach(e.target.value)} className={inputClass} />
-            <input type="number" placeholder="km" value={km} onChange={(e) => setKm(e.target.value)} min="0" step="0.1" className={inputClass} />
-            <input type="number" placeholder="Betrag €" value={betrag} onChange={(e) => setBetrag(e.target.value)} min="0" step="0.01" className={inputClass} />
-          </div>
-          <div className="flex gap-2 mt-2">
-            <button onClick={handleAdd} disabled={saving} className="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700 disabled:opacity-50">
-              Speichern
-            </button>
-            <button onClick={() => setShowForm(false)} className="text-sm text-gray-500">Abbrechen</button>
-          </div>
-        </div>
-      )}
-
       <table className="w-full text-sm">
         <thead className="bg-gray-50 border-b border-gray-100">
           <tr>
             <th className="text-left px-4 py-2 font-medium text-gray-600">Datum</th>
-            <th className="text-left px-4 py-2 font-medium text-gray-600">Von → Nach</th>
-            <th className="text-left px-4 py-2 font-medium text-gray-600">km</th>
-            <th className="text-left px-4 py-2 font-medium text-gray-600">Betrag</th>
-            <th className="px-4 py-2"></th>
+            <th className="text-left px-4 py-2 font-medium text-gray-600">Ziel</th>
+            <th className="text-right px-4 py-2 font-medium text-gray-600">km</th>
+            <th className="text-right px-4 py-2 font-medium text-gray-600">Betrag</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
-          {fahrtkosten.map((f) => (
+          {fahrten.map((f) => (
             <tr key={f.id} className="hover:bg-gray-50">
-              <td className="px-4 py-2 text-gray-700">{new Date(f.datum).toLocaleDateString('de-DE')}</td>
-              <td className="px-4 py-2 text-gray-700">{f.von} → {f.nach}</td>
-              <td className="px-4 py-2 text-gray-600">{f.km} km</td>
-              <td className="px-4 py-2 font-medium">{f.betragEur.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}</td>
-              <td className="px-4 py-2">
-                <button onClick={() => handleLoeschen(f.id)} className="text-xs text-red-500 hover:text-red-700">Löschen</button>
+              <td className="px-4 py-2 text-gray-700">{f.datum}</td>
+              <td className="px-4 py-2 text-gray-700">
+                {f.ziel}
+                {f.bemerkung && <span className="text-gray-400 ml-1 text-xs">({f.bemerkung})</span>}
+                {f.abrechnungsperiodeId && (
+                  <span className="ml-2 text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded">abgerechnet</span>
+                )}
+              </td>
+              <td className="px-4 py-2 text-right text-gray-600">{f.streckKm}</td>
+              <td className="px-4 py-2 text-right font-medium text-gray-900">
+                {(f.streckKm * fahrtSatz).toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
               </td>
             </tr>
           ))}

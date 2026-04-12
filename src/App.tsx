@@ -11,6 +11,7 @@ import TourenScreen from './screens/TourenScreen';
 import AusgabenScreen from './screens/AusgabenScreen';
 import EinsaetzeScreen from './screens/EinsaetzeScreen';
 import ZusammentragenScreen from './screens/ZusammentragenScreen';
+import FahrtenScreen from './screens/FahrtenScreen';
 import AbrechnungScreen from './screens/AbrechnungScreen';
 import ParameterScreen from './screens/ParameterScreen';
 
@@ -33,6 +34,7 @@ export default function App() {
                 <Route path="/ausgaben" element={<AusgabenScreen />} />
                 <Route path="/einsaetze" element={<EinsaetzeScreen />} />
                 <Route path="/zusammentragen" element={<ZusammentragenScreen />} />
+                <Route path="/fahrten" element={<FahrtenScreen />} />
                 <Route path="/abrechnung" element={<AbrechnungScreen />} />
                 <Route path="/parameter" element={<ParameterScreen />} />
                 <Route path="/admin" element={<AdminLoginPage />} />
