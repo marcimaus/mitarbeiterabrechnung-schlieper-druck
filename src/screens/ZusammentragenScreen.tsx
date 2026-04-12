@@ -33,6 +33,7 @@ function ZusammentragenInhalt() {
   const [vorarbeitNeuH, setVorarbeitNeuH] = useState('0');
   const [vorarbeitNeuM, setVorarbeitNeuM] = useState('00');
   const [vorarbeitSaving, setVorarbeitSaving] = useState(false);
+  const [vorarbeitAktiv, setVorarbeitAktiv] = useState(false); // lokaler Toggle-State
 
   const [tgSaving, setTgSaving] = useState<string | null>(null);
 
@@ -51,6 +52,8 @@ function ZusammentragenInhalt() {
     setLoading(true);
     ladeZusammentragenEinsaetze(selectedAusgabeId).then((list) => {
       setAlleEinsaetze(list);
+      // Vorarbeit-Zustand aus geladenen Daten ableiten
+      setVorarbeitAktiv(list.some((e) => e.istVorarbeit));
       setLoading(false);
     });
   }, [selectedAusgabeId]);
@@ -59,6 +62,7 @@ function ZusammentragenInhalt() {
     if (!selectedAusgabeId) return;
     const list = await ladeZusammentragenEinsaetze(selectedAusgabeId);
     setAlleEinsaetze(list);
+    setVorarbeitAktiv(list.some((e) => e.istVorarbeit));
   };
 
   const selectedAusgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
@@ -66,7 +70,6 @@ function ZusammentragenInhalt() {
   // Einträge aufteilen
   const vorarbeitEintraege = alleEinsaetze.filter((e) => e.istVorarbeit);
   const normalEinsaetze = alleEinsaetze.filter((e) => !e.istVorarbeit);
-  const hatVorarbeit = vorarbeitEintraege.length > 0;
 
   // Map: teilgebietId → Einsatz (für normale Einträge)
   const tgMap = Object.fromEntries(normalEinsaetze.map((e) => [e.teilgebietId, e]));
@@ -87,15 +90,14 @@ function ZusammentragenInhalt() {
 
   // ---- Vorarbeit-Toggle (an/aus) ---
   async function handleVorarbeitToggle(aktiv: boolean) {
-    if (!selectedAusgabe) return;
-    if (!aktiv) {
+    if (!aktiv && vorarbeitEintraege.length > 0) {
       // Alle Vorarbeit-Einträge löschen
       for (const e of vorarbeitEintraege) {
         await loescheZusammentragenEinsatz(e.id);
       }
       await reload();
     }
-    // Aktivieren: es wird kein Eintrag angelegt, User fügt selbst hinzu
+    setVorarbeitAktiv(aktiv);
   }
 
   // ---- Vorarbeit-Eintrag hinzufügen ---
@@ -217,7 +219,7 @@ function ZusammentragenInhalt() {
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="checkbox"
-                  checked={hatVorarbeit}
+                  checked={vorarbeitAktiv}
                   onChange={(e) => {
                     if (!e.target.checked) handleVorarbeitToggle(false);
                     // Aktivieren: kein Action nötig, User fügt Einträge hinzu
@@ -231,7 +233,7 @@ function ZusammentragenInhalt() {
               </span>
             </div>
 
-            {hatVorarbeit && (
+            {vorarbeitAktiv && (
               <div className="space-y-3">
                 {/* Bestehende Vorarbeit-Einträge */}
                 {vorarbeitEintraege.map((e) => {
@@ -291,7 +293,7 @@ function ZusammentragenInhalt() {
               </div>
             )}
 
-            {!hatVorarbeit && (
+            {!vorarbeitAktiv && (
               <p className="text-sm text-amber-700">
                 Haken setzen um Vorarbeit-Zeiten für diese Ausgabe zu erfassen.
               </p>

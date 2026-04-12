@@ -21,7 +21,6 @@ import {
 } from '../lib/kalender';
 import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, AusgabeStatus } from '../types';
 
-const SEITENZAHLEN = [8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32];
 const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
   { value: 'A4', label: 'DIN A4' },
   { value: 'A5', label: 'DIN A5' },
@@ -278,13 +277,17 @@ function AusgabeForm({
   const [kw, setKw] = useState(initial?.kw ?? aktuelleKW.kw);
   const [jahr, setJahr] = useState(initial?.jahr ?? aktuelleKW.jahr);
   const [seitenzahl, setSeitenzahl] = useState(initial?.seitenzahl ?? 16);
+  const [stapel, setStapel] = useState<number[]>(
+    initial?.stapel ?? berechneStapel(initial?.seitenzahl ?? 16)
+  );
   const [grammatur, setGrammatur] = useState(
     initial?.grammaturGqm ?? parameter?.standardGrammurGqm ?? 65
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [neuerStapelWert, setNeuerStapelWert] = useState(8);
 
-  const stapelVorschau = berechneStapel(seitenzahl);
+  const stapelSumme = stapel.reduce((s, v) => s + v, 0);
   const maxKW = maxKWinJahr(jahr);
 
   const kwBereitsVorhanden = vorhandeneKWs.some(
@@ -294,15 +297,16 @@ function AusgabeForm({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (kwBereitsVorhanden) { setError(`KW ${kw}/${jahr} ist bereits angelegt.`); return; }
+    if (stapel.length === 0) { setError('Mindestens ein Stapel erforderlich.'); return; }
     setSaving(true);
     setError('');
     try {
       if (initial) {
         await aktualisiereAusgabe(initial.id, {
-          kw, jahr, seitenzahl, grammaturGqm: grammatur,
+          kw, jahr, seitenzahl, stapel, grammaturGqm: grammatur,
           seitenformatMm: initial.seitenformatMm,
         });
-        onSave({ ...initial, kw, jahr, seitenzahl, stapel: berechneStapel(seitenzahl), grammaturGqm: grammatur });
+        onSave({ ...initial, kw, jahr, seitenzahl, stapel, grammaturGqm: grammatur });
       } else {
         const id = await erstelleAusgabe({
           kw, jahr, seitenzahl, grammaturGqm: grammatur,
@@ -313,7 +317,7 @@ function AusgabeForm({
           status: 'geplant',
         });
         onSave({
-          id, kw, jahr, seitenzahl, stapel: berechneStapel(seitenzahl),
+          id, kw, jahr, seitenzahl, stapel,
           grammaturGqm: grammatur,
           seitenformatMm: {
             breite: parameter?.standardSeitenformatBreiteMm ?? 305,
@@ -372,22 +376,88 @@ function AusgabeForm({
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Seitenzahl</label>
-        <select
-          value={seitenzahl}
-          onChange={(e) => setSeitenzahl(Number(e.target.value))}
-          className={inputClass}
-        >
-          {SEITENZAHLEN.map((s) => (
-            <option key={s} value={s}>{s} Seiten</option>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={2}
+            max={128}
+            step={2}
+            value={seitenzahl}
+            onChange={(e) => {
+              const val = Math.max(2, Number(e.target.value));
+              setSeitenzahl(val);
+              setStapel(berechneStapel(val));
+            }}
+            className={inputClass + ' w-28'}
+          />
+          <span className="text-sm text-gray-500">Seiten (gerade Zahl)</span>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Stapel für Zusammentragen
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            (jeder Stapel = Vielfaches von 2 Seiten)
+          </span>
+        </label>
+
+        {/* Stapel-Chips */}
+        <div className="flex flex-wrap gap-2 mb-2">
+          {stapel.map((s, idx) => (
+            <div key={idx} className="flex items-center gap-1 bg-blue-100 text-blue-800 text-sm font-semibold px-2.5 py-1 rounded-full">
+              <span>{s} S.</span>
+              <button
+                type="button"
+                onClick={() => setStapel((prev) => prev.filter((_, i) => i !== idx))}
+                className="text-blue-500 hover:text-blue-800 ml-1 leading-none"
+                title="Stapel entfernen"
+              >
+                ×
+              </button>
+            </div>
           ))}
-        </select>
-        <div className="mt-2 flex items-center gap-2 flex-wrap">
-          <span className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-1 rounded-full">
-            📦 {stapelVorschau.length} Stapel für Zusammentragen
+
+          {/* Hinzufügen */}
+          <div className="flex items-center gap-1">
+            <select
+              value={neuerStapelWert}
+              onChange={(e) => setNeuerStapelWert(Number(e.target.value))}
+              className="border border-gray-300 rounded-lg px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {[2,4,6,8,10,12,14,16,20,24,32].map((v) => (
+                <option key={v} value={v}>{v} S.</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setStapel((prev) => [...prev, neuerStapelWert])}
+              className="bg-blue-600 text-white px-2.5 py-1 rounded-lg text-sm hover:bg-blue-700 transition-colors"
+            >
+              + Stapel
+            </button>
+          </div>
+        </div>
+
+        {/* Summen-Anzeige */}
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-gray-500">
+            {stapel.length} Stapel · Summe: <strong>{stapelSumme} S.</strong>
           </span>
-          <span className="text-xs text-gray-400">
-            ({stapelVorschau.map((s) => `${s}-Seiten-Bogen`).join(' + ')})
-          </span>
+          {stapelSumme === seitenzahl ? (
+            <span className="text-green-600 font-medium">✓ entspricht Seitenzahl</span>
+          ) : (
+            <span className="text-amber-600 font-medium">
+              ≠ Seitenzahl ({seitenzahl} S.) — Differenz: {stapelSumme - seitenzahl > 0 ? '+' : ''}{stapelSumme - seitenzahl}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setStapel(berechneStapel(seitenzahl))}
+            className="text-blue-500 hover:text-blue-700 underline"
+          >
+            ↺ Auto-berechnen
+          </button>
         </div>
       </div>
 

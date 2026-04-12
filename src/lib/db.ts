@@ -240,7 +240,8 @@ export async function aktualisiereAusgabe(
     ...data,
     aktualisiertAm: now(),
   };
-  if (data.seitenzahl !== undefined) {
+  // Stapel nur auto-berechnen wenn nicht explizit mitgegeben
+  if (data.seitenzahl !== undefined && data.stapel === undefined) {
     update.stapel = berechneStapel(data.seitenzahl);
   }
   await updateDoc(doc(db, 'ausgaben', id), update);
