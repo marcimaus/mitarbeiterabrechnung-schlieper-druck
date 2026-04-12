@@ -22,7 +22,7 @@ export default function EinsaetzeScreen() {
 }
 
 function EinsaetzeInhalt() {
-  const { teilgebiete, mitarbeiter, touren } = useApp();
+  const { teilgebiete, mitarbeiter, touren, parameter } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [selectedAusgabeId, setSelectedAusgabeId] = useState<string>('');
   const [einsaetze, setEinsaetze] = useState<EinsatzMap>({});
@@ -120,7 +120,11 @@ function EinsaetzeInhalt() {
   function oeffneSpringerDialog(tg: Teilgebiet) {
     const e = einsaetze[tg.id];
     setSpringerMitarbeiterId(e?.typ === 'springer' ? (e.mitarbeiterId ?? '') : '');
-    setSpringerZuschlag(e?.springerZuschlagProzent?.toString() ?? '');
+    // Vorbelegen: individueller Wert wenn vorhanden, sonst Standard aus Parametern (25%)
+    setSpringerZuschlag(
+      e?.springerZuschlagProzent?.toString() ??
+      (parameter?.springerZuschlagProzent?.toString() ?? '25')
+    );
     setSpringerFilter('');
     setSpringerDialog(tg);
   }

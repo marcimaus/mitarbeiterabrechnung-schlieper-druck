@@ -23,8 +23,10 @@ import {
 
 // ---- State -------------------------------------------------
 
+export type UserRole = 'admin' | 'abrechnung' | null;
+
 interface AppState {
-  isAdminAuthenticated: boolean;
+  userRole: UserRole;
   adminName: string;
   mitarbeiter: Mitarbeiter[];
   touren: Tour[];
@@ -37,7 +39,7 @@ interface AppState {
 }
 
 const initialState: AppState = {
-  isAdminAuthenticated: false,
+  userRole: null,
   adminName: '',
   mitarbeiter: [],
   touren: [],
@@ -52,7 +54,7 @@ const initialState: AppState = {
 // ---- Actions -----------------------------------------------
 
 type Action =
-  | { type: 'SET_ADMIN_AUTH'; payload: { authenticated: boolean; name: string } }
+  | { type: 'SET_AUTH'; payload: { role: UserRole; name: string } }
   | { type: 'SET_MITARBEITER'; payload: Mitarbeiter[] }
   | { type: 'SET_TOUREN'; payload: Tour[] }
   | { type: 'SET_TEILGEBIETE'; payload: Teilgebiet[] }
@@ -64,12 +66,14 @@ type Action =
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
-    case 'SET_ADMIN_AUTH':
+    case 'SET_AUTH':
       return {
         ...state,
-        isAdminAuthenticated: action.payload.authenticated,
+        userRole: action.payload.role,
         adminName: action.payload.name,
-      };
+        // Abwärtskompatibilität
+        isAdminAuthenticated: action.payload.role !== null,
+      } as AppState;
     case 'SET_MITARBEITER':
       return { ...state, mitarbeiter: action.payload };
     case 'SET_TOUREN':
@@ -94,7 +98,11 @@ function reducer(state: AppState, action: Action): AppState {
 // ---- Context -----------------------------------------------
 
 interface AppContextValue extends AppState {
+  // Abwärtskompatibilität
+  isAdminAuthenticated: boolean;
+  // Neue Methoden
   loginAdmin: (name: string) => void;
+  loginAbrechnung: (name: string) => void;
   logoutAdmin: () => void;
   setAktivePeriode: (id: string | null) => void;
 }
@@ -103,19 +111,14 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 // ---- Provider ----------------------------------------------
 
-const ADMIN_SESSION_KEY = 'adminSession';
+const SESSION_KEY = 'userSession';
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState, () => {
-    // Admin-Session aus sessionStorage wiederherstellen
-    const session = sessionStorage.getItem(ADMIN_SESSION_KEY);
+    const session = sessionStorage.getItem(SESSION_KEY);
     if (session) {
-      const { name } = JSON.parse(session);
-      return {
-        ...initialState,
-        isAdminAuthenticated: true,
-        adminName: name,
-      };
+      const { role, name } = JSON.parse(session) as { role: UserRole; name: string };
+      return { ...initialState, userRole: role, adminName: name };
     }
     return initialState;
   });
@@ -137,9 +140,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let loaded = 0;
     const checkLoaded = () => {
       loaded++;
-      if (loaded >= 4) {
-        dispatch({ type: 'SET_LOADING', payload: false });
-      }
+      if (loaded >= 4) dispatch({ type: 'SET_LOADING', payload: false });
     };
 
     const unsubMitarbeiter = mitarbeiterListener((list) => {
@@ -172,22 +173,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loginAdmin = useCallback((name: string) => {
-    sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ name }));
-    dispatch({ type: 'SET_ADMIN_AUTH', payload: { authenticated: true, name } });
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: 'admin', name }));
+    dispatch({ type: 'SET_AUTH', payload: { role: 'admin', name } });
+  }, []);
+
+  const loginAbrechnung = useCallback((name: string) => {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: 'abrechnung', name }));
+    dispatch({ type: 'SET_AUTH', payload: { role: 'abrechnung', name } });
   }, []);
 
   const logoutAdmin = useCallback(() => {
-    sessionStorage.removeItem(ADMIN_SESSION_KEY);
-    dispatch({ type: 'SET_ADMIN_AUTH', payload: { authenticated: false, name: '' } });
+    sessionStorage.removeItem(SESSION_KEY);
+    dispatch({ type: 'SET_AUTH', payload: { role: null, name: '' } });
   }, []);
 
   const setAktivePeriode = useCallback((id: string | null) => {
     dispatch({ type: 'SET_AKTIVE_PERIODE', payload: id });
   }, []);
 
+  const isAdminAuthenticated = state.userRole !== null;
+
   return (
     <AppContext.Provider
-      value={{ ...state, loginAdmin, logoutAdmin, setAktivePeriode }}
+      value={{
+        ...state,
+        isAdminAuthenticated,
+        loginAdmin,
+        loginAbrechnung,
+        logoutAdmin,
+        setAktivePeriode,
+      }}
     >
       {children}
     </AppContext.Provider>

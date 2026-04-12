@@ -141,6 +141,7 @@ export interface Abrechnungsperiode {
   monat: number;              // 1-12
   kalenderwochen: number[];   // manuell zugeordnete KWs
   status: PeriodeStatus;
+  paramSnapshot?: Partial<Parameter>; // Parameter zum Zeitpunkt der Erstellung
   erstelltAm: number;
 }
 
@@ -210,13 +211,13 @@ export interface Arbeitszeit {
 export interface ZusammentragenEinsatz {
   id: string;
   ausgabeId: string;
+  teilgebietId: string;        // welches Teilgebiet wurde zusammengetragen
   mitarbeiterId: string;
-  stapelBearbeitet: number;    // Anzahl Stapel die dieser MA bearbeitet hat
+  stapelBearbeitet: number;    // Anzahl Stapel (= ausgabe.stapel.length)
   istVorarbeit: boolean;
-  // Bei Vorarbeit: tatsächliche Zeiten (werden nach Zeit abgerechnet)
-  vorarbeitStart?: number;
-  vorarbeitEnde?: number;
+  vorarbeitMinuten?: number;   // manuelle Eingabe bei Vorarbeit
   erstelltAm: number;
+  aktualisiertAm: number;
 }
 
 // ---- Fahrtkosten -------------------------------------------
@@ -255,6 +256,7 @@ export interface Parameter {
   // Auth
   adminPinHash: string;
   adminName: string;
+  abrechnungPinHash?: string;  // Zweiter PIN für "Mitarbeiter Abrechnung"-Rolle
   // Beilagenformate & Preise (JSON-serialisiert)
   beilagenPreise: BeilagenPreis[];
 }

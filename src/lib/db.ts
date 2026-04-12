@@ -38,6 +38,13 @@ function now(): number {
   return Date.now();
 }
 
+/** Entfernt undefined-Werte (Firestore akzeptiert kein undefined) */
+function stripUndef(obj: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, v]) => v !== undefined)
+  );
+}
+
 // ---- Parameter (Singleton in meta/parameter) ---------------
 
 export async function ladeParameter(): Promise<Parameter | null> {
@@ -76,7 +83,7 @@ export async function erstelleMitarbeiter(
 ): Promise<string> {
   const ts = now();
   const ref = await addDoc(collection(db, 'mitarbeiter'), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
     erstelltAm: ts,
     aktualisiertAm: ts,
   });
@@ -88,7 +95,7 @@ export async function aktualisiereMitarbeiter(
   data: Partial<Mitarbeiter>
 ): Promise<void> {
   await updateDoc(doc(db, 'mitarbeiter', id), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
     aktualisiertAm: now(),
   });
 }
@@ -296,10 +303,14 @@ export function abrechnungsperiodenListener(
 }
 
 export async function erstelleAbrechnungsperiode(
-  data: Omit<Abrechnungsperiode, 'id' | 'erstelltAm'>
+  data: Omit<Abrechnungsperiode, 'id' | 'erstelltAm'>,
+  currentParams?: Parameter | null
 ): Promise<string> {
+  // Aktuellen Parameter-Stand als Snapshot speichern
+  const params = currentParams ?? await ladeParameter();
   const ref = await addDoc(collection(db, 'abrechnungsperioden'), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
+    paramSnapshot: params ?? undefined,
     erstelltAm: now(),
   });
   return ref.id;
@@ -351,6 +362,42 @@ export async function setzeEinsatz(
 
 export async function loescheEinsatz(id: string): Promise<void> {
   await deleteDoc(doc(db, 'einsaetze', id));
+}
+
+// ---- Zusammentragen-Einsätze --------------------------------
+
+import type { ZusammentragenEinsatz } from '../types';
+
+export async function ladeZusammentragenEinsaetze(ausgabeId: string): Promise<ZusammentragenEinsatz[]> {
+  const snap = await getDocs(
+    query(collection(db, 'zusammentragezeiten'), where('ausgabeId', '==', ausgabeId))
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as ZusammentragenEinsatz));
+}
+
+export async function setzeZusammentragenEinsatz(
+  data: Omit<ZusammentragenEinsatz, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  // Upsert per ausgabeId + teilgebietId
+  const q = query(
+    collection(db, 'zusammentragezeiten'),
+    where('ausgabeId', '==', data.ausgabeId),
+    where('teilgebietId', '==', data.teilgebietId)
+  );
+  const snap = await getDocs(q);
+  const ts = now();
+  const payload = { ...stripUndef(data as Record<string, unknown>), aktualisiertAm: ts };
+  if (!snap.empty) {
+    const existingId = snap.docs[0].id;
+    await updateDoc(doc(db, 'zusammentragezeiten', existingId), payload);
+    return existingId;
+  }
+  const ref = await addDoc(collection(db, 'zusammentragezeiten'), { ...payload, erstelltAm: ts });
+  return ref.id;
+}
+
+export async function loescheZusammentragenEinsatz(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'zusammentragezeiten', id));
 }
 
 // ---- Arbeitszeiten -----------------------------------------

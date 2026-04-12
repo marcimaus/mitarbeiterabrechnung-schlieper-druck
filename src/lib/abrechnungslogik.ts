@@ -178,8 +178,13 @@ export function berechneAbrechnung(
   mitarbeiterListe: Mitarbeiter[],
   teilgebiete: Teilgebiet[],
   data: PeriodeData,
-  params: Parameter
+  params: Parameter,
+  periode?: Abrechnungsperiode
 ): MitarbeiterAbrechnung[] {
+  // Parameter-Snapshot der Periode bevorzugen (historische Richtigkeit)
+  const effParams: Parameter = periode?.paramSnapshot
+    ? { ...params, ...periode.paramSnapshot }
+    : params;
   const ergebnisse: MitarbeiterAbrechnung[] = [];
 
   for (const ma of mitarbeiterListe) {
@@ -207,7 +212,7 @@ export function berechneAbrechnung(
         );
 
         const detail = berechneAustraegerLohn(
-          ma, tg, ausgabe, beilagenFuerAusgabe, einsatz, sv, params
+          ma, tg, ausgabe, beilagenFuerAusgabe, einsatz, sv, effParams
         );
         austraegerEinsaetze.push({
           kw: einsatz.kw,
@@ -286,16 +291,15 @@ export function berechneAbrechnung(
       (z) => z.mitarbeiterId === ma.id
     );
     const zusammentragenEinsaetze: ZusammentragenErgebnis[] = [];
-    const stundenlohn = ermittleStundenlohn(ma, params);
+    const stundenlohn = ermittleStundenlohn(ma, effParams);
 
     for (const z of maZusammen) {
       const ausgabe = data.ausgaben.find((a) => a.id === z.ausgabeId);
       if (!ausgabe) continue;
 
-      if (z.istVorarbeit && z.vorarbeitStart && z.vorarbeitEnde) {
-        // Vorarbeit: tatsächliche Zeit × Stundenlohn
-        const minuten = (z.vorarbeitEnde - z.vorarbeitStart) / 60_000;
-        const stunden = minuten / 60;
+      if (z.istVorarbeit && z.vorarbeitMinuten) {
+        // Vorarbeit: manuell eingegebene Zeit × Stundenlohn
+        const stunden = z.vorarbeitMinuten / 60;
         const lohn = stunden * stundenlohn;
         zusammentragenEinsaetze.push({
           ausgabeId: z.ausgabeId,

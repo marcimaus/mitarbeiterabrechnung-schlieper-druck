@@ -38,7 +38,7 @@ function AbrechnungInhalt() {
     setExpandedId(null);
     try {
       const data = await ladePeriodeData(selectedPeriode);
-      const result = berechneAbrechnung(mitarbeiter, teilgebiete, data, params);
+      const result = berechneAbrechnung(mitarbeiter, teilgebiete, data, params, selectedPeriode);
       setErgebnisse(result);
     } catch (e: any) {
       setFehler(e.message ?? 'Fehler bei der Berechnung');

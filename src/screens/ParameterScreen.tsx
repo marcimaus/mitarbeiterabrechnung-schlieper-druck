@@ -288,51 +288,127 @@ function ParameterInhalt() {
         </button>
       </form>
 
-      {/* PIN ändern */}
-      <div className="mt-8 border-t border-gray-200 pt-6">
-        <h2 className="font-semibold text-gray-900 mb-4">Admin-PIN ändern</h2>
-        {!parameter?.adminPinHash && (
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-sm text-amber-700">
-            ⚠ Noch kein Admin-PIN gesetzt. Bitte einen PIN festlegen, um den Admin-Bereich zu schützen.
-          </div>
-        )}
-        <form onSubmit={handlePinAendern} className="space-y-3 max-w-xs">
-          <Field label="Neuer PIN (min. 4 Stellen)">
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={8}
-              value={neuerPin}
-              onChange={(e) => setNeuerPin(e.target.value.replace(/\D/g, ''))}
-              placeholder="••••"
-              className={inputClass}
-            />
-          </Field>
-          <Field label="PIN bestätigen">
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={8}
-              value={pinBestaetigung}
-              onChange={(e) => setPinBestaetigung(e.target.value.replace(/\D/g, ''))}
-              placeholder="••••"
-              className={inputClass}
-            />
-          </Field>
-          {pinMessage && (
-            <p className={`text-sm ${pinMessage.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>
-              {pinMessage}
-            </p>
+      {/* PINs ändern */}
+      <div className="mt-8 border-t border-gray-200 pt-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* Admin-PIN */}
+        <div>
+          <h2 className="font-semibold text-gray-900 mb-4">Admin-PIN ändern</h2>
+          {!parameter?.adminPinHash && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-sm text-amber-700">
+              ⚠ Noch kein Admin-PIN gesetzt.
+            </div>
           )}
-          <button
-            type="submit"
-            disabled={pinSaving || neuerPin.length < 4}
-            className="bg-gray-700 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 disabled:opacity-50 transition-colors"
-          >
-            {pinSaving ? 'Speichere...' : 'PIN setzen'}
-          </button>
-        </form>
+          <form onSubmit={handlePinAendern} className="space-y-3">
+            <Field label="Neuer Admin-PIN (min. 4 Stellen)">
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={8}
+                value={neuerPin}
+                onChange={(e) => setNeuerPin(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••"
+                className={inputClass}
+              />
+            </Field>
+            <Field label="PIN bestätigen">
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={8}
+                value={pinBestaetigung}
+                onChange={(e) => setPinBestaetigung(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••"
+                className={inputClass}
+              />
+            </Field>
+            {pinMessage && (
+              <p className={`text-sm ${pinMessage.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>
+                {pinMessage}
+              </p>
+            )}
+            <button
+              type="submit"
+              disabled={pinSaving || neuerPin.length < 4}
+              className="bg-gray-700 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 disabled:opacity-50 transition-colors"
+            >
+              {pinSaving ? 'Speichere...' : 'Admin-PIN setzen'}
+            </button>
+          </form>
+        </div>
+
+        {/* Abrechnungs-PIN */}
+        <AbrechnungPinSection inputClass={inputClass} />
       </div>
+    </div>
+  );
+}
+
+function AbrechnungPinSection({ inputClass }: { inputClass: string }) {
+  const { parameter } = useApp();
+  const [pin, setPin] = useState('');
+  const [bestaetigung, setBestaetigung] = useState('');
+  const [msg, setMsg] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (pin !== bestaetigung) { setMsg('PINs stimmen nicht überein.'); return; }
+    setSaving(true);
+    setMsg('');
+    try {
+      const hash = await hashPin(pin);
+      await speichereParameter({ abrechnungPinHash: hash });
+      setMsg('✓ Abrechnungs-PIN gesetzt.');
+      setPin('');
+      setBestaetigung('');
+    } catch {
+      setMsg('Fehler beim Speichern.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="font-semibold text-gray-900 mb-1">Abrechnungs-PIN</h2>
+      <p className="text-xs text-gray-500 mb-4">
+        Zweiter PIN für die Rolle "Mitarbeiter Abrechnung": darf Ausgaben, Einsätze und Abrechnungsperioden verwalten.
+        {parameter?.abrechnungPinHash ? ' ✓ Bereits gesetzt.' : ' Noch nicht gesetzt.'}
+      </p>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <Field label="Neuer Abrechnungs-PIN (min. 4 Stellen)">
+          <input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={pin}
+            onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+            placeholder="••••"
+            className={inputClass}
+          />
+        </Field>
+        <Field label="PIN bestätigen">
+          <input
+            type="password"
+            inputMode="numeric"
+            maxLength={8}
+            value={bestaetigung}
+            onChange={(e) => setBestaetigung(e.target.value.replace(/\D/g, ''))}
+            placeholder="••••"
+            className={inputClass}
+          />
+        </Field>
+        {msg && (
+          <p className={`text-sm ${msg.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>{msg}</p>
+        )}
+        <button
+          type="submit"
+          disabled={saving || pin.length < 4}
+          className="bg-purple-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? 'Speichere...' : 'Abrechnungs-PIN setzen'}
+        </button>
+      </form>
     </div>
   );
 }

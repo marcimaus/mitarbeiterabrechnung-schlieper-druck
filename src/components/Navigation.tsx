@@ -5,29 +5,35 @@ interface NavItem {
   to: string;
   label: string;
   icon: string;
-  adminOnly?: boolean;
+  // Welche Rollen diesen Punkt sehen (undefined = alle)
+  roles?: Array<'admin' | 'abrechnung'>;
 }
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Start', icon: '🏠' },
   { to: '/zeiterfassung', label: 'Stempeluhr', icon: '⏱' },
-  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', adminOnly: true },
-  { to: '/mitarbeiter', label: 'Mitarbeiter', icon: '👥', adminOnly: true },
-  { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', adminOnly: true },
-  { to: '/touren', label: 'Touren', icon: '🗺', adminOnly: true },
-  { to: '/ausgaben', label: 'Ausgaben', icon: '📄', adminOnly: true },
-  { to: '/einsaetze', label: 'Einsätze', icon: '🗓', adminOnly: true },
-  { to: '/abrechnung', label: 'Abrechnung', icon: '💰', adminOnly: true },
-  { to: '/parameter', label: 'Parameter', icon: '⚙️', adminOnly: true },
+  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', roles: ['admin'] },
+  { to: '/mitarbeiter', label: 'Mitarbeiter', icon: '👥', roles: ['admin'] },
+  { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin'] },
+  { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin'] },
+  { to: '/ausgaben', label: 'Ausgaben', icon: '📄', roles: ['admin', 'abrechnung'] },
+  { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
+  { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung'] },
+  { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin', 'abrechnung'] },
+  { to: '/parameter', label: 'Parameter', icon: '⚙️', roles: ['admin'] },
 ];
 
 export default function Navigation() {
-  const { isAdminAuthenticated, logoutAdmin, adminName } = useApp();
+  const { userRole, isAdminAuthenticated, logoutAdmin, adminName } = useApp();
   const navigate = useNavigate();
 
-  const visibleItems = NAV_ITEMS.filter(
-    (item) => !item.adminOnly || isAdminAuthenticated
-  );
+  const visibleItems = NAV_ITEMS.filter((item) => {
+    if (!item.roles) return true;              // öffentlich
+    if (!userRole) return false;              // nicht eingeloggt
+    return item.roles.includes(userRole);    // Rolle prüfen
+  });
+
+  const rollenLabel = userRole === 'admin' ? 'Admin' : userRole === 'abrechnung' ? 'Abrechnung' : '';
 
   return (
     <nav className="bg-white border-r border-gray-200 w-56 shrink-0 flex flex-col h-full">
@@ -60,11 +66,13 @@ export default function Navigation() {
         ))}
       </div>
 
-      {/* Admin-Bereich Login/Logout */}
+      {/* Login/Logout */}
       <div className="p-3 border-t border-gray-200">
         {isAdminAuthenticated ? (
           <div className="space-y-2">
-            <p className="text-xs text-gray-500 truncate">Admin: {adminName}</p>
+            <p className="text-xs text-gray-500 truncate">
+              {rollenLabel}: {adminName}
+            </p>
             <button
               onClick={() => { logoutAdmin(); navigate('/'); }}
               className="w-full text-xs text-red-600 hover:text-red-700 text-left px-2 py-1.5 rounded hover:bg-red-50 transition-colors"
@@ -77,7 +85,7 @@ export default function Navigation() {
             to="/admin"
             className="flex items-center gap-2 text-xs text-gray-500 hover:text-blue-600 px-2 py-1.5 rounded hover:bg-blue-50 transition-colors"
           >
-            🔒 Admin-Login
+            🔒 Anmelden
           </NavLink>
         )}
       </div>
