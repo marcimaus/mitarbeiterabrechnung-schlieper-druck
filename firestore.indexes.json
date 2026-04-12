@@ -39,6 +39,15 @@
         { "fieldPath": "jahr", "order": "DESCENDING" },
         { "fieldPath": "kw", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "zusammentragezeiten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "ausgabeId", "order": "ASCENDING" },
+        { "fieldPath": "teilgebietId", "order": "ASCENDING" },
+        { "fieldPath": "mitarbeiterId", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

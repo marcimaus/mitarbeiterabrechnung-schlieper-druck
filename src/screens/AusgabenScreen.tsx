@@ -381,9 +381,14 @@ function AusgabeForm({
             <option key={s} value={s}>{s} Seiten</option>
           ))}
         </select>
-        <p className="text-xs text-gray-400 mt-1">
-          Stapel: {stapelVorschau.map((s) => `${s}-Seiten-Bogen`).join(' + ')}
-        </p>
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
+          <span className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-1 rounded-full">
+            📦 {stapelVorschau.length} Stapel für Zusammentragen
+          </span>
+          <span className="text-xs text-gray-400">
+            ({stapelVorschau.map((s) => `${s}-Seiten-Bogen`).join(' + ')})
+          </span>
+        </div>
       </div>
 
       <div>

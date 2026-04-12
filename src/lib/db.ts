@@ -378,11 +378,13 @@ export async function ladeZusammentragenEinsaetze(ausgabeId: string): Promise<Zu
 export async function setzeZusammentragenEinsatz(
   data: Omit<ZusammentragenEinsatz, 'id' | 'erstelltAm' | 'aktualisiertAm'>
 ): Promise<string> {
-  // Upsert per ausgabeId + teilgebietId
+  // Upsert per ausgabeId + teilgebietId + mitarbeiterId
+  // (Vorarbeit: mehrere Mitarbeiter möglich pro teilgebietId='__vorarbeit__')
   const q = query(
     collection(db, 'zusammentragezeiten'),
     where('ausgabeId', '==', data.ausgabeId),
-    where('teilgebietId', '==', data.teilgebietId)
+    where('teilgebietId', '==', data.teilgebietId),
+    where('mitarbeiterId', '==', data.mitarbeiterId)
   );
   const snap = await getDocs(q);
   const ts = now();
