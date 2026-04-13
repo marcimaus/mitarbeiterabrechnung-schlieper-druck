@@ -206,7 +206,11 @@ function AusgabeDetail({
   onEdit: () => void;
   onStatusChange: (s: AusgabeStatus) => void;
 }) {
+  const { abrechnungsperioden } = useApp();
   const istGesperrt = ausgabe.status === 'abgeschlossen';
+  const zugehoerigerPeriode = abrechnungsperioden.find(
+    (p) => p.jahr === ausgabe.jahr && p.kalenderwochen.includes(ausgabe.kw)
+  );
 
   return (
     <div className="space-y-4">
@@ -225,6 +229,25 @@ function AusgabeDetail({
         {istGesperrt && (
           <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 flex items-center gap-1">
             🔒 Gehört zu einer abgeschlossenen Abrechnungsperiode — keine Änderungen möglich
+          </div>
+        )}
+
+        {zugehoerigerPeriode ? (
+          <div className="mt-3">
+            <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${
+              zugehoerigerPeriode.status === 'abgeschlossen'
+                ? 'bg-green-100 text-green-700'
+                : 'bg-blue-100 text-blue-700'
+            }`}>
+              📅 {zugehoerigerPeriode.bezeichnung}
+              {zugehoerigerPeriode.status === 'abgeschlossen' ? ' ✓' : ''}
+            </span>
+          </div>
+        ) : (
+          <div className="mt-3">
+            <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 font-medium">
+              ⚠ Keine Abrechnungsperiode zugeordnet
+            </span>
           </div>
         )}
 
@@ -300,23 +323,55 @@ function AusgabeForm({
   const [error, setError] = useState('');
   const maxKW = maxKWinJahr(jahr);
 
+  // Welche Periode enthält diese KW aktuell?
+  const findPeriodeForKW = (kwVal: number, jahrVal: number) =>
+    abrechnungsperioden.find((p) => p.jahr === jahrVal && p.kalenderwochen.includes(kwVal));
+
+  // Beim Öffnen des Formulars: ursprüngliche Periode merken (für Umhängen bei Edit)
+  const originalPeriodeId = initial ? (findPeriodeForKW(initial.kw, initial.jahr)?.id ?? '') : '';
+
+  // Perioden-Auswahl im Formular
+  const [periodeId, setPeriodeId] = useState<string>(
+    () => (initial ? (findPeriodeForKW(initial.kw, initial.jahr)?.id ?? '') : '')
+  );
+
+  // Offene Perioden für die Auswahl (abgeschlossene sind gesperrt)
+  const offenePerioden = [...abrechnungsperioden]
+    .filter((p) => p.status === 'offen')
+    .sort((a, b) => b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat);
+
   const kwBereitsVorhanden = vorhandeneKWs.some(
     (v) => v.kw === kw && v.jahr === jahr && v.kw !== initial?.kw
   );
 
-  // KW gehört zu einer abgeschlossenen Periode? (nur bei neuer Ausgabe prüfen)
-  const kwInGesperrterPeriode = !initial && abrechnungsperioden.some(
-    (p) => p.status === 'abgeschlossen' && p.jahr === jahr && p.kalenderwochen.includes(kw)
+  // KW gehört zu einer abgeschlossenen Periode?
+  const kwInGesperrterPeriode = abrechnungsperioden.some(
+    (p) => p.status === 'abgeschlossen' && p.jahr === jahr && p.kalenderwochen.includes(kw) &&
+           p.id !== originalPeriodeId  // Eigene abgeschlossene Periode ist schon blockiert
   );
+
+  // Automatisch Periode vorschlagen wenn KW/Jahr geändert wird
+  function handleKWChange(newKw: number) {
+    setKw(newKw);
+    const auto = findPeriodeForKW(newKw, jahr);
+    if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+  }
+  function handleJahrChange(newJahr: number) {
+    setJahr(newJahr);
+    const auto = findPeriodeForKW(kw, newJahr);
+    if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!periodeId) { setError('Bitte eine Abrechnungsperiode zuordnen.'); return; }
     if (kwBereitsVorhanden) { setError(`KW ${kw}/${jahr} ist bereits angelegt.`); return; }
     if (kwInGesperrterPeriode) { setError(`KW ${kw}/${jahr} gehört zu einer abgeschlossenen Abrechnungsperiode.`); return; }
     if (stapelAnzahl < 1) { setError('Mindestens 1 Stapel erforderlich.'); return; }
     setSaving(true);
     setError('');
     try {
+      // Ausgabe speichern
       if (initial) {
         await aktualisiereAusgabe(initial.id, {
           kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur,
@@ -344,6 +399,26 @@ function AusgabeForm({
           aktualisiertAm: Date.now(),
         });
       }
+
+      // Perioden-Zuordnung aktualisieren
+      const neuerPeriode = abrechnungsperioden.find((p) => p.id === periodeId);
+      if (neuerPeriode) {
+        // Alte KW aus alter Periode entfernen (falls Periode oder KW geändert)
+        if (originalPeriodeId && (originalPeriodeId !== periodeId || initial?.kw !== kw)) {
+          const altePeriode = abrechnungsperioden.find((p) => p.id === originalPeriodeId);
+          if (altePeriode) {
+            await aktualisiereAbrechnungsperiode(originalPeriodeId, {
+              kalenderwochen: altePeriode.kalenderwochen.filter((k) => k !== (initial?.kw ?? kw)),
+            });
+          }
+        }
+        // Neue KW in neue Periode eintragen (falls noch nicht vorhanden)
+        if (!neuerPeriode.kalenderwochen.includes(kw)) {
+          await aktualisiereAbrechnungsperiode(periodeId, {
+            kalenderwochen: [...neuerPeriode.kalenderwochen, kw].sort((a, b) => a - b),
+          });
+        }
+      }
     } catch (err) {
       setError('Fehler beim Speichern.');
       console.error(err);
@@ -362,7 +437,7 @@ function AusgabeForm({
             min={1}
             max={maxKW}
             value={kw}
-            onChange={(e) => setKw(Number(e.target.value))}
+            onChange={(e) => handleKWChange(Number(e.target.value))}
             className={inputClass}
           />
         </div>
@@ -373,7 +448,7 @@ function AusgabeForm({
             min={2020}
             max={2099}
             value={jahr}
-            onChange={(e) => setJahr(Number(e.target.value))}
+            onChange={(e) => handleJahrChange(Number(e.target.value))}
             className={inputClass}
           />
         </div>
@@ -385,6 +460,38 @@ function AusgabeForm({
       {kwInGesperrterPeriode && (
         <p className="text-red-600 text-sm">🔒 KW {kw}/{jahr} gehört zu einer abgeschlossenen Abrechnungsperiode — keine neue Ausgabe möglich.</p>
       )}
+
+      {/* Abrechnungsperiode — Pflichtfeld */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Abrechnungsperiode <span className="text-red-500">*</span>
+        </label>
+        {offenePerioden.length === 0 ? (
+          <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            ⚠ Keine offene Abrechnungsperiode vorhanden. Bitte zuerst eine Periode anlegen.
+          </p>
+        ) : (
+          <select
+            value={periodeId}
+            onChange={(e) => setPeriodeId(e.target.value)}
+            className={inputClass}
+            required
+          >
+            <option value="">— Periode auswählen —</option>
+            {offenePerioden.map((p) => (
+              <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+            ))}
+          </select>
+        )}
+        {periodeId && (() => {
+          const p = abrechnungsperioden.find((x) => x.id === periodeId);
+          return p && p.kalenderwochen.length > 0 ? (
+            <p className="text-xs text-gray-400 mt-1">
+              Bereits in dieser Periode: KW {p.kalenderwochen.sort((a,b)=>a-b).join(', ')}
+            </p>
+          ) : null;
+        })()}
+      </div>
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Erscheinungsdatum</label>
@@ -455,7 +562,7 @@ function AusgabeForm({
         <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">Abbrechen</button>
         <button
           type="submit"
-          disabled={saving || kwBereitsVorhanden || kwInGesperrterPeriode}
+          disabled={saving || kwBereitsVorhanden || kwInGesperrterPeriode || !periodeId}
           className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
         >
           {saving ? 'Speichere...' : initial ? 'Speichern' : 'Anlegen'}
