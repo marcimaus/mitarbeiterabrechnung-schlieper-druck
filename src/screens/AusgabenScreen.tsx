@@ -10,6 +10,7 @@ import {
   erstelleBeilage,
   aktualisiereBeilage,
   loescheBeilage,
+  ladeEinsaetze,
 } from '../lib/db';
 import { berechneStapel } from '../lib/berechnung';
 import {
@@ -19,7 +20,7 @@ import {
   formatDonnerstag,
   maxKWinJahr,
 } from '../lib/kalender';
-import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, AusgabeStatus } from '../types';
+import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, AusgabeStatus, Einsatz } from '../types';
 
 const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
   { value: 'A4', label: 'DIN A4' },
@@ -279,6 +280,9 @@ function AusgabeDetail({
 
       {/* Beilagen */}
       <BeilagenVerwaltung ausgabe={ausgabe} />
+
+      {/* Austräger-Einsätze */}
+      <EinsaetzeUebersicht ausgabe={ausgabe} />
     </div>
   );
 }
@@ -569,6 +573,145 @@ function AusgabeForm({
         </button>
       </div>
     </form>
+  );
+}
+
+// ============================================================
+// EINSÄTZE-ÜBERSICHT (read-only in Ausgaben-Detail)
+// ============================================================
+
+function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
+  const { teilgebiete, mitarbeiter, touren } = useApp();
+  const [einsaetze, setEinsaetze] = useState<Einsatz[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    ladeEinsaetze(ausgabe.id).then((list) => {
+      setEinsaetze(list);
+      setLoading(false);
+    });
+  }, [ausgabe.id]);
+
+  const aktiveTeilgebiete = teilgebiete
+    .filter((tg) => tg.isActive)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const getMaName = (id: string | null) =>
+    id ? (mitarbeiter.find((m) => m.id === id)?.name ?? '?') : '—';
+
+  const getTourFarbe = (tourId: string | null) =>
+    touren.find((t) => t.id === tourId)?.farbe ?? '#9ca3af';
+  const getTourName = (tourId: string | null) =>
+    tourId ? (touren.find((t) => t.id === tourId)?.name ?? '?') : null;
+
+  // Statistik
+  const stats = aktiveTeilgebiete.reduce(
+    (acc, tg) => {
+      const e = einsaetze.find((x) => x.teilgebietId === tg.id);
+      if (!e || e.typ === 'standard') acc.standard++;
+      else if (e.typ === 'springer') acc.springer++;
+      else if (e.typ === 'ausfall') acc.ausfall++;
+      else acc.ungeklaert++;
+      return acc;
+    },
+    { standard: 0, springer: 0, ausfall: 0, ungeklaert: 0 }
+  );
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold text-gray-800">Austräger-Einsätze</h3>
+        {!loading && (
+          <div className="flex gap-2 flex-wrap">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Standard: {stats.standard}</span>
+            {stats.springer > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">Springer: {stats.springer}</span>}
+            {stats.ausfall > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">Ausfall: {stats.ausfall}</span>}
+            {stats.ungeklaert > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">Ungeklärt: {stats.ungeklaert}</span>}
+          </div>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-gray-400">Lade Einsätze…</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">Teilgebiet</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">Tour</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">Standardausträger</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">Status</th>
+                <th className="text-left px-3 py-2 font-medium text-gray-600">Tatsächlicher Austräger</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {aktiveTeilgebiete.map((tg) => {
+                const einsatz = einsaetze.find((e) => e.teilgebietId === tg.id);
+                const typ = einsatz?.typ ?? 'standard';
+                const tourName = getTourName(tg.tourId);
+
+                const statusBadge = () => {
+                  if (typ === 'ausfall') return <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">Ausfall</span>;
+                  if (typ === 'springer') return <span className="px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">Springer</span>;
+                  if (typ === 'ungeklärt') return <span className="px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium">Ungeklärt</span>;
+                  return <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600">Standard</span>;
+                };
+
+                const tatsaechlicher = () => {
+                  if (typ === 'ausfall') return <span className="text-red-500 italic">—</span>;
+                  if (typ === 'ungeklärt') return <span className="text-yellow-600 italic">ungeklärt</span>;
+                  if (typ === 'springer') {
+                    return (
+                      <span className="text-blue-700 font-medium">
+                        {getMaName(einsatz?.mitarbeiterId ?? null)}
+                        {einsatz?.springerZuschlagProzent != null && (
+                          <span className="text-blue-400 ml-1">+{einsatz.springerZuschlagProzent}%</span>
+                        )}
+                      </span>
+                    );
+                  }
+                  // Standard
+                  return <span className="text-gray-500 italic">= Standardausträger</span>;
+                };
+
+                return (
+                  <tr key={tg.id} className={`
+                    ${typ === 'ausfall' ? 'bg-red-50' :
+                      typ === 'springer' ? 'bg-blue-50' :
+                      typ === 'ungeklärt' ? 'bg-yellow-50' :
+                      'hover:bg-gray-50'}
+                  `}>
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-gray-900">{tg.name}</div>
+                      <div className="text-gray-400">{tg.plz} · {tg.stueckzahl} Stk</div>
+                    </td>
+                    <td className="px-3 py-2">
+                      {tourName ? (
+                        <span
+                          className="px-1.5 py-0.5 rounded-full text-white font-medium"
+                          style={{ backgroundColor: getTourFarbe(tg.tourId) }}
+                        >
+                          {tourName}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-gray-700">
+                      {getMaName(tg.standardAustraegerId)}
+                    </td>
+                    <td className="px-3 py-2">{statusBadge()}</td>
+                    <td className="px-3 py-2">{tatsaechlicher()}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
