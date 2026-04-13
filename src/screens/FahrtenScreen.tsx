@@ -32,6 +32,9 @@ function FahrtenInhalt() {
   const [filterPeriodeId, setFilterPeriodeId] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Fahrt | null>(null);
+  // Bulk-Zuweisung
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkPeriodeId, setBulkPeriodeId] = useState('');
 
   const reload = async () => {
     setLoading(true);
@@ -65,6 +68,42 @@ function FahrtenInhalt() {
       await weisFahrtPeriodeZu(fahrtId, periodeId);
     }
     await reload();
+  }
+
+  async function handleBulkZuweisen() {
+    // __remove__ bedeutet: Zuweisung entfernen
+    const periodeId = bulkPeriodeId === '__remove__' ? '' : bulkPeriodeId;
+    for (const id of selectedIds) {
+      if (!periodeId) {
+        await entferneFahrtPeriode(id);
+      } else {
+        await weisFahrtPeriodeZu(id, periodeId);
+      }
+    }
+    setSelectedIds(new Set());
+    setBulkPeriodeId('');
+    await reload();
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    const selectableFahrten = gefiltert.filter((f) => {
+      const periode = abrechnungsperioden.find((p) => p.id === f.abrechnungsperiodeId);
+      return !periode || periode.status !== 'abgeschlossen';
+    });
+    if (selectableFahrten.every((f) => selectedIds.has(f.id))) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(selectableFahrten.map((f) => f.id)));
+    }
   }
 
   const sortedPerioden = [...abrechnungsperioden].sort((a, b) =>
@@ -125,6 +164,39 @@ function FahrtenInhalt() {
         </div>
       </div>
 
+      {/* Bulk-Aktionsleiste */}
+      {isAdmin && selectedIds.size > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-blue-800">
+            {selectedIds.size} Fahrt{selectedIds.size !== 1 ? 'en' : ''} ausgewählt
+          </span>
+          <select
+            value={bulkPeriodeId}
+            onChange={(e) => setBulkPeriodeId(e.target.value)}
+            className="border border-blue-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          >
+            <option value="">— Periode zuweisen —</option>
+            <option value="__remove__">Zuweisung entfernen</option>
+            {offenePerioden.map((p) => (
+              <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+            ))}
+          </select>
+          <button
+            onClick={handleBulkZuweisen}
+            disabled={!bulkPeriodeId}
+            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            Zuordnen
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="text-sm text-blue-600 hover:text-blue-800 underline ml-auto"
+          >
+            Auswahl aufheben
+          </button>
+        </div>
+      )}
+
       {/* Tabelle */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         {loading && (
@@ -137,6 +209,16 @@ function FahrtenInhalt() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
+                {isAdmin && (
+                  <th className="px-3 py-3">
+                    <input
+                      type="checkbox"
+                      onChange={toggleSelectAll}
+                      checked={gefiltert.length > 0 && gefiltert.every((f) => selectedIds.has(f.id))}
+                      className="rounded"
+                    />
+                  </th>
+                )}
                 <th className="px-4 py-3 text-left font-medium text-gray-600">Datum</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-600">Mitarbeiter</th>
                 <th className="px-4 py-3 text-left font-medium text-gray-600">Ziel</th>
@@ -153,9 +235,22 @@ function FahrtenInhalt() {
                 const betrag = f.streckKm * satz;
                 const periode = abrechnungsperioden.find((p) => p.id === f.abrechnungsperiodeId);
                 const istGesperrt = periode?.status === 'abgeschlossen';
+                const isSelected = selectedIds.has(f.id);
 
                 return (
-                  <tr key={f.id} className="hover:bg-gray-50">
+                  <tr key={f.id} className={`hover:bg-gray-50 ${isSelected ? 'bg-blue-50' : ''}`}>
+                    {isAdmin && (
+                      <td className="px-3 py-2.5">
+                        {!istGesperrt && (
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelect(f.id)}
+                            className="rounded"
+                          />
+                        )}
+                      </td>
+                    )}
                     <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{f.datum}</td>
                     <td className="px-4 py-2.5">
                       <div className="font-medium text-gray-900">{ma?.name ?? '?'}</div>

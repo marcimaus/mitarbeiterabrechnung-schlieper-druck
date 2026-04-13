@@ -289,6 +289,18 @@ export interface BeilagenPreis {
   preisProStkEur: number;
 }
 
+// ---- Vorschuss (Abschlagszahlung) --------------------------
+
+export interface Vorschuss {
+  id: string;
+  mitarbeiterId: string;
+  abrechnungsperiodeId: string;
+  betragEur: number;
+  bemerkung?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
 // ---- Audit-Log (unveränderlich) ----------------------------
 
 export interface AuditLog {

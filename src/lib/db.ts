@@ -29,6 +29,7 @@ import type {
   Einsatz,
   Arbeitszeit,
   Fahrt,
+  Vorschuss,
   Parameter,
   AuditLog,
 } from '../types';
@@ -574,6 +575,32 @@ export async function oeffnePeriodeWieder(periodeId: string): Promise<void> {
     status: 'offen',
     gesperrtAm: null,
   });
+}
+
+// ---- Vorschüsse --------------------------------------------
+
+export async function ladeVorschuesse(periodeId?: string): Promise<Vorschuss[]> {
+  const q = periodeId
+    ? query(collection(db, 'vorschuesse'), where('abrechnungsperiodeId', '==', periodeId))
+    : collection(db, 'vorschuesse');
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Vorschuss));
+}
+
+export async function erstelleVorschuss(
+  data: Omit<Vorschuss, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'vorschuesse'), { ...stripUndef(data as Record<string, unknown>), erstelltAm: ts, aktualisiertAm: ts });
+  return ref.id;
+}
+
+export async function aktualisiereVorschuss(id: string, data: Partial<Vorschuss>): Promise<void> {
+  await updateDoc(doc(db, 'vorschuesse', id), stripUndef({ ...data as Record<string, unknown>, aktualisiertAm: now() }));
+}
+
+export async function loescheVorschuss(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'vorschuesse', id));
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

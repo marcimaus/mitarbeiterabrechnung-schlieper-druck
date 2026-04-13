@@ -206,6 +206,8 @@ function AusgabeDetail({
   onEdit: () => void;
   onStatusChange: (s: AusgabeStatus) => void;
 }) {
+  const istGesperrt = ausgabe.status === 'abgeschlossen';
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -215,8 +217,16 @@ function AusgabeDetail({
             <h2 className="text-lg font-bold text-gray-900">{kwLabel(ausgabe.kw, ausgabe.jahr)}</h2>
             <p className="text-sm text-gray-500">Erscheint: {formatDonnerstag(ausgabe.kw, ausgabe.jahr)}</p>
           </div>
-          <button onClick={onEdit} className="text-sm text-blue-600 hover:text-blue-800">Bearbeiten</button>
+          {!istGesperrt && (
+            <button onClick={onEdit} className="text-sm text-blue-600 hover:text-blue-800">Bearbeiten</button>
+          )}
         </div>
+
+        {istGesperrt && (
+          <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 flex items-center gap-1">
+            🔒 Gehört zu einer abgeschlossenen Abrechnungsperiode — keine Änderungen möglich
+          </div>
+        )}
 
         <div className="grid grid-cols-3 gap-4 mt-4">
           <InfoBox label="Seitenzahl" value={`${ausgabe.seitenzahl} Seiten`} />
@@ -224,22 +234,24 @@ function AusgabeDetail({
           <InfoBox label="Grammatur" value={`${ausgabe.grammaturGqm} g/m²`} />
         </div>
 
-        <div className="mt-4 flex items-center gap-3">
-          <span className="text-sm text-gray-600">Status:</span>
-          {(['geplant', 'laufend', 'abgeschlossen'] as AusgabeStatus[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => onStatusChange(s)}
-              className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                ausgabe.status === s
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
-              }`}
-            >
-              {s === 'geplant' ? 'Geplant' : s === 'laufend' ? 'Laufend' : 'Abgeschlossen'}
-            </button>
-          ))}
-        </div>
+        {!istGesperrt && (
+          <div className="mt-4 flex items-center gap-3">
+            <span className="text-sm text-gray-600">Status:</span>
+            {(['geplant', 'laufend', 'abgeschlossen'] as AusgabeStatus[]).map((s) => (
+              <button
+                key={s}
+                onClick={() => onStatusChange(s)}
+                className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                  ausgabe.status === s
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                }`}
+              >
+                {s === 'geplant' ? 'Geplant' : s === 'laufend' ? 'Laufend' : 'Abgeschlossen'}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Beilagen */}
@@ -273,6 +285,7 @@ function AusgabeForm({
   onSave: (a: Ausgabe) => void;
   onCancel: () => void;
 }) {
+  const { abrechnungsperioden } = useApp();
   const aktuelleKW = getCurrentKW();
   const [kw, setKw] = useState(initial?.kw ?? aktuelleKW.kw);
   const [jahr, setJahr] = useState(initial?.jahr ?? aktuelleKW.jahr);
@@ -291,9 +304,15 @@ function AusgabeForm({
     (v) => v.kw === kw && v.jahr === jahr && v.kw !== initial?.kw
   );
 
+  // KW gehört zu einer abgeschlossenen Periode? (nur bei neuer Ausgabe prüfen)
+  const kwInGesperrterPeriode = !initial && abrechnungsperioden.some(
+    (p) => p.status === 'abgeschlossen' && p.jahr === jahr && p.kalenderwochen.includes(kw)
+  );
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (kwBereitsVorhanden) { setError(`KW ${kw}/${jahr} ist bereits angelegt.`); return; }
+    if (kwInGesperrterPeriode) { setError(`KW ${kw}/${jahr} gehört zu einer abgeschlossenen Abrechnungsperiode.`); return; }
     if (stapelAnzahl < 1) { setError('Mindestens 1 Stapel erforderlich.'); return; }
     setSaving(true);
     setError('');
@@ -362,6 +381,9 @@ function AusgabeForm({
 
       {kwBereitsVorhanden && (
         <p className="text-amber-600 text-sm">⚠ KW {kw}/{jahr} ist bereits angelegt.</p>
+      )}
+      {kwInGesperrterPeriode && (
+        <p className="text-red-600 text-sm">🔒 KW {kw}/{jahr} gehört zu einer abgeschlossenen Abrechnungsperiode — keine neue Ausgabe möglich.</p>
       )}
 
       <div>
@@ -433,7 +455,7 @@ function AusgabeForm({
         <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">Abbrechen</button>
         <button
           type="submit"
-          disabled={saving || kwBereitsVorhanden}
+          disabled={saving || kwBereitsVorhanden || kwInGesperrterPeriode}
           className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
         >
           {saving ? 'Speichere...' : initial ? 'Speichern' : 'Anlegen'}
@@ -848,22 +870,24 @@ function AbrechnungsperiodenInhalt() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <button
-                  onClick={() => { setEditTarget(p); setShowForm(true); }}
-                  className="text-sm text-blue-600 hover:text-blue-800"
-                >
-                  Bearbeiten
-                </button>
                 {p.status === 'offen' && (
-                  <button
-                    onClick={async () => {
-                      await aktualisiereAbrechnungsperiode(p.id, { status: 'abgeschlossen' });
-                      setPerioden((prev) => prev.map((x) => x.id === p.id ? { ...x, status: 'abgeschlossen' } : x));
-                    }}
-                    className="text-sm text-green-600 hover:text-green-800"
-                  >
-                    Abschließen
-                  </button>
+                  <>
+                    <button
+                      onClick={() => { setEditTarget(p); setShowForm(true); }}
+                      className="text-sm text-blue-600 hover:text-blue-800"
+                    >
+                      Bearbeiten
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await aktualisiereAbrechnungsperiode(p.id, { status: 'abgeschlossen' });
+                        setPerioden((prev) => prev.map((x) => x.id === p.id ? { ...x, status: 'abgeschlossen' } : x));
+                      }}
+                      className="text-sm text-green-600 hover:text-green-800"
+                    >
+                      Abschließen
+                    </button>
+                  </>
                 )}
               </div>
             </div>

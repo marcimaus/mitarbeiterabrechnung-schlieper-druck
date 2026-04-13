@@ -19,6 +19,7 @@ import type {
   Parameter,
   Sondervereinbarung,
   Fahrt,
+  Vorschuss,
 } from '../types';
 import {
   berechneAustraegerLohn,
@@ -66,7 +67,10 @@ export interface MitarbeiterAbrechnung {
   fahrten: Fahrt[];
   fahrtSatzEurProKm: number;       // Verwendeter Kilometersatz
   fahrtkostenGesamt: number;       // Betrag in EUR (für Abwärtskompatibilität in UI)
-  // Gesamt
+  // Vorschüsse (Abschlagszahlungen)
+  vorschuesse: Vorschuss[];
+  vorschussSumme: number;
+  // Gesamt (brutto; netto = gesamt - vorschussSumme)
   gesamt: number;
 }
 
@@ -79,6 +83,7 @@ export interface PeriodeData {
   arbeitszeiten: Arbeitszeit[];
   zusammentragenEinsaetze: ZusammentragenEinsatz[];
   fahrten: Fahrt[];
+  vorschuesse: Vorschuss[];
   sondervereinbarungen: Sondervereinbarung[];
 }
 
@@ -161,13 +166,21 @@ export async function ladePeriodeData(
     (d) => ({ id: d.id, ...d.data() } as Fahrt)
   );
 
+  // Vorschüsse dieser Abrechnungsperiode
+  const vorschussnap = await getDocs(
+    query(collection(db, 'vorschuesse'), where('abrechnungsperiodeId', '==', periode.id))
+  );
+  const vorschuesse = vorschussnap.docs.map(
+    (d) => ({ id: d.id, ...d.data() } as Vorschuss)
+  );
+
   // Sondervereinbarungen (alle, gefiltert in der Berechnung)
   const svSnap = await getDocs(collection(db, 'sondervereinbarungen'));
   const sondervereinbarungen = svSnap.docs.map(
     (d) => ({ id: d.id, ...d.data() } as Sondervereinbarung)
   );
 
-  return { ausgaben, beilagen, einsaetze, arbeitszeiten, zusammentragenEinsaetze, fahrten, sondervereinbarungen };
+  return { ausgaben, beilagen, einsaetze, arbeitszeiten, zusammentragenEinsaetze, fahrten, vorschuesse, sondervereinbarungen };
 }
 
 // ---- Abrechnung berechnen ----------------------------------
@@ -358,6 +371,10 @@ export function berechneAbrechnung(
       (s, f) => s + f.streckKm * fahrtSatz, 0
     );
 
+    // --- Vorschüsse ---
+    const maVorschuesse = data.vorschuesse.filter((v) => v.mitarbeiterId === ma.id);
+    const vorschussSumme = maVorschuesse.reduce((s, v) => s + v.betragEur, 0);
+
     // --- Gesamt ---
     const gesamt =
       austraegerGesamt +
@@ -371,7 +388,8 @@ export function berechneAbrechnung(
       gesamt > 0 ||
       austraegerEinsaetze.length > 0 ||
       zusammentragenEinsaetze.length > 0 ||
-      maArbeitszeiten.length > 0
+      maArbeitszeiten.length > 0 ||
+      maVorschuesse.length > 0
     ) {
       ergebnisse.push({
         mitarbeiter: ma,
@@ -386,6 +404,8 @@ export function berechneAbrechnung(
         fahrten: maFahrten,
         fahrtSatzEurProKm: fahrtSatz,
         fahrtkostenGesamt,
+        vorschuesse: maVorschuesse,
+        vorschussSumme,
         gesamt,
       });
     }
