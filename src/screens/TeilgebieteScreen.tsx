@@ -24,12 +24,13 @@ export default function TeilgebieteScreen() {
 }
 
 function TeilgebieteInhalt() {
-  const { teilgebiete, touren, mitarbeiter } = useApp();
+  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Teilgebiet | null>(null);
   const [filterText, setFilterText] = useState('');
   const [filterTour, setFilterTour] = useState('');
   const [nurAktive, setNurAktive] = useState(true);
+  const [historiePeriodeId, setHistoriePeriodeId] = useState('');
 
   const gefiltert = teilgebiete.filter((tg) => {
     if (nurAktive && !tg.isActive) return false;
@@ -175,6 +176,135 @@ function TeilgebieteInhalt() {
           onCancel={() => setShowForm(false)}
         />
       </Modal>
+
+      {/* ---- Historische Werte ---- */}
+      <div className="mt-10">
+        <h2 className="text-lg font-bold text-gray-800 mb-3">Historische Werte zur Abrechnungsperiode</h2>
+
+        <div className="flex items-center gap-3 mb-4">
+          <select
+            value={historiePeriodeId}
+            onChange={(e) => setHistoriePeriodeId(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">— Periode auswählen —</option>
+            {[...abrechnungsperioden]
+              .filter((p) => p.periodeSnapshot?.teilgebietSnapshots?.length)
+              .sort((a, b) => b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat)
+              .map((p) => (
+                <option key={p.id} value={p.id}>{p.bezeichnung} ✓</option>
+              ))}
+          </select>
+          {historiePeriodeId && (
+            <span className="text-xs text-gray-400">
+              Werte zum Zeitpunkt des Periodenabschlusses
+            </span>
+          )}
+        </div>
+
+        {historiePeriodeId && (() => {
+          const periode = abrechnungsperioden.find((p) => p.id === historiePeriodeId);
+          const snapshots = periode?.periodeSnapshot?.teilgebietSnapshots ?? [];
+          if (snapshots.length === 0) {
+            return (
+              <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-400 text-sm">
+                Kein Snapshot für diese Periode vorhanden.
+              </div>
+            );
+          }
+          return (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+              <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 text-xs text-blue-700 font-medium">
+                📸 Snapshot: {periode!.bezeichnung}
+                {periode!.gesperrtAm && (
+                  <span className="ml-2 font-normal text-blue-500">
+                    — abgeschlossen am {new Date(periode!.gesperrtAm).toLocaleDateString('de-DE')}
+                  </span>
+                )}
+              </div>
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Name</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">PLZ</th>
+                    <th className="text-right px-4 py-3 font-medium text-gray-600">Stück</th>
+                    <th className="text-right px-4 py-3 font-medium text-gray-600">Wegstrecke</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Tour</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Standardausträger (historisch)</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Heute</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {[...snapshots]
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((snap) => {
+                      const historMA = mitarbeiter.find((m) => m.id === snap.standardAustraegerId);
+                      const historMAName = snap.standardAustraegerId
+                        ? (historMA?.name ?? `[gelöscht: ${snap.standardAustraegerId.slice(0, 6)}…]`)
+                        : '—';
+                      const tourSnap = touren.find((t) => t.id === snap.tourId);
+
+                      // Aktueller Stand zum Vergleich
+                      const aktuellTG = teilgebiete.find((tg) => tg.id === snap.id);
+                      const aktuellMA = mitarbeiter.find((m) => m.id === aktuellTG?.standardAustraegerId);
+                      const hatGeaendert =
+                        aktuellTG &&
+                        aktuellTG.standardAustraegerId !== snap.standardAustraegerId;
+
+                      return (
+                        <tr key={snap.id} className={hatGeaendert ? 'bg-amber-50' : 'hover:bg-gray-50'}>
+                          <td className="px-4 py-2.5 font-medium text-gray-900">{snap.name}</td>
+                          <td className="px-4 py-2.5 text-gray-500">{snap.plz}</td>
+                          <td className="px-4 py-2.5 text-right text-gray-600">
+                            {snap.stueckzahl.toLocaleString('de-DE')}
+                          </td>
+                          <td className="px-4 py-2.5 text-right text-gray-600">
+                            {snap.wegstreckeM >= 1000
+                              ? `${(snap.wegstreckeM / 1000).toFixed(1)} km`
+                              : `${snap.wegstreckeM} m`}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            {tourSnap ? (
+                              <span
+                                className="text-xs px-2 py-0.5 rounded-full text-white font-medium"
+                                style={{ backgroundColor: tourSnap.farbe }}
+                              >
+                                {tourSnap.name}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400 text-xs">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-700">{historMAName}</td>
+                          <td className="px-4 py-2.5 text-xs">
+                            {hatGeaendert ? (
+                              <span className="text-amber-700 font-medium">
+                                ⚠ {aktuellMA?.name ?? '—'}
+                              </span>
+                            ) : aktuellTG ? (
+                              <span className="text-green-600">✓ unverändert</span>
+                            ) : (
+                              <span className="text-gray-400">nicht mehr vorhanden</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+              <div className="bg-gray-50 border-t border-gray-200 px-4 py-2 text-xs text-gray-500 flex gap-4">
+                <span>{snapshots.length} Teilgebiete im Snapshot</span>
+                <span className="text-amber-600">
+                  {snapshots.filter((s) => {
+                    const tg = teilgebiete.find((t) => t.id === s.id);
+                    return tg && tg.standardAustraegerId !== s.standardAustraegerId;
+                  }).length} mit geändertem Austräger seit Abschluss
+                </span>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
     </div>
   );
 }
