@@ -62,7 +62,7 @@ function AdminLoginPage() {
   }, [isAdminAuthenticated, navigate]);
 
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>
       <div />
     </AdminPinGate>
   );
