@@ -23,11 +23,13 @@ import {
 
 // ---- State -------------------------------------------------
 
-export type UserRole = 'admin' | 'abrechnung' | null;
+export type UserRole = 'admin' | 'abrechnung' | 'mitarbeiter' | null;
 
 interface AppState {
   userRole: UserRole;
   adminName: string;
+  /** Gesetzter Mitarbeiter-ID wenn als Mitarbeiter eingeloggt */
+  mitarbeiterId: string | null;
   mitarbeiter: Mitarbeiter[];
   touren: Tour[];
   teilgebiete: Teilgebiet[];
@@ -41,6 +43,7 @@ interface AppState {
 const initialState: AppState = {
   userRole: null,
   adminName: '',
+  mitarbeiterId: null,
   mitarbeiter: [],
   touren: [],
   teilgebiete: [],
@@ -54,7 +57,7 @@ const initialState: AppState = {
 // ---- Actions -----------------------------------------------
 
 type Action =
-  | { type: 'SET_AUTH'; payload: { role: UserRole; name: string } }
+  | { type: 'SET_AUTH'; payload: { role: UserRole; name: string; mitarbeiterId?: string } }
   | { type: 'SET_MITARBEITER'; payload: Mitarbeiter[] }
   | { type: 'SET_TOUREN'; payload: Tour[] }
   | { type: 'SET_TEILGEBIETE'; payload: Teilgebiet[] }
@@ -71,6 +74,7 @@ function reducer(state: AppState, action: Action): AppState {
         ...state,
         userRole: action.payload.role,
         adminName: action.payload.name,
+        mitarbeiterId: action.payload.mitarbeiterId ?? null,
         // Abwärtskompatibilität
         isAdminAuthenticated: action.payload.role !== null,
       } as AppState;
@@ -103,6 +107,7 @@ interface AppContextValue extends AppState {
   // Neue Methoden
   loginAdmin: (name: string) => void;
   loginAbrechnung: (name: string) => void;
+  loginMitarbeiter: (id: string, name: string) => void;
   logoutAdmin: () => void;
   setAktivePeriode: (id: string | null) => void;
 }
@@ -117,8 +122,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState, () => {
     const session = sessionStorage.getItem(SESSION_KEY);
     if (session) {
-      const { role, name } = JSON.parse(session) as { role: UserRole; name: string };
-      return { ...initialState, userRole: role, adminName: name };
+      const parsed = JSON.parse(session) as { role: UserRole; name: string; mitarbeiterId?: string };
+      return { ...initialState, userRole: parsed.role, adminName: parsed.name, mitarbeiterId: parsed.mitarbeiterId ?? null };
     }
     return initialState;
   });
@@ -182,6 +187,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'SET_AUTH', payload: { role: 'abrechnung', name } });
   }, []);
 
+  const loginMitarbeiter = useCallback((id: string, name: string) => {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: 'mitarbeiter', name, mitarbeiterId: id }));
+    dispatch({ type: 'SET_AUTH', payload: { role: 'mitarbeiter', name, mitarbeiterId: id } });
+  }, []);
+
   const logoutAdmin = useCallback(() => {
     sessionStorage.removeItem(SESSION_KEY);
     dispatch({ type: 'SET_AUTH', payload: { role: null, name: '' } });
@@ -200,6 +210,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         isAdminAuthenticated,
         loginAdmin,
         loginAbrechnung,
+        loginMitarbeiter,
         logoutAdmin,
         setAktivePeriode,
       }}

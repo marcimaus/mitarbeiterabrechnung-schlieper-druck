@@ -14,19 +14,21 @@ import type { Fahrt } from '../types';
 
 export default function FahrtenScreen() {
   return (
-    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>
       <FahrtenInhalt />
     </AdminPinGate>
   );
 }
 
 function FahrtenInhalt() {
-  const { mitarbeiter, abrechnungsperioden, parameter, userRole } = useApp();
+  const { mitarbeiter, abrechnungsperioden, parameter, userRole, mitarbeiterId: loggedInMaId } = useApp();
   const isAdmin = userRole === 'admin';
+  const isMitarbeiter = userRole === 'mitarbeiter';
 
   const [fahrten, setFahrten] = useState<Fahrt[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterMaId, setFilterMaId] = useState('');
+  // Mitarbeiter-Rolle sieht nur eigene Fahrten
+  const [filterMaId, setFilterMaId] = useState(isMitarbeiter ? (loggedInMaId ?? '') : '');
   const [filterPeriodeId, setFilterPeriodeId] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Fahrt | null>(null);
@@ -89,16 +91,18 @@ function FahrtenInhalt() {
 
       {/* Filter */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-4 flex flex-wrap gap-3">
-        <select
-          value={filterMaId}
-          onChange={(e) => setFilterMaId(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Alle Mitarbeiter</option>
-          {mitarbeiter.filter((m) => m.isActive).map((m) => (
-            <option key={m.id} value={m.id}>{m.name}</option>
-          ))}
-        </select>
+        {!isMitarbeiter && (
+          <select
+            value={filterMaId}
+            onChange={(e) => setFilterMaId(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Alle Mitarbeiter</option>
+            {mitarbeiter.filter((m) => m.isActive).map((m) => (
+              <option key={m.id} value={m.id}>{m.name}</option>
+            ))}
+          </select>
+        )}
         <select
           value={filterPeriodeId}
           onChange={(e) => setFilterPeriodeId(e.target.value)}
@@ -196,7 +200,7 @@ function FahrtenInhalt() {
                       )}
                     </td>
                     <td className="px-4 py-2.5">
-                      {(!istGesperrt || isAdmin) && (
+                      {(!istGesperrt) && (
                         <div className="flex gap-2 justify-end">
                           <button
                             onClick={() => { setEditTarget(f); setShowForm(true); }}
@@ -219,7 +223,7 @@ function FahrtenInhalt() {
                           )}
                         </div>
                       )}
-                      {istGesperrt && !isAdmin && (
+                      {istGesperrt && (
                         <span className="text-xs text-gray-400">gesperrt</span>
                       )}
                     </td>
@@ -240,6 +244,7 @@ function FahrtenInhalt() {
         <FahrtForm
           initial={editTarget}
           mitarbeiter={mitarbeiter.filter((m) => m.isActive)}
+          fixedMaId={isMitarbeiter ? (loggedInMaId ?? undefined) : undefined}
           onSave={async () => { setShowForm(false); await reload(); }}
           onCancel={() => setShowForm(false)}
         />
@@ -253,16 +258,18 @@ function FahrtenInhalt() {
 function FahrtForm({
   initial,
   mitarbeiter,
+  fixedMaId,
   onSave,
   onCancel,
 }: {
   initial: Fahrt | null;
   mitarbeiter: ReturnType<typeof useApp>['mitarbeiter'];
+  fixedMaId?: string;
   onSave: () => void;
   onCancel: () => void;
 }) {
   const heute = new Date().toISOString().slice(0, 10);
-  const [mitarbeiterId, setMitarbeiterId] = useState(initial?.mitarbeiterId ?? '');
+  const [mitarbeiterId, setMitarbeiterId] = useState(initial?.mitarbeiterId ?? fixedMaId ?? '');
   const [datum, setDatum] = useState(initial?.datum ?? heute);
   const [streckKm, setStreckKm] = useState(initial?.streckKm ?? 0);
   const [ziel, setZiel] = useState(initial?.ziel ?? '');
@@ -298,16 +305,22 @@ function FahrtForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Mitarbeiter *</label>
-        <select
-          value={mitarbeiterId}
-          onChange={(e) => setMitarbeiterId(e.target.value)}
-          className={inputClass}
-        >
-          <option value="">— Mitarbeiter wählen —</option>
-          {mitarbeiter.map((m) => (
-            <option key={m.id} value={m.id}>{m.name}</option>
-          ))}
-        </select>
+        {fixedMaId ? (
+          <div className="border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-700">
+            {mitarbeiter.find((m) => m.id === fixedMaId)?.name ?? fixedMaId}
+          </div>
+        ) : (
+          <select
+            value={mitarbeiterId}
+            onChange={(e) => setMitarbeiterId(e.target.value)}
+            className={inputClass}
+          >
+            <option value="">— Mitarbeiter wählen —</option>
+            {mitarbeiter.map((m) => (
+              <option key={m.id} value={m.id}>{m.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-4">

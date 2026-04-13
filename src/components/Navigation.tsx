@@ -6,7 +6,7 @@ interface NavItem {
   label: string;
   icon: string;
   // Welche Rollen diesen Punkt sehen (undefined = alle)
-  roles?: Array<'admin' | 'abrechnung'>;
+  roles?: Array<'admin' | 'abrechnung' | 'mitarbeiter'>;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -19,7 +19,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/ausgaben', label: 'Ausgaben', icon: '📄', roles: ['admin', 'abrechnung'] },
   { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
   { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung'] },
-  { to: '/fahrten', label: 'Fahrtkosten', icon: '🚗', roles: ['admin', 'abrechnung'] },
+  { to: '/fahrten', label: 'Fahrtkosten', icon: '🚗', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin', 'abrechnung'] },
   { to: '/parameter', label: 'Parameter', icon: '⚙️', roles: ['admin'] },
 ];
@@ -34,7 +34,10 @@ export default function Navigation() {
     return item.roles.includes(userRole);    // Rolle prüfen
   });
 
-  const rollenLabel = userRole === 'admin' ? 'Admin' : userRole === 'abrechnung' ? 'Abrechnung' : '';
+  const rollenLabel =
+    userRole === 'admin' ? 'Admin' :
+    userRole === 'abrechnung' ? 'Abrechnung' :
+    userRole === 'mitarbeiter' ? 'Mitarbeiter' : '';
 
   return (
     <nav className="bg-white border-r border-gray-200 w-56 shrink-0 flex flex-col h-full">
