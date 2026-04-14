@@ -853,10 +853,17 @@ const inputClass =
 
 function NfcSchreibenButton({ mitarbeiterId }: { mitarbeiterId: string }) {
   const [status, setStatus] = useState<'idle' | 'schreibt' | 'ok' | 'fehler'>('idle');
+  const [showInfo, setShowInfo] = useState(false);
+  const [kopiert, setKopiert] = useState(false);
 
-  if (!nfcVerfuegbar()) return null;
+  const nfcUrl = `${window.location.origin}/nfc?ma=${encodeURIComponent(mitarbeiterId)}`;
 
   async function handleSchreiben() {
+    if (!nfcVerfuegbar()) {
+      // Desktop: Info-Box mit URL zum Kopieren anzeigen
+      setShowInfo((v) => !v);
+      return;
+    }
     setStatus('schreibt');
     try {
       await beschreibeNfcTag(mitarbeiterId);
@@ -868,18 +875,55 @@ function NfcSchreibenButton({ mitarbeiterId }: { mitarbeiterId: string }) {
     }
   }
 
+  async function handleKopieren() {
+    await navigator.clipboard.writeText(nfcUrl);
+    setKopiert(true);
+    setTimeout(() => setKopiert(false), 2000);
+  }
+
   return (
-    <button
-      onClick={handleSchreiben}
-      disabled={status === 'schreibt'}
-      title="NFC-Chip beschreiben"
-      className={`text-xs font-medium transition-colors ${
-        status === 'ok' ? 'text-green-600' :
-        status === 'fehler' ? 'text-red-600' :
-        'text-gray-400 hover:text-gray-700'
-      }`}
-    >
-      {status === 'schreibt' ? '📲...' : status === 'ok' ? '✓ NFC' : status === 'fehler' ? '✗ NFC' : '📲 NFC'}
-    </button>
+    <div className="relative">
+      <button
+        onClick={handleSchreiben}
+        disabled={status === 'schreibt'}
+        title={nfcVerfuegbar() ? 'NFC-Chip beschreiben' : 'NFC-Chip-URL anzeigen'}
+        className={`text-xs font-medium transition-colors ${
+          status === 'ok' ? 'text-green-600' :
+          status === 'fehler' ? 'text-red-600' :
+          showInfo ? 'text-blue-600' :
+          'text-gray-400 hover:text-gray-700'
+        }`}
+      >
+        {status === 'schreibt' ? '📲...' :
+         status === 'ok' ? '✓ NFC' :
+         status === 'fehler' ? '✗ NFC' : '📲 NFC'}
+      </button>
+
+      {/* Info-Box für Desktop (kein NFC verfügbar) */}
+      {showInfo && (
+        <div className="absolute left-0 top-6 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-4 w-80">
+          <div className="flex items-start justify-between mb-2">
+            <p className="text-xs font-semibold text-gray-700">NFC-Chip beschreiben</p>
+            <button onClick={() => setShowInfo(false)} className="text-gray-400 hover:text-gray-600 text-sm ml-2">✕</button>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            Web NFC ist nur in <strong>Chrome auf Android</strong> verfügbar.
+            Diese URL auf den Chip schreiben — zum Beispiel mit der App <em>NFC Tools</em>:
+          </p>
+          <div className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 mb-3">
+            <p className="text-xs font-mono text-blue-700 break-all">{nfcUrl}</p>
+          </div>
+          <button
+            onClick={handleKopieren}
+            className="w-full text-xs bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            {kopiert ? '✓ Kopiert!' : '📋 URL kopieren'}
+          </button>
+          <p className="text-xs text-gray-400 mt-2 text-center">
+            Oder öffne diese Seite auf dem Android-Handy und tippe dort auf 📲 NFC
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
