@@ -353,11 +353,125 @@ function TeilgebieteInhalt() {
             );
           })()}
       </div>
+
+      <TeilgebietVerlauf
+        teilgebiete={teilgebiete}
+        abrechnungsperioden={abrechnungsperioden}
+      />
     </div>
   );
 }
 
-// ---- Bearbeitungsformular mit Tabs ----------------------------------------
+// ---- Historischer Verlauf je Teilgebiet ------------------------------------
+
+function TeilgebietVerlauf({
+  teilgebiete,
+  abrechnungsperioden,
+}: {
+  teilgebiete: import('../types').Teilgebiet[];
+  abrechnungsperioden: import('../types').Abrechnungsperiode[];
+}) {
+  const [ausgewaehlteTgId, setAusgewaehlteTgId] = useState('');
+
+  // Alle Perioden mit Snapshot, nach Datum absteigend
+  const periodenMitSnapshot = [...abrechnungsperioden]
+    .filter((p) => p.periodeSnapshot?.teilgebietSnapshots?.length)
+    .sort((a, b) => b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat);
+
+  // Verlaufszeilen für das gewählte Teilgebiet
+  const verlauf = periodenMitSnapshot.map((p) => {
+    const snap = p.periodeSnapshot!.teilgebietSnapshots.find((s) => s.id === ausgewaehlteTgId);
+    return snap ? { periode: p, snap } : null;
+  }).filter(Boolean) as { periode: import('../types').Abrechnungsperiode; snap: import('../types').TeilgebietSnapshot }[];
+
+  // Aktueller Wert zum Vergleich
+  const aktuellTG = teilgebiete.find((tg) => tg.id === ausgewaehlteTgId);
+
+  return (
+    <div className="mt-10">
+      <h2 className="text-lg font-bold text-gray-800 mb-3">
+        Historischer Verlauf je Teilgebiet
+      </h2>
+
+      <div className="flex items-center gap-3 mb-4">
+        <select
+          value={ausgewaehlteTgId}
+          onChange={(e) => setAusgewaehlteTgId(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
+        >
+          <option value="">— Teilgebiet auswählen —</option>
+          {[...teilgebiete]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((tg) => (
+              <option key={tg.id} value={tg.id}>
+                {tg.name} {tg.plz ? `(${tg.plz})` : ''}
+              </option>
+            ))}
+        </select>
+        {ausgewaehlteTgId && verlauf.length === 0 && (
+          <span className="text-xs text-gray-400">
+            Kein historischer Snapshot für dieses Teilgebiet vorhanden.
+          </span>
+        )}
+      </div>
+
+      {ausgewaehlteTgId && verlauf.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Abrechnungsperiode</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Abgeschlossen</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600">Stückzahl</th>
+                <th className="text-right px-4 py-3 font-medium text-gray-600">Wegstrecke</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {verlauf.map(({ periode, snap }) => (
+                <tr key={periode.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-2.5 font-medium text-gray-900">{periode.bezeichnung}</td>
+                  <td className="px-4 py-2.5 text-gray-500 text-xs">
+                    {periode.gesperrtAm
+                      ? new Date(periode.gesperrtAm).toLocaleDateString('de-DE')
+                      : '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right text-gray-700">
+                    {snap.stueckzahl.toLocaleString('de-DE')}
+                  </td>
+                  <td className="px-4 py-2.5 text-right text-gray-700">
+                    {snap.wegstreckeM >= 1000
+                      ? `${(snap.wegstreckeM / 1000).toFixed(1)} km`
+                      : `${snap.wegstreckeM} m`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            {/* Aktuelle Werte als Vergleichszeile */}
+            {aktuellTG && (
+              <tfoot className="bg-blue-50 border-t-2 border-blue-200">
+                <tr>
+                  <td className="px-4 py-2.5 font-semibold text-blue-800">Aktuell</td>
+                  <td className="px-4 py-2.5 text-blue-500 text-xs">heute</td>
+                  <td className="px-4 py-2.5 text-right font-semibold text-blue-800">
+                    {aktuellTG.stueckzahl.toLocaleString('de-DE')}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-semibold text-blue-800">
+                    {aktuellTG.wegstreckeM >= 1000
+                      ? `${(aktuellTG.wegstreckeM / 1000).toFixed(1)} km`
+                      : `${aktuellTG.wegstreckeM} m`}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+          <div className="bg-gray-50 border-t border-gray-200 px-4 py-2 text-xs text-gray-500">
+            {verlauf.length} Abrechnungsperiode{verlauf.length !== 1 ? 'n' : ''} mit Snapshot für dieses Teilgebiet
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TeilgebietForm({
   initial,
@@ -796,8 +910,19 @@ function TeilgebietForm({
                       <td className="px-3 py-2 text-right text-gray-600">
                         {s.stueckzahl.toLocaleString('de-DE')}
                       </td>
-                      <td className="px-3 py-2 text-gray-400 font-mono text-xs">
-                        {s.plusCode || '—'}
+                      <td className="px-3 py-2 font-mono text-xs">
+                        {s.plusCode ? (
+                          <a
+                            href={`https://plus.codes/${s.plusCode}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800 hover:underline"
+                          >
+                            {s.plusCode}
+                          </a>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex gap-2">
