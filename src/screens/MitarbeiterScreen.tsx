@@ -180,14 +180,13 @@ function MitarbeiterInhalt() {
                       {m.isActive ? 'Aktiv' : 'Inaktiv'}
                     </span>
                   </td>
-                  <td className="px-4 py-3 flex items-center gap-3">
+                  <td className="px-4 py-3">
                     <button
                       onClick={() => oeffneBearbeiten(m)}
                       className="text-blue-600 hover:text-blue-800 text-xs font-medium"
                     >
                       Bearbeiten
                     </button>
-                    <NfcSchreibenButton mitarbeiterId={m.id} />
                   </td>
                 </tr>
               );
@@ -532,6 +531,32 @@ function MitarbeiterForm({
       {initial && (
         <PinVerwaltung mitarbeiter={initial} />
       )}
+
+      {/* NFC-Chip beschreiben */}
+      <div className="mt-4 pt-4 border-t border-gray-200">
+        <div className="flex items-center justify-between">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-700 mb-0.5">NFC-Chip</h4>
+            <p className="text-xs text-gray-400">
+              {initial
+                ? 'Schreibt den Identifikations-Link auf den NFC-Chip des Mitarbeiters.'
+                : 'Erst speichern — danach kann der NFC-Chip beschrieben werden.'}
+            </p>
+          </div>
+          {initial
+            ? <NfcSchreibenButton mitarbeiterId={initial.id} />
+            : (
+              <button
+                type="button"
+                disabled
+                className="text-xs text-gray-300 border border-gray-200 px-3 py-1.5 rounded-lg cursor-not-allowed"
+              >
+                📲 NFC Chip neu beschreiben
+              </button>
+            )}
+        </div>
+      </div>
+
       </div>
       )}
 
@@ -887,16 +912,20 @@ function NfcSchreibenButton({ mitarbeiterId }: { mitarbeiterId: string }) {
         onClick={handleSchreiben}
         disabled={status === 'schreibt'}
         title={nfcVerfuegbar() ? 'NFC-Chip beschreiben' : 'NFC-Chip-URL anzeigen'}
-        className={`text-xs font-medium transition-colors ${
-          status === 'ok' ? 'text-green-600' :
-          status === 'fehler' ? 'text-red-600' :
-          showInfo ? 'text-blue-600' :
-          'text-gray-400 hover:text-gray-700'
+        className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+          status === 'ok'
+            ? 'border-green-300 bg-green-50 text-green-700'
+            : status === 'fehler'
+            ? 'border-red-300 bg-red-50 text-red-700'
+            : showInfo
+            ? 'border-blue-400 bg-blue-50 text-blue-700'
+            : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400 hover:bg-gray-50'
         }`}
       >
-        {status === 'schreibt' ? '📲...' :
-         status === 'ok' ? '✓ NFC' :
-         status === 'fehler' ? '✗ NFC' : '📲 NFC'}
+        {status === 'schreibt' ? '📲 Schreibt…' :
+         status === 'ok'      ? '✓ NFC Chip beschrieben' :
+         status === 'fehler'  ? '✗ Fehler beim Schreiben' :
+                                '📲 NFC Chip neu beschreiben'}
       </button>
 
       {/* Info-Box für Desktop (kein NFC verfügbar) */}
