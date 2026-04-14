@@ -9,9 +9,11 @@ import {
 } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { Mitarbeiter, Rolle, Abrechnungstyp } from '../types';
+import type { Mitarbeiter, Rolle, Abrechnungstyp, TeilgebietBonus } from '../types';
 import { ROLLEN_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
+
+type MaFormTab = 'stammdaten' | 'freigaben' | 'boni';
 
 const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
@@ -198,8 +200,8 @@ function MitarbeiterInhalt() {
       <Modal
         isOpen={showForm}
         onClose={() => setShowForm(false)}
-        title={editTarget ? 'Mitarbeiter bearbeiten' : 'Neuer Mitarbeiter'}
-        size="lg"
+        title={editTarget ? `Mitarbeiter: ${editTarget.name}` : 'Neuer Mitarbeiter'}
+        size="xl"
       >
         <MitarbeiterForm
           initial={editTarget}
@@ -222,7 +224,8 @@ function MitarbeiterForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const { parameter } = useApp();
+  const { parameter, teilgebiete } = useApp();
+  const [tab, setTab] = useState<MaFormTab>('stammdaten');
   const [form, setForm] = useState<typeof DEFAULT_FORM>(() => {
     if (initial) {
       return {
@@ -240,8 +243,16 @@ function MitarbeiterForm({
     }
     return { ...DEFAULT_FORM, adresse: { strasse: '', plz: '', ort: '' }, rollen: [] };
   });
+  // Freigaben und Boni als eigene States
+  const [freigaben, setFreigaben] = useState<string[]>(initial?.teilgebietFreigaben ?? []);
+  const [boni, setBoni] = useState<TeilgebietBonus[]>(initial?.teilgebietBoni ?? []);
+  const [neuBonusTgId, setNeuBonusTgId] = useState('');
+  const [neuBonusBetrag, setNeuBonusBetrag] = useState('');
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  const aktiveTeilgebiete = teilgebiete.filter((tg) => tg.isActive);
 
   function toggleRolle(rolle: Rolle) {
     setForm((f) => ({
@@ -261,10 +272,11 @@ function MitarbeiterForm({
     setSaving(true);
     setError('');
     try {
+      const payload = { ...form, teilgebietFreigaben: freigaben, teilgebietBoni: boni };
       if (initial) {
-        await aktualisiereMitarbeiter(initial.id, form);
+        await aktualisiereMitarbeiter(initial.id, payload);
       } else {
-        await erstelleMitarbeiter(form);
+        await erstelleMitarbeiter(payload);
       }
       onSave();
     } catch (err) {
@@ -284,8 +296,61 @@ function MitarbeiterForm({
   const alter = form.geburtsdatum ? berechneAlter(form.geburtsdatum) : null;
   const minderjährig = alter !== null && alter < 18;
 
+  function toggleFreigabe(tgId: string) {
+    setFreigaben((prev) =>
+      prev.includes(tgId) ? prev.filter((id) => id !== tgId) : [...prev, tgId]
+    );
+  }
+
+  function addBonus() {
+    if (!neuBonusTgId || !neuBonusBetrag) return;
+    const betrag = parseFloat(neuBonusBetrag);
+    if (isNaN(betrag) || betrag <= 0) return;
+    setBoni((prev) => {
+      const existing = prev.findIndex((b) => b.teilgebietId === neuBonusTgId);
+      if (existing >= 0) {
+        return prev.map((b, i) => i === existing ? { ...b, betragEur: betrag } : b);
+      }
+      return [...prev, { teilgebietId: neuBonusTgId, betragEur: betrag }];
+    });
+    setNeuBonusTgId('');
+    setNeuBonusBetrag('');
+  }
+
+  const TABS: { id: MaFormTab; label: string; count?: number }[] = [
+    { id: 'stammdaten', label: 'Stammdaten' },
+    { id: 'freigaben', label: 'Gebiets-Freigaben', count: freigaben.length },
+    { id: 'boni', label: 'Teilgebiet-Boni', count: boni.length },
+  ];
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <form onSubmit={handleSubmit} className="space-y-0">
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 mb-5 -mt-2">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setTab(t.id)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+              tab === t.id
+                ? 'border-blue-600 text-blue-700'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t.label}
+            {t.count != null && t.count > 0 && (
+              <span className="ml-1.5 bg-gray-200 text-gray-600 text-xs px-1.5 py-0.5 rounded-full">
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ---- Tab: Stammdaten ---- */}
+      {tab === 'stammdaten' && (
+      <div className="space-y-5">
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Mitarbeiternummer *" hint="5-stellig, beginnt mit 9">
           <input
@@ -463,9 +528,145 @@ function MitarbeiterForm({
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
-      <div className="flex items-center justify-between pt-2">
+      {/* PIN-Verwaltung (nur bei bestehenden Mitarbeitern) */}
+      {initial && (
+        <PinVerwaltung mitarbeiter={initial} />
+      )}
+      </div>
+      )}
+
+      {/* ---- Tab: Freigaben ---- */}
+      {tab === 'freigaben' && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Wähle die Teilgebiete aus, die dieser Austräger kennt und austragen darf.
+            Nur freigegebene Austräger können als Standardausträger eines Teilgebiets hinterlegt werden.
+          </p>
+          {aktiveTeilgebiete.length === 0 ? (
+            <div className="text-gray-400 text-sm text-center py-8">Keine aktiven Teilgebiete vorhanden.</div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {[...aktiveTeilgebiete].sort((a, b) => a.name.localeCompare(b.name)).map((tg) => (
+                <button
+                  key={tg.id}
+                  type="button"
+                  onClick={() => toggleFreigabe(tg.id)}
+                  className={`text-left px-3 py-2.5 rounded-lg border text-sm transition-colors ${
+                    freigaben.includes(tg.id)
+                      ? 'bg-green-50 border-green-400 text-green-800 font-medium'
+                      : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400'
+                  }`}
+                >
+                  <div className="font-medium">{tg.name}</div>
+                  {tg.plz && <div className="text-xs opacity-70">{tg.plz}</div>}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-gray-400">
+            {freigaben.length} von {aktiveTeilgebiete.length} Teilgebieten freigegeben
+          </p>
+        </div>
+      )}
+
+      {/* ---- Tab: Boni ---- */}
+      {tab === 'boni' && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Definiere einen zusätzlichen Betrag, der je verteilter Ausgabe vergütet wird,
+            wenn dieser Austräger als <strong>Standardausträger</strong> eingesetzt wird.
+          </p>
+
+          {boni.length === 0 ? (
+            <div className="border border-gray-200 rounded-lg p-6 text-center text-gray-400 text-sm">
+              Keine Teilgebiet-Boni hinterlegt
+            </div>
+          ) : (
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium text-gray-600">Teilgebiet</th>
+                    <th className="text-right px-3 py-2 font-medium text-gray-600">Bonus je Ausgabe</th>
+                    <th className="px-3 py-2 w-10"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {boni.map((b) => {
+                    const tg = teilgebiete.find((t) => t.id === b.teilgebietId);
+                    return (
+                      <tr key={b.teilgebietId} className="hover:bg-gray-50">
+                        <td className="px-3 py-2 font-medium text-gray-800">{tg?.name ?? b.teilgebietId}</td>
+                        <td className="px-3 py-2 text-right text-green-700 font-medium">
+                          + {b.betragEur.toFixed(2)} €
+                        </td>
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => setBoni((prev) => prev.filter((x) => x.teilgebietId !== b.teilgebietId))}
+                            className="text-red-400 hover:text-red-600 text-xs"
+                          >
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Neue Bonus-Zeile */}
+          <div className="border border-dashed border-gray-300 rounded-lg p-3">
+            <p className="text-xs font-medium text-gray-500 mb-2">Bonus hinzufügen</p>
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <label className="block text-xs text-gray-500 mb-1">Teilgebiet</label>
+                <select
+                  value={neuBonusTgId}
+                  onChange={(e) => setNeuBonusTgId(e.target.value)}
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="">— Teilgebiet wählen —</option>
+                  {[...aktiveTeilgebiete]
+                    .filter((tg) => !boni.find((b) => b.teilgebietId === tg.id))
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((tg) => (
+                      <option key={tg.id} value={tg.id}>{tg.name} {tg.plz ? `(${tg.plz})` : ''}</option>
+                    ))}
+                </select>
+              </div>
+              <div className="w-28">
+                <label className="block text-xs text-gray-500 mb-1">Betrag (€)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={neuBonusBetrag}
+                  onChange={(e) => setNeuBonusBetrag(e.target.value)}
+                  placeholder="0.00"
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={addBonus}
+                disabled={!neuBonusTgId || !neuBonusBetrag}
+                className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-40"
+              >
+                + Hinzufügen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Aktionen — immer sichtbar */}
+      {error && <p className="text-red-600 text-sm mt-4">{error}</p>}
+      <div className="flex items-center justify-between pt-5 mt-4 border-t border-gray-100">
         <div>
-          {initial && initial.isActive && (
+          {initial && initial.isActive && tab === 'stammdaten' && (
             <button
               type="button"
               onClick={handleDeaktivieren}
@@ -476,27 +677,18 @@ function MitarbeiterForm({
           )}
         </div>
         <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-          >
+          <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">
             Abbrechen
           </button>
           <button
             type="submit"
             disabled={saving}
-            className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
           >
             {saving ? 'Speichere...' : initial ? 'Speichern' : 'Erstellen'}
           </button>
         </div>
       </div>
-
-      {/* PIN-Verwaltung (nur bei bestehenden Mitarbeitern) */}
-      {initial && (
-        <PinVerwaltung mitarbeiter={initial} />
-      )}
     </form>
   );
 }

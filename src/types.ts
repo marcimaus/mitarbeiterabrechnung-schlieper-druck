@@ -31,6 +31,11 @@ export type Abrechnungstyp = 'fix' | 'variabel' | 'beides';
 
 // ---- Mitarbeiter -------------------------------------------
 
+export interface TeilgebietBonus {
+  teilgebietId: string;
+  betragEur: number;      // Bonus je verteilter Ausgabe als Standardausträger
+}
+
 export interface Mitarbeiter {
   id: string;
   nummer: string;         // 5-stellig, beginnt mit 9
@@ -50,6 +55,8 @@ export interface Mitarbeiter {
   fahrkostenEurProKm?: number;   // Überschreibt den globalen Kilomtersatz
   abrechnungstyp: Abrechnungstyp;
   isActive: boolean;
+  teilgebietFreigaben?: string[];      // IDs der Teilgebiete, die dieser MA austragen darf
+  teilgebietBoni?: TeilgebietBonus[];  // Bonus je Teilgebiet und Ausgabe
   erstelltAm: number;     // Unix-Timestamp ms
   aktualisiertAm: number;
 }
@@ -282,6 +289,8 @@ export interface Parameter {
   standardSeitenformatHoeheMm: number;    // 215 mm
   // Fahrtkosten
   fahrkostenEurProKm: number;             // Standard: 0.30 EUR/km
+  // Springer
+  springerZuschlagOptionen: number[];     // Auswählbare Prozentwerte, z.B. [25, 30, 50]
   // Auth
   adminPinHash: string;
   adminName: string;
@@ -311,6 +320,25 @@ export interface BeilagenPreis {
   format: BeilagenFormat;
   label: string;
   preisProStkEur: number;
+}
+
+// ---- Reklamation -------------------------------------------
+
+export interface Reklamation {
+  id: string;
+  anruferName: string;
+  telefon?: string;
+  email?: string;
+  briefkastenVorhanden: boolean;
+  aufkleberKeineWerbung: boolean;
+  anmerkung?: string;
+  teilgebietId?: string;
+  mitarbeiterId?: string;       // zuständiger Austräger
+  mitgeteilt: boolean;          // dem Mitarbeiter mitgeteilt
+  seitWann?: string;            // ISO-Date: seit wann besteht das Problem
+  schonMalMitgeteilt: boolean;  // wurde es schon mal mitgeteilt
+  erstelltAm: number;
+  aktualisiertAm: number;
 }
 
 // ---- Vorschuss (Abschlagszahlung) --------------------------

@@ -1,4 +1,5 @@
 import { useState, useEffect, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -24,14 +25,18 @@ function FahrtenInhalt() {
   const { mitarbeiter, abrechnungsperioden, parameter, userRole, mitarbeiterId: loggedInMaId } = useApp();
   const isAdmin = userRole === 'admin';
   const isMitarbeiter = userRole === 'mitarbeiter';
+  const [searchParams] = useSearchParams();
+  const urlMaId = searchParams.get('ma') ?? '';
 
   const [fahrten, setFahrten] = useState<Fahrt[]>([]);
   const [loading, setLoading] = useState(true);
-  // Mitarbeiter-Rolle sieht nur eigene Fahrten
+  // Mitarbeiter-Rolle sieht nur eigene Fahrten; ?ma= öffnet direkt das Formular
   const [filterMaId, setFilterMaId] = useState(isMitarbeiter ? (loggedInMaId ?? '') : '');
   const [filterPeriodeId, setFilterPeriodeId] = useState('');
-  const [showForm, setShowForm] = useState(false);
+  const [showForm, setShowForm] = useState(!!urlMaId);
   const [editTarget, setEditTarget] = useState<Fahrt | null>(null);
+  // URL-MA-ID direkt als Vorbelegung für die neue Fahrt (NFC-Landing)
+  const [prefillMaId] = useState(urlMaId);
   // Bulk-Zuweisung
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkPeriodeId, setBulkPeriodeId] = useState('');
@@ -339,7 +344,7 @@ function FahrtenInhalt() {
         <FahrtForm
           initial={editTarget}
           mitarbeiter={mitarbeiter.filter((m) => m.isActive)}
-          fixedMaId={isMitarbeiter ? (loggedInMaId ?? undefined) : undefined}
+          fixedMaId={isMitarbeiter ? (loggedInMaId ?? undefined) : (prefillMaId || undefined)}
           onSave={async () => { setShowForm(false); await reload(); }}
           onCancel={() => setShowForm(false)}
         />

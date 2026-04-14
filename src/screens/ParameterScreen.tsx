@@ -12,6 +12,7 @@ const STANDARD_PARAMETER: Omit<Parameter, 'adminPinHash' | 'adminName' | 'beilag
   stundenlohnMinderjAustr: 10.00,
   mindeststundenlohn: 13.90,
   springerZuschlagProzent: 25,
+  springerZuschlagOptionen: [25, 30],
   gewichtszulageAnzeigenblattEurKg: 0.05,
   gewichtszulageBeilagenEurKg: 0.30,
   standardGrammurGqm: 65,
@@ -38,6 +39,7 @@ function ParameterInhalt() {
     stundenlohnMinderjAustr: STANDARD_PARAMETER.stundenlohnMinderjAustr,
     mindeststundenlohn: STANDARD_PARAMETER.mindeststundenlohn,
     springerZuschlagProzent: STANDARD_PARAMETER.springerZuschlagProzent,
+    springerZuschlagOptionen: [25, 30] as number[],
     gewichtszulageAnzeigenblattEurKg: STANDARD_PARAMETER.gewichtszulageAnzeigenblattEurKg,
     gewichtszulageBeilagenEurKg: STANDARD_PARAMETER.gewichtszulageBeilagenEurKg,
     standardGrammurGqm: STANDARD_PARAMETER.standardGrammurGqm,
@@ -46,6 +48,7 @@ function ParameterInhalt() {
     fahrkostenEurProKm: STANDARD_PARAMETER.fahrkostenEurProKm,
     adminName: adminName || '',
   });
+  const [neueOption, setNeueOption] = useState('');
 
   const [neuerPin, setNeuerPin] = useState('');
   const [pinBestaetigung, setPinBestaetigung] = useState('');
@@ -65,6 +68,7 @@ function ParameterInhalt() {
         stundenlohnMinderjAustr: parameter.stundenlohnMinderjAustr,
         mindeststundenlohn: parameter.mindeststundenlohn,
         springerZuschlagProzent: parameter.springerZuschlagProzent,
+        springerZuschlagOptionen: parameter.springerZuschlagOptionen ?? [25, 30],
         gewichtszulageAnzeigenblattEurKg: parameter.gewichtszulageAnzeigenblattEurKg,
         gewichtszulageBeilagenEurKg: parameter.gewichtszulageBeilagenEurKg,
         standardGrammurGqm: parameter.standardGrammurGqm,
@@ -205,7 +209,7 @@ function ParameterInhalt() {
 
         {/* Springer */}
         <Section title="Springer">
-          <Field label="Springer-Zuschlag (%)" hint="Standard: 25%">
+          <Field label="Standard-Zuschlag (%)" hint="Wird als Standardvorgabe verwendet wenn kein individueller Wert gewählt wird">
             <input
               type="number"
               min="0"
@@ -214,6 +218,65 @@ function ParameterInhalt() {
               onChange={(e) => setForm((f) => ({ ...f, springerZuschlagProzent: num(e.target.value) }))}
               className={inputClass}
             />
+          </Field>
+          <Field label="Auswählbare Zuschläge" hint="Diese Werte können je Einsatz direkt ausgewählt werden">
+            <div className="flex flex-wrap gap-2 mb-2">
+              {[...form.springerZuschlagOptionen].sort((a, b) => a - b).map((opt) => (
+                <span
+                  key={opt}
+                  className="inline-flex items-center gap-1 bg-blue-100 text-blue-700 text-sm px-2.5 py-1 rounded-full"
+                >
+                  {opt} %
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({
+                      ...f,
+                      springerZuschlagOptionen: f.springerZuschlagOptionen.filter((o) => o !== opt),
+                    }))}
+                    className="text-blue-400 hover:text-blue-700 ml-0.5"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+              {form.springerZuschlagOptionen.length === 0 && (
+                <span className="text-xs text-gray-400">Keine Optionen konfiguriert</span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min="1"
+                max="200"
+                value={neueOption}
+                onChange={(e) => setNeueOption(e.target.value)}
+                placeholder="z.B. 30"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const v = parseInt(neueOption);
+                    if (v > 0 && !form.springerZuschlagOptionen.includes(v)) {
+                      setForm((f) => ({ ...f, springerZuschlagOptionen: [...f.springerZuschlagOptionen, v] }));
+                    }
+                    setNeueOption('');
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const v = parseInt(neueOption);
+                  if (v > 0 && !form.springerZuschlagOptionen.includes(v)) {
+                    setForm((f) => ({ ...f, springerZuschlagOptionen: [...f.springerZuschlagOptionen, v] }));
+                  }
+                  setNeueOption('');
+                }}
+                className="text-sm text-blue-600 hover:text-blue-800 px-2 py-1.5 rounded border border-blue-300 hover:border-blue-500"
+              >
+                + Hinzufügen
+              </button>
+            </div>
           </Field>
         </Section>
 

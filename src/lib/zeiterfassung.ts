@@ -237,10 +237,12 @@ export async function beschreibeNfcTag(mitarbeiterId: string): Promise<void> {
   if (!('NDEFReader' in window)) {
     throw new Error('Web NFC wird von diesem Browser nicht unterstützt (Chrome auf Android erforderlich).');
   }
+  // Schreibt eine URL auf den Chip — Scannen öffnet die App direkt auf der Mitarbeiter-Seite
+  const url = `${window.location.origin}/nfc?ma=${encodeURIComponent(mitarbeiterId)}`;
   // @ts-ignore — NDEFReader ist noch nicht in allen TypeScript-Definitionen
   const ndef = new NDEFReader();
   await ndef.write({
-    records: [{ recordType: 'text', data: mitarbeiterId }],
+    records: [{ recordType: 'url', data: url }],
   });
 }
 

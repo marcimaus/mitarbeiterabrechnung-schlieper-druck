@@ -120,11 +120,8 @@ function EinsaetzeInhalt() {
   function oeffneSpringerDialog(tg: Teilgebiet) {
     const e = einsaetze[tg.id];
     setSpringerMitarbeiterId(e?.typ === 'springer' ? (e.mitarbeiterId ?? '') : '');
-    // Vorbelegen: individueller Wert wenn vorhanden, sonst Standard aus Parametern (25%)
-    setSpringerZuschlag(
-      e?.springerZuschlagProzent?.toString() ??
-      (parameter?.springerZuschlagProzent?.toString() ?? '25')
-    );
+    // Kein Standardwert vorbelegen — Benutzer wählt aus Optionen
+    setSpringerZuschlag(e?.springerZuschlagProzent?.toString() ?? '');
     setSpringerFilter('');
     setSpringerDialog(tg);
   }
@@ -369,18 +366,53 @@ function EinsaetzeInhalt() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Springerzuschlag % (leer = Standard aus Parametern)
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Springer-Zuschlag %
               </label>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                placeholder="z.B. 25"
-                value={springerZuschlag}
-                onChange={(e) => setSpringerZuschlag(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              {/* Schnellwahl aus konfigurierten Optionen */}
+              {(parameter?.springerZuschlagOptionen?.length ?? 0) > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {[...(parameter!.springerZuschlagOptionen)].sort((a, b) => a - b).map((opt) => (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => setSpringerZuschlag(opt.toString())}
+                      className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                        springerZuschlag === opt.toString()
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                      }`}
+                    >
+                      {opt} %
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* Individueller Wert */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="200"
+                  placeholder="Individuell..."
+                  value={springerZuschlag}
+                  onChange={(e) => setSpringerZuschlag(e.target.value)}
+                  className="w-36 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-400">%</span>
+                {springerZuschlag && (
+                  <button
+                    type="button"
+                    onClick={() => setSpringerZuschlag('')}
+                    className="text-xs text-gray-400 hover:text-gray-600"
+                  >
+                    ✕ Löschen
+                  </button>
+                )}
+              </div>
+              <p className="text-xs text-gray-400 mt-1">
+                Leer lassen = Standard ({parameter?.springerZuschlagProzent ?? 25} %)
+              </p>
             </div>
 
             <div className="flex gap-2 pt-2">

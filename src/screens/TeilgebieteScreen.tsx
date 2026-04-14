@@ -541,7 +541,14 @@ function TeilgebietForm({
   const strasseSumme = strassen.reduce((s, r) => s + (r.stueckzahl || 0), 0);
   const effektiveStueckzahl = form.stueckzahlManuell ? form.stueckzahl : strasseSumme;
 
-  const austraeger = mitarbeiter.filter((m) => m.isActive && m.rollen.includes('austräger'));
+  // Nur Austräger zeigen die für dieses Teilgebiet freigegeben sind
+  // (oder keine Freigaben-Liste haben = alte Datensätze ohne Konfiguration)
+  const austraeger = mitarbeiter.filter((m) => {
+    if (!m.isActive || !m.rollen.includes('austräger')) return false;
+    const freigaben = m.teilgebietFreigaben;
+    if (!freigaben || freigaben.length === 0) return true; // keine Einschränkung
+    return initial ? freigaben.includes(initial.id) : true;
+  });
 
   // ---- Speichern ----
   async function handleSubmit(e: FormEvent) {

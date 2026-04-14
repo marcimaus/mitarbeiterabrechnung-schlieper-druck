@@ -30,6 +30,7 @@ import type {
   Arbeitszeit,
   Fahrt,
   Vorschuss,
+  Reklamation,
   Parameter,
   AuditLog,
 } from '../types';
@@ -601,6 +602,34 @@ export async function aktualisiereVorschuss(id: string, data: Partial<Vorschuss>
 
 export async function loescheVorschuss(id: string): Promise<void> {
   await deleteDoc(doc(db, 'vorschuesse', id));
+}
+
+// ---- Reklamationen -----------------------------------------
+
+export function abonniereReklamationen(cb: (list: Reklamation[]) => void): Unsubscribe {
+  return onSnapshot(
+    query(collection(db, 'reklamationen'), orderBy('erstelltAm', 'desc')),
+    (snap) => cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Reklamation)))
+  );
+}
+
+export async function erstelleReklamation(
+  data: Omit<Reklamation, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'reklamationen'), { ...data, erstelltAm: ts, aktualisiertAm: ts });
+  return ref.id;
+}
+
+export async function aktualisiereReklamation(
+  id: string,
+  data: Partial<Reklamation>
+): Promise<void> {
+  await updateDoc(doc(db, 'reklamationen', id), stripUndef({ ...data as Record<string, unknown>, aktualisiertAm: now() }));
+}
+
+export async function loescheReklamation(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'reklamationen', id));
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

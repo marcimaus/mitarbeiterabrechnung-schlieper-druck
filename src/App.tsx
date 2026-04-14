@@ -14,6 +14,8 @@ import ZusammentragenScreen from './screens/ZusammentragenScreen';
 import FahrtenScreen from './screens/FahrtenScreen';
 import AbrechnungScreen from './screens/AbrechnungScreen';
 import ParameterScreen from './screens/ParameterScreen';
+import ReklamationenScreen from './screens/ReklamationenScreen';
+import NfcLandingScreen from './screens/NfcLandingScreen';
 
 export default function App() {
   return (
@@ -23,7 +25,8 @@ export default function App() {
           <OfflineBanner />
           <div className="flex flex-1 min-h-0">
             <Navigation />
-            <main className="flex-1 overflow-y-auto bg-gray-50">
+            {/* main: auf Mobile brauchen wir padding-top für den fixen Header */}
+            <main className="flex-1 overflow-y-auto bg-gray-50 pt-0 md:pt-0">
               <Routes>
                 <Route path="/" element={<HomeScreen />} />
                 <Route path="/zeiterfassung" element={<ZeiterfassungScreen />} />
@@ -37,6 +40,8 @@ export default function App() {
                 <Route path="/fahrten" element={<FahrtenScreen />} />
                 <Route path="/abrechnung" element={<AbrechnungScreen />} />
                 <Route path="/parameter" element={<ParameterScreen />} />
+                <Route path="/reklamationen" element={<ReklamationenScreen />} />
+                <Route path="/nfc" element={<NfcLandingScreen />} />
                 <Route path="/admin" element={<AdminLoginPage />} />
               </Routes>
             </main>
@@ -47,7 +52,7 @@ export default function App() {
   );
 }
 
-// Admin-Login Seite (leitet nach erfolgreichem Login zur Startseite)
+// Admin-Login Seite
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AdminPinGate from './components/AdminPinGate';
