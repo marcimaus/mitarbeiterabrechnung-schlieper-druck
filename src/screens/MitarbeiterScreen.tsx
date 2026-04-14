@@ -37,7 +37,7 @@ export default function MitarbeiterScreen() {
 }
 
 function MitarbeiterInhalt() {
-  const { mitarbeiter, parameter } = useApp();
+  const { mitarbeiter } = useApp();
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Mitarbeiter | null>(null);
   const [filterText, setFilterText] = useState('');
@@ -107,8 +107,53 @@ function MitarbeiterInhalt() {
         </label>
       </div>
 
-      {/* Tabelle */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      {/* ---- Mobile: Karten-Liste ---- */}
+      <div className="md:hidden space-y-2">
+        {gefiltert.length === 0 && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-400 text-sm">
+            Keine Mitarbeiter gefunden
+          </div>
+        )}
+        {gefiltert.map((m) => {
+          const alter = m.geburtsdatum ? berechneAlter(m.geburtsdatum) : null;
+          const minderjährig = alter !== null && alter < 18;
+          return (
+            <button
+              key={m.id}
+              onClick={() => oeffneBearbeiten(m)}
+              className="w-full text-left bg-white rounded-xl border border-gray-200 px-4 py-3 active:bg-blue-50 transition-colors"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-semibold text-gray-900 truncate">{m.name}</span>
+                    {minderjährig && <span className="text-orange-500 text-xs shrink-0">⚠ {alter} J.</span>}
+                  </div>
+                  <div className="text-xs text-gray-400 font-mono mb-2">{m.nummer}</div>
+                  <div className="flex flex-wrap gap-1">
+                    {m.rollen.map((r) => (
+                      <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                        {ROLLEN_LABELS[r]}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${
+                    m.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                  }`}>
+                    {m.isActive ? 'Aktiv' : 'Inaktiv'}
+                  </span>
+                  <span className="text-blue-600 text-xs font-medium">Bearbeiten ›</span>
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ---- Desktop: Tabelle ---- */}
+      <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
@@ -133,16 +178,13 @@ function MitarbeiterInhalt() {
               const alter = m.geburtsdatum ? berechneAlter(m.geburtsdatum) : null;
               const minderjährig = alter !== null && alter < 18;
               return (
-                <tr key={m.id} className="hover:bg-gray-50">
+                <tr key={m.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => oeffneBearbeiten(m)}>
                   <td className="px-4 py-3 font-mono text-gray-500">{m.nummer}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">{m.name}</td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {m.rollen.map((r) => (
-                        <span
-                          key={r}
-                          className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full"
-                        >
+                        <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
                           {ROLLEN_LABELS[r]}
                         </span>
                       ))}
@@ -165,28 +207,16 @@ function MitarbeiterInhalt() {
                         ({m.stundenlohnIndividuell.toFixed(2)} €/h)
                       </span>
                     )}
-                    {m.stundenlohnIndividuell === undefined && parameter && (
-                      <span className="ml-1 text-xs text-gray-400">
-                        (MiLoG)
-                      </span>
-                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      m.isActive
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-gray-100 text-gray-500'
+                      m.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
                     }`}>
                       {m.isActive ? 'Aktiv' : 'Inaktiv'}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <button
-                      onClick={() => oeffneBearbeiten(m)}
-                      className="text-blue-600 hover:text-blue-800 text-xs font-medium"
-                    >
-                      Bearbeiten
-                    </button>
+                  <td className="px-4 py-3 text-right">
+                    <span className="text-blue-600 text-xs font-medium">Bearbeiten</span>
                   </td>
                 </tr>
               );
