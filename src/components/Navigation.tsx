@@ -148,8 +148,6 @@ export default function Navigation() {
         </div>
       )}
 
-      {/* ---- Mobile: Spacer for fixed header ---- */}
-      <div className="md:hidden h-14 shrink-0" />
     </>
   );
 }

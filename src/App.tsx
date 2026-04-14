@@ -25,8 +25,8 @@ export default function App() {
           <OfflineBanner />
           <div className="flex flex-1 min-h-0">
             <Navigation />
-            {/* main: auf Mobile brauchen wir padding-top für den fixen Header */}
-            <main className="flex-1 overflow-y-auto bg-gray-50 pt-0 md:pt-0">
+            {/* pt-14 auf Mobile = Platz für den fixen Header (h-14 = 56px) */}
+            <main className="flex-1 overflow-y-auto bg-gray-50 pt-14 md:pt-0">
               <Routes>
                 <Route path="/" element={<HomeScreen />} />
                 <Route path="/zeiterfassung" element={<ZeiterfassungScreen />} />
