@@ -73,15 +73,39 @@ export const STANDARD_TOUREN: Omit<Tour, 'erstelltAm'>[] = [
 
 // ---- Teilgebiet --------------------------------------------
 
+export interface Strasse {
+  id: string;
+  strassenname: string;
+  stueckzahl: number;
+  plusCode?: string;
+}
+
+export interface Sonderauslage {
+  id: string;
+  bezeichnung: string;
+  adresse?: string;
+  stueckzahl: number;
+}
+
+export interface NichtBeliefen {
+  id: string;
+  adresse: string;
+  bemerkung?: string;
+}
+
 export interface Teilgebiet {
   id: string;
   name: string;               // z.B. "Uslar1"
   plz: string;
   stueckzahl: number;
+  stueckzahlManuell: boolean; // true = manuell, false = Summe aus Straßenliste
   wegstreckeM: number;        // Meter
   tourId: string | null;
   standardAustraegerId: string | null;
   isActive: boolean;
+  strassen: Strasse[];
+  sonderauslagen: Sonderauslage[];
+  nichtBeliefen: NichtBeliefen[];
   erstelltAm: number;
   aktualisiertAm: number;
 }
