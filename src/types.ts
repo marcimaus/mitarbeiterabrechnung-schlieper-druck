@@ -60,6 +60,12 @@ export interface Mitarbeiter {
   wochenstundenFestgehalt?: number;
   /** Durchschnittliche Monatsarbeitszeit lt. Vertrag bei Festgehalt-Mitarbeitern. */
   monatsstundenFestgehalt?: number;
+  /**
+   * Geschäftsführer-Kennzeichen. Wenn true, gelten weder die Mindestlohn-
+   * Pflicht noch das Erfordernis, Wochen-/Monatsstunden anzugeben — der
+   * Geschäftsführer fällt nicht unter MiLoG.
+   */
+  istGeschaeftsfuehrer?: boolean;
   /** Minijob-Kennzeichen: Warnung wenn Bruttolohn im Monat die Minijob-Grenze überschreitet. */
   istMinijob?: boolean;
   /**

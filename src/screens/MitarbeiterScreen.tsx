@@ -336,6 +336,7 @@ function MitarbeiterForm({
         festgehaltEur: initial.festgehaltEur,
         wochenstundenFestgehalt: initial.wochenstundenFestgehalt,
         monatsstundenFestgehalt: initial.monatsstundenFestgehalt,
+        istGeschaeftsfuehrer: initial.istGeschaeftsfuehrer ?? false,
         fixesGehalt: initial.fixesGehalt,
         stundenlohnIndividuell: initial.stundenlohnIndividuell,
         istMinijob: initial.istMinijob ?? false,
@@ -405,9 +406,10 @@ function MitarbeiterForm({
     }
     if (
       form.hatFestgehalt &&
+      !form.istGeschaeftsfuehrer &&
       (!form.monatsstundenFestgehalt || form.monatsstundenFestgehalt <= 0)
     ) {
-      setError('Bei Festgehalt müssen die durchschnittlichen Stunden (Woche oder Monat) angegeben werden.');
+      setError('Bei Festgehalt müssen die durchschnittlichen Stunden (Woche oder Monat) angegeben werden — außer bei Geschäftsführern.');
       return;
     }
 
@@ -630,8 +632,27 @@ function MitarbeiterForm({
                 />
               </FormField>
 
-              {/* Vertraglich vereinbarte Arbeitszeit (Woche/Monat synchron) */}
-              {(() => {
+              {/* Geschäftsführer-Kennzeichen — befreit von Stunden-Pflicht & Mindestlohn-Prüfung */}
+              <FormField label="Sonderstatus">
+                <label className="flex items-start gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={form.istGeschaeftsfuehrer ?? false}
+                    onChange={(e) => setForm((f) => ({ ...f, istGeschaeftsfuehrer: e.target.checked }))}
+                    className="rounded mt-0.5"
+                  />
+                  <span>
+                    <span className="font-medium">Geschäftsführer</span>
+                    <span className="block text-xs text-gray-500">
+                      Befreit von der Pflicht zur Angabe der Wochen-/Monatsstunden
+                      und von der Mindestlohn-Prüfung (fällt nicht unter MiLoG).
+                    </span>
+                  </span>
+                </label>
+              </FormField>
+
+              {/* Vertraglich vereinbarte Arbeitszeit (Woche/Monat synchron) — nicht bei Geschäftsführern */}
+              {!form.istGeschaeftsfuehrer && (() => {
                 // Faktor: 52 Wochen / 12 Monate = ~4,3333
                 const FAKTOR = 52 / 12;
                 const setWoche = (val: string) => {
@@ -685,8 +706,8 @@ function MitarbeiterForm({
                 );
               })()}
 
-              {/* Mindestlohn-Prüfung — nur bei Volljährigen */}
-              {(() => {
+              {/* Mindestlohn-Prüfung — nur bei Volljährigen, nicht bei Geschäftsführern */}
+              {!form.istGeschaeftsfuehrer && (() => {
                 const monatsStd = form.monatsstundenFestgehalt ?? 0;
                 const lohn = form.festgehaltEur ?? 0;
                 const mindestlohn = parameter?.mindeststundenlohn ?? 0;
