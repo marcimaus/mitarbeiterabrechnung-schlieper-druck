@@ -21,12 +21,16 @@ export async function exportiereAbrechnung(
   wsUe.columns = [
     { header: 'Nr.', key: 'nr', width: 8 },
     { header: 'Name', key: 'name', width: 28 },
+    { header: 'Minijob', key: 'minijob', width: 10 },
+    { header: 'SV-frei', key: 'svfrei', width: 10 },
     { header: 'Austragen (€)', key: 'austragen', width: 16 },
     { header: 'Zusammentragen (€)', key: 'zusammentragen', width: 20 },
     { header: 'Zeiterfassung (€)', key: 'zeiterfassung', width: 18 },
+    { header: 'Min-Boni (€)', key: 'minboni', width: 14 },
     { header: 'Fixes Gehalt (€)', key: 'fix', width: 16 },
     { header: 'Fahrtkosten (€)', key: 'fahrtkosten', width: 16 },
-    { header: 'Gesamt (€)', key: 'gesamt', width: 14 },
+    { header: 'Brutto (€)', key: 'gesamt', width: 14 },
+    { header: 'Auszahlung (€)', key: 'auszahlung', width: 16 },
   ];
 
   // Titel
@@ -38,30 +42,49 @@ export async function exportiereAbrechnung(
   wsUe.spliceRows(3, 0, []);
 
   // Header-Zeile (Row 4)
+  const headers = ['Nr.', 'Name', 'Minijob', 'SV-frei', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Min-Boni (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Brutto (€)', 'Auszahlung (€)'];
   const headerRow = wsUe.getRow(4);
-  ['Nr.', 'Name', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Gesamt (€)'].forEach((h, i) => {
+  headers.forEach((h, i) => {
     const cell = headerRow.getCell(i + 1);
     cell.value = h;
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D4ED8' } };
-    cell.alignment = { horizontal: i > 1 ? 'right' : 'left' };
+    cell.alignment = { horizontal: i > 3 ? 'right' : 'left' };
   });
 
   ergebnisse.forEach((er, idx) => {
+    const istSvBefreit = !!er.mitarbeiter.sozialversicherungsBefreit;
+    // WICHTIG: Es wird IMMER die an das Lohnbüro übermittelte Brutto-Summe
+    // (bruttoLohnbuero) exportiert — Lohnkonto-Verschiebungen tauchen im
+    // Export bewusst NICHT auf.
+    const bruttoExport = er.bruttoLohnbuero;
     const r = wsUe.addRow([
       er.mitarbeiter.nummer,
       er.mitarbeiter.name,
+      er.mitarbeiter.istMinijob ? 'Ja' : '',
+      istSvBefreit ? 'Ja' : '',
       er.austraegerGesamt,
       er.zusammentragenGesamt,
       er.zeitLohn,
+      er.ausgabenBoniLohnGesamt,
       er.fixesGehalt,
       er.fahrtkostenGesamt,
-      er.gesamt,
+      bruttoExport,
+      istSvBefreit ? bruttoExport - er.vorschussSumme : null,
     ]);
-    // Zahlenformat
-    for (let c = 3; c <= 8; c++) {
+    // Zahlenformat Spalten 5..12 (numeric)
+    for (let c = 5; c <= 12; c++) {
       r.getCell(c).numFmt = '#,##0.00 "€"';
       r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    // Auszahlung leer bei nicht-SV-befreit: Hinweistext (Spalte 12)
+    if (!istSvBefreit) {
+      r.getCell(12).value = 'Lohnbüro';
+      r.getCell(12).font = { italic: true, color: { argb: 'FF9CA3AF' } };
+      r.getCell(12).numFmt = '@';
+    }
+    if (er.mitarbeiter.istMinijob) {
+      r.getCell(3).font = { bold: true, color: { argb: 'FFB45309' } };
     }
     if (idx % 2 === 1) {
       r.eachCell((cell) => {
@@ -74,15 +97,21 @@ export async function exportiereAbrechnung(
   const sumRow = wsUe.addRow([
     '',
     'GESAMT',
+    '',
+    '',
     ergebnisse.reduce((s, e) => s + e.austraegerGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.zusammentragenGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.zeitLohn, 0),
+    ergebnisse.reduce((s, e) => s + e.ausgabenBoniLohnGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.fixesGehalt, 0),
     ergebnisse.reduce((s, e) => s + e.fahrtkostenGesamt, 0),
-    ergebnisse.reduce((s, e) => s + e.gesamt, 0),
+    ergebnisse.reduce((s, e) => s + e.bruttoLohnbuero, 0),
+    ergebnisse
+      .filter((e) => e.mitarbeiter.sozialversicherungsBefreit)
+      .reduce((s, e) => s + (e.bruttoLohnbuero - e.vorschussSumme), 0),
   ]);
   sumRow.getCell(2).font = { bold: true };
-  for (let c = 3; c <= 8; c++) {
+  for (let c = 5; c <= 12; c++) {
     sumRow.getCell(c).numFmt = '#,##0.00 "€"';
     sumRow.getCell(c).font = { bold: true };
     sumRow.getCell(c).alignment = { horizontal: 'right' };

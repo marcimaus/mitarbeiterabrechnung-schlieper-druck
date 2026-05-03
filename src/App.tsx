@@ -16,47 +16,64 @@ import AbrechnungScreen from './screens/AbrechnungScreen';
 import ParameterScreen from './screens/ParameterScreen';
 import ReklamationenScreen from './screens/ReklamationenScreen';
 import NfcLandingScreen from './screens/NfcLandingScreen';
+import AustraegerMeldungScreen from './screens/AustraegerMeldungScreen';
+import VerteilplanScreen from './screens/VerteilplanScreen';
+import { useApp } from './context/AppContext';
 
 export default function App() {
   return (
     <AppProvider>
       <BrowserRouter>
-        <div className="flex flex-col min-h-screen">
-          <OfflineBanner />
-          <div className="flex flex-1 min-h-0">
-            <Navigation />
-            {/* pt-14 auf Mobile = Platz für den fixen Header (h-14 = 56px) */}
-            <main className="flex-1 overflow-y-auto bg-gray-50 pt-14 md:pt-0">
-              <Routes>
-                <Route path="/" element={<HomeScreen />} />
-                <Route path="/zeiterfassung" element={<ZeiterfassungScreen />} />
-                <Route path="/zeitübersicht" element={<ZeitübersichtScreen />} />
-                <Route path="/mitarbeiter" element={<MitarbeiterScreen />} />
-                <Route path="/teilgebiete" element={<TeilgebieteScreen />} />
-                <Route path="/touren" element={<TourenScreen />} />
-                <Route path="/ausgaben" element={<AusgabenScreen />} />
-                <Route path="/einsaetze" element={<EinsaetzeScreen />} />
-                <Route path="/zusammentragen" element={<ZusammentragenScreen />} />
-                <Route path="/fahrten" element={<FahrtenScreen />} />
-                <Route path="/abrechnung" element={<AbrechnungScreen />} />
-                <Route path="/parameter" element={<ParameterScreen />} />
-                <Route path="/reklamationen" element={<ReklamationenScreen />} />
-                <Route path="/nfc" element={<NfcLandingScreen />} />
-                <Route path="/admin" element={<AdminLoginPage />} />
-              </Routes>
-            </main>
-          </div>
-        </div>
+        <AppLayout />
       </BrowserRouter>
     </AppProvider>
   );
 }
 
-// Admin-Login Seite
+// ---- Haupt-Layout (braucht useApp → innerhalb AppProvider) ----
+
+function AppLayout() {
+  const { isAdminAuthenticated } = useApp();
+
+  // Mobile: Rollenbalken (h-7 = 28px) + Hamburger-Header (h-14 = 56px) = 84px
+  // Ohne Login: nur Hamburger-Header (h-14 = 56px)
+  const mobilePt = isAdminAuthenticated ? 'pt-[84px]' : 'pt-14';
+
+  return (
+    <div className="flex flex-col min-h-screen">
+      <OfflineBanner />
+      <div className="flex flex-1 min-h-0">
+        <Navigation />
+        <main className={`flex-1 overflow-y-auto bg-gray-50 ${mobilePt} md:pt-0`}>
+          <Routes>
+            <Route path="/" element={<HomeScreen />} />
+            <Route path="/zeiterfassung" element={<ZeiterfassungScreen />} />
+            <Route path="/zeitübersicht" element={<ZeitübersichtScreen />} />
+            <Route path="/mitarbeiter" element={<MitarbeiterScreen />} />
+            <Route path="/teilgebiete" element={<TeilgebieteScreen />} />
+            <Route path="/touren" element={<TourenScreen />} />
+            <Route path="/ausgaben" element={<AusgabenScreen />} />
+            <Route path="/einsaetze" element={<EinsaetzeScreen />} />
+            <Route path="/zusammentragen" element={<ZusammentragenScreen />} />
+            <Route path="/fahrten" element={<FahrtenScreen />} />
+            <Route path="/abrechnung" element={<AbrechnungScreen />} />
+            <Route path="/parameter" element={<ParameterScreen />} />
+            <Route path="/reklamationen" element={<ReklamationenScreen />} />
+            <Route path="/nfc" element={<NfcLandingScreen />} />
+            <Route path="/meldung" element={<AustraegerMeldungScreen />} />
+            <Route path="/verteilplan" element={<VerteilplanScreen />} />
+            <Route path="/admin" element={<AdminLoginPage />} />
+          </Routes>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ---- Admin-Login Seite ----------------------------------------
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AdminPinGate from './components/AdminPinGate';
-import { useApp } from './context/AppContext';
 
 function AdminLoginPage() {
   const { isAdminAuthenticated } = useApp();

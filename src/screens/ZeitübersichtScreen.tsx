@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -10,14 +10,19 @@ import {
   formatierDauer,
   korrigiereSession,
 } from '../lib/zeiterfassung';
-import { ladeFahrten } from '../lib/db';
+import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten } from '../lib/db';
 import { MONATSNAMEN } from '../lib/kalender';
 import { ermittleStundenlohn } from '../lib/berechnung';
-import type { Arbeitszeit, Fahrt } from '../types';
+import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
+import type { Arbeitszeit, Fahrt, ArbeitszeitsTyp, AuditEintrag, Rolle, Ausgabe } from '../types';
+import { TYP_LABELS, ROLLEN_LABELS } from '../types';
+
+const ALLE_TYPEN: ArbeitszeitsTyp[] = ['austragen', 'zusammentragen', 'vorarbeit', 'sonstige'];
+const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
 export default function ZeitübersichtScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <ZeitübersichtInhalt />
     </AdminPinGate>
   );
@@ -33,8 +38,41 @@ function ZeitübersichtInhalt() {
   const [fahrten, setFahrten] = useState<Fahrt[]>([]);
   const [loading, setLoading] = useState(false);
   const [editSession, setEditSession] = useState<Arbeitszeit | null>(null);
+  const [showNeueZeit, setShowNeueZeit] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
+
+  // Ausgaben einmalig laden (für Ausgabe-Auswahl bei Vorarbeit)
+  useEffect(() => {
+    ladeAusgaben()
+      .then((list) => {
+        const sortiert = [...list].sort(
+          (a, b) => b.jahr - a.jahr || b.kw - a.kw
+        );
+        setAusgaben(sortiert);
+      })
+      .catch((err) => console.error('Fehler beim Laden der Ausgaben:', err));
+  }, []);
+
+  // Suche / Filter
+  const [suchText, setSuchText] = useState('');
+  const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
+  const [filterTyp, setFilterTyp] = useState<ArbeitszeitsTyp | ''>('');
 
   const aktiveMitarbeiter = mitarbeiter.filter((m) => m.isActive);
+
+  // Kandidaten für die Suchliste — wird NUR angezeigt, wenn noch kein Mitarbeiter
+  // ausgewählt ist. Rollen-Filter greift bereits hier.
+  const suchKandidaten = aktiveMitarbeiter.filter((m) => {
+    if (filterRolle && !m.rollen.includes(filterRolle)) return false;
+    if (suchText) {
+      const q = suchText.toLowerCase();
+      if (!m.name.toLowerCase().includes(q) && !m.nummer.includes(suchText)) {
+        return false;
+      }
+    }
+    return true;
+  });
 
   useEffect(() => {
     if (!selectedMaId) return;
@@ -49,18 +87,57 @@ function ZeitübersichtInhalt() {
         return d.getFullYear() === jahr && d.getMonth() + 1 === monat;
       });
       setFahrten(monatsFahrten);
+    }).catch((err) => {
+      console.error('Fehler beim Laden der Zeiten:', err);
+    }).finally(() => {
       setLoading(false);
     });
-  }, [selectedMaId, monat, jahr]);
+  }, [selectedMaId, monat, jahr, reloadKey]);
 
   const ma = mitarbeiter.find((m) => m.id === selectedMaId);
 
-  const gesamtNettoMinuten = sessions
-    .filter((s) => s.status === 'abgeschlossen')
+  const abgeschlSessions = sessions.filter((s) => s.status === 'abgeschlossen');
+  const gesamtNettoMinuten = abgeschlSessions.reduce(
+    (sum, s) => sum + berechneNettoMinuten(s), 0
+  );
+
+  // Prüft, ob eine Session in die Lohnberechnung einfliesst.
+  // Austragen/Zusammentragen werden standardmäßig über Parameter bzw. Teilgebiet/Stapel
+  // abgerechnet — die Ist-Zeit fliesst nur ein, wenn in den Parametern der jeweilige
+  // Toggle "nach Ist-Zeit" aktiviert ist.
+  const fliessesInLohn = (s: Arbeitszeit): boolean => {
+    if (ma?.hatFestgehalt) return false; // Festgehalt ist fix
+    switch (s.typ) {
+      case 'austragen':
+        return parameter?.austragenNachIstZeit === true;
+      case 'zusammentragen':
+        return parameter?.zusammentragenNachIstZeit === true;
+      case 'vorarbeit':
+      case 'sonstige':
+        return true;
+      default:
+        return false;
+    }
+  };
+
+  const lohnrelevanteMinuten = abgeschlSessions
+    .filter(fliessesInLohn)
     .reduce((sum, s) => sum + berechneNettoMinuten(s), 0);
 
+  // Aufschlüsselung für Info-Anzeige (nicht in Lohn einfliessend)
+  const minutenNichtAbgerechnet: Record<ArbeitszeitsTyp, number> = {
+    austragen: 0, zusammentragen: 0, vorarbeit: 0, sonstige: 0,
+  };
+  abgeschlSessions
+    .filter((s) => !fliessesInLohn(s))
+    .forEach((s) => {
+      minutenNichtAbgerechnet[s.typ as ArbeitszeitsTyp] += berechneNettoMinuten(s);
+    });
+
   const stundenlohn = ma && parameter ? ermittleStundenlohn(ma, parameter) : null;
-  const lohnGesamt = stundenlohn ? (gesamtNettoMinuten / 60) * stundenlohn : null;
+  const lohnGesamt = stundenlohn && !ma?.hatFestgehalt
+    ? (lohnrelevanteMinuten / 60) * stundenlohn
+    : null;
   const fahrtSatz = (ma?.fahrkostenEurProKm ?? parameter?.fahrkostenEurProKm ?? 0.30);
   const fahrtkostenGesamt = fahrten.reduce((s, f) => s + f.streckKm * fahrtSatz, 0);
 
@@ -72,17 +149,54 @@ function ZeitübersichtInhalt() {
 
       {/* Filter */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap gap-3 items-center">
+          {selectedMaId && ma ? (
+            <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm">
+              <span className="font-medium text-blue-800">
+                {ma.hatFestgehalt ? '🔒 ' : ''}{ma.name}
+              </span>
+              <span className="text-blue-500 text-xs">({ma.nummer})</span>
+              <button
+                onClick={() => { setSelectedMaId(''); setFilterTyp(''); }}
+                className="ml-1 text-blue-500 hover:text-blue-700"
+                title="Auswahl aufheben"
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <input
+              type="text"
+              placeholder="Name oder Nummer suchen..."
+              value={suchText}
+              onChange={(e) => setSuchText(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
+            />
+          )}
           <select
-            value={selectedMaId}
-            onChange={(e) => setSelectedMaId(e.target.value)}
+            value={filterRolle}
+            onChange={(e) => setFilterRolle(e.target.value as Rolle | '')}
             className={selectClass}
+            title="Kategorie des Mitarbeiters"
           >
-            <option value="">Mitarbeiter wählen...</option>
-            {aktiveMitarbeiter.map((m) => (
-              <option key={m.id} value={m.id}>{m.name} ({m.nummer})</option>
+            <option value="">Alle Kategorien</option>
+            {ALLE_ROLLEN.map((r) => (
+              <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
             ))}
           </select>
+          {selectedMaId && (
+            <select
+              value={filterTyp}
+              onChange={(e) => setFilterTyp(e.target.value as ArbeitszeitsTyp | '')}
+              className={selectClass}
+              title="Typ der Zeiterfassung"
+            >
+              <option value="">Alle Typen</option>
+              {ALLE_TYPEN.map((t) => (
+                <option key={t} value={t}>{TYP_LABELS[t]}</option>
+              ))}
+            </select>
+          )}
           <select value={monat} onChange={(e) => setMonat(Number(e.target.value))} className={selectClass}>
             {MONATSNAMEN.map((name, i) => (
               <option key={i + 1} value={i + 1}>{name}</option>
@@ -91,12 +205,45 @@ function ZeitübersichtInhalt() {
           <select value={jahr} onChange={(e) => setJahr(Number(e.target.value))} className={selectClass}>
             {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
           </select>
+          <button
+            onClick={() => setShowNeueZeit(true)}
+            className="ml-auto bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+          >
+            + Neue Zeit erfassen
+          </button>
         </div>
       </div>
 
       {!selectedMaId && (
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400">
-          Bitte einen Mitarbeiter auswählen
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 text-sm text-gray-600 font-medium">
+            {suchKandidaten.length === 0
+              ? 'Keine Mitarbeiter gefunden'
+              : `${suchKandidaten.length} Mitarbeiter — zum Öffnen anklicken`}
+          </div>
+          {suchKandidaten.length > 0 && (
+            <ul className="max-h-[480px] overflow-y-auto divide-y divide-gray-100">
+              {suchKandidaten.map((m) => (
+                <li key={m.id}>
+                  <button
+                    onClick={() => setSelectedMaId(m.id)}
+                    className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-blue-50 transition-colors"
+                  >
+                    <div>
+                      <div className="font-medium text-gray-800 text-sm">
+                        {m.hatFestgehalt ? '🔒 ' : ''}{m.name}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {m.nummer} ·{' '}
+                        {m.rollen.map((r) => ROLLEN_LABELS[r]).join(', ') || 'ohne Rolle'}
+                      </div>
+                    </div>
+                    <span className="text-xs text-blue-600">Öffnen →</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 
@@ -117,6 +264,13 @@ function ZeitübersichtInhalt() {
                 sub={`${stundenlohn?.toFixed(2)} €/h`}
               />
             )}
+            {ma?.hatFestgehalt && (
+              <SummaryCard
+                label="Lohn (Zeiterfassung)"
+                value="Festgehalt"
+                sub="Zeit fließt nicht ein"
+              />
+            )}
             {fahrtkostenGesamt > 0 && (
               <SummaryCard
                 label="Fahrtkosten"
@@ -125,16 +279,52 @@ function ZeitübersichtInhalt() {
             )}
           </div>
 
+          {/* Info: nicht in Zeit-Lohn einbezogene Tätigkeiten */}
+          {!ma?.hatFestgehalt &&
+            (minutenNichtAbgerechnet.austragen > 0 ||
+              minutenNichtAbgerechnet.zusammentragen > 0) && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-6 text-sm">
+                <div className="font-medium text-blue-800 mb-1">
+                  ℹ Nicht im Zeit-Lohn enthalten (separate Abrechnung):
+                </div>
+                <ul className="space-y-0.5 text-blue-700">
+                  {minutenNichtAbgerechnet.austragen > 0 && (
+                    <li>
+                      • <strong>Austragen:</strong>{' '}
+                      {formatierDauer(minutenNichtAbgerechnet.austragen)} — Abrechnung
+                      erfolgt über Teilgebiet (Strecke + Stückzahl)
+                    </li>
+                  )}
+                  {minutenNichtAbgerechnet.zusammentragen > 0 && (
+                    <li>
+                      • <strong>Zusammentragen:</strong>{' '}
+                      {formatierDauer(minutenNichtAbgerechnet.zusammentragen)} —
+                      Abrechnung erfolgt über Stapel/Stückzahl
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
           {/* Sessions-Tabelle */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
             <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 font-medium text-sm text-gray-600">
               Arbeitstage — {MONATSNAMEN[monat - 1]} {jahr}
             </div>
-            {sessions.length === 0 ? (
-              <div className="p-6 text-center text-gray-400 text-sm">
-                Keine Zeiten erfasst in diesem Monat
-              </div>
-            ) : (
+            {(() => {
+              const angezeigteSessions = filterTyp
+                ? sessions.filter((s) => s.typ === filterTyp)
+                : sessions;
+              if (angezeigteSessions.length === 0) {
+                return (
+                  <div className="p-6 text-center text-gray-400 text-sm">
+                    {sessions.length === 0
+                      ? 'Keine Zeiten erfasst in diesem Monat'
+                      : `Keine Zeiten vom Typ "${TYP_LABELS[filterTyp as ArbeitszeitsTyp]}" in diesem Monat`}
+                  </div>
+                );
+              }
+              return (
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-100">
                   <tr>
@@ -148,7 +338,7 @@ function ZeitübersichtInhalt() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {sessions.map((s) => (
+                  {angezeigteSessions.map((s) => (
                     <tr key={s.id} className={`hover:bg-gray-50 ${s.autoGeschlossenUm24 ? 'bg-amber-50' : ''}`}>
                       <td className="px-4 py-2.5 text-gray-700">{formatierDatum(s.startTime)}</td>
                       <td className="px-4 py-2.5 text-gray-700">{formatierZeit(s.startTime)}</td>
@@ -186,13 +376,34 @@ function ZeitübersichtInhalt() {
                   ))}
                 </tbody>
               </table>
-            )}
+              );
+            })()}
           </div>
 
           {/* Fahrten (read-only — Erfassung über Fahrtkosten-Screen) */}
           <FahrtenÜbersicht fahrten={fahrten} fahrtSatz={fahrtSatz} />
         </>
       )}
+
+      {/* Neue-Zeit-Modal */}
+      <Modal
+        isOpen={showNeueZeit}
+        onClose={() => setShowNeueZeit(false)}
+        title="Neue Arbeitszeit erfassen"
+        size="md"
+      >
+        <NeueZeitForm
+          aktiveMitarbeiter={aktiveMitarbeiter}
+          vorausgewaehlteMaId={selectedMaId}
+          adminName={adminName}
+          ausgaben={ausgaben}
+          onSaved={() => {
+            setShowNeueZeit(false);
+            setReloadKey((k) => k + 1);
+          }}
+          onCancel={() => setShowNeueZeit(false)}
+        />
+      </Modal>
 
       {/* Korrektur-Modal */}
       <Modal
@@ -205,6 +416,7 @@ function ZeitübersichtInhalt() {
           <SessionKorrektur
             session={editSession}
             adminName={adminName}
+            ausgaben={ausgaben}
             onSave={async (changes, begruendung) => {
               await korrigiereSession(editSession, changes, adminName, begruendung);
               setSessions((prev) => prev.map((s) =>
@@ -291,11 +503,13 @@ function FahrtenÜbersicht({ fahrten, fahrtSatz }: { fahrten: Fahrt[]; fahrtSatz
 function SessionKorrektur({
   session,
   adminName: _adminName,
+  ausgaben,
   onSave,
   onCancel,
 }: {
   session: Arbeitszeit;
   adminName: string;
+  ausgaben: Ausgabe[];
   onSave: (changes: Partial<Arbeitszeit>, begruendung: string) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -313,15 +527,22 @@ function SessionKorrektur({
 
   const [startStr, setStartStr] = useState(toTimeInput(session.startTime));
   const [endeStr, setEndeStr] = useState(toTimeInput(session.endTime));
+  const [typ, setTyp] = useState<ArbeitszeitsTyp>(session.typ);
+  const [ausgabeId, setAusgabeId] = useState<string>(session.ausgabeId ?? '');
   const [begruendung, setBegruendung] = useState('');
   const [saving, setSaving] = useState(false);
 
   async function handleSave() {
     if (!begruendung.trim()) return;
+    if (typ === 'vorarbeit' && !ausgabeId) return;
     setSaving(true);
     const changes: Partial<Arbeitszeit> = {};
     if (startStr) changes.startTime = fromTimeInput(session.startTime, startStr);
     if (endeStr) changes.endTime = fromTimeInput(session.endTime ?? session.startTime, endeStr);
+    if (typ !== session.typ) changes.typ = typ;
+    if (ausgabeId !== (session.ausgabeId ?? '')) {
+      changes.ausgabeId = ausgabeId || undefined;
+    }
     await onSave(changes, begruendung);
     setSaving(false);
   }
@@ -337,6 +558,37 @@ function SessionKorrektur({
           <label className="block text-sm font-medium text-gray-700 mb-1">Ende</label>
           <input type="time" value={endeStr} onChange={(e) => setEndeStr(e.target.value)} className={inputClass} />
         </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Typ</label>
+        <select
+          value={typ}
+          onChange={(e) => setTyp(e.target.value as ArbeitszeitsTyp)}
+          className={inputClass}
+        >
+          {(Object.keys(TYP_LABELS) as ArbeitszeitsTyp[]).map((t) => (
+            <option key={t} value={t}>{TYP_LABELS[t]}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Ausgabe {typ === 'vorarbeit' ? '*' : <span className="text-gray-400 text-xs">(optional)</span>}
+        </label>
+        <select
+          value={ausgabeId}
+          onChange={(e) => setAusgabeId(e.target.value)}
+          className={inputClass}
+        >
+          <option value="">— keine Zuordnung —</option>
+          {ausgaben.map((a) => (
+            <option key={a.id} value={a.id}>
+              KW {a.kw}/{a.jahr}
+              {a.vorarbeitFreigegeben ? ' ✓ (Vorarbeit erlaubt)' : ''}
+            </option>
+          ))}
+        </select>
       </div>
 
       {session.korrekturLog.length > 0 && (
@@ -377,3 +629,326 @@ function SessionKorrektur({
 
 const selectClass = 'border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
 const inputClass = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+
+// ---- Neue-Zeit-Formular -----------------------------------
+
+/** Leitet den Default-Typ aus den Rollen eines Mitarbeiters ab.
+ *  - Genau eine Rolle → eindeutige Vorbelegung
+ *  - Mehrere Rollen → '' (keine Vorbelegung)
+ */
+function defaultTypFuerRollen(rollen: Rolle[] | undefined): ArbeitszeitsTyp | '' {
+  if (!rollen || rollen.length !== 1) return '';
+  switch (rollen[0]) {
+    case 'austräger': return 'austragen';
+    case 'zusammenträger': return 'zusammentragen';
+    case 'sonstige': return 'sonstige';
+    default: return '';
+  }
+}
+
+function NeueZeitForm({
+  aktiveMitarbeiter,
+  vorausgewaehlteMaId,
+  adminName,
+  ausgaben,
+  onSaved,
+  onCancel,
+}: {
+  aktiveMitarbeiter: { id: string; name: string; nummer: string; rollen?: Rolle[] }[];
+  vorausgewaehlteMaId: string;
+  adminName: string;
+  ausgaben: Ausgabe[];
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const { abrechnungsperioden } = useApp();
+  const sortiert = [...aktiveMitarbeiter].sort((a, b) => a.name.localeCompare(b.name));
+  const heute = new Date();
+  const heuteIso = `${heute.getFullYear()}-${(heute.getMonth() + 1).toString().padStart(2, '0')}-${heute.getDate().toString().padStart(2, '0')}`;
+
+  // Letzte (aktuellste) Ausgabe als Default — ausgaben ist bereits sortiert
+  const defaultAusgabeId = ausgaben.length > 0 ? ausgaben[0].id : '';
+
+  const [maId, setMaId] = useState(vorausgewaehlteMaId || '');
+  // Typ-Vorbelegung aus der (ggf. eindeutigen) Rolle des MA
+  const initialTyp: ArbeitszeitsTyp | '' = (() => {
+    if (!vorausgewaehlteMaId) return '';
+    const ma = aktiveMitarbeiter.find((m) => m.id === vorausgewaehlteMaId);
+    return defaultTypFuerRollen(ma?.rollen);
+  })();
+  const [typ, setTyp] = useState<ArbeitszeitsTyp | ''>(initialTyp);
+  const [ausgabeId, setAusgabeId] = useState<string>(defaultAusgabeId);
+
+  // Bei MA-Wechsel Typ entsprechend der Rolle neu vorbelegen
+  useEffect(() => {
+    if (!maId) { setTyp(''); return; }
+    const ma = aktiveMitarbeiter.find((m) => m.id === maId);
+    setTyp(defaultTypFuerRollen(ma?.rollen));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maId]);
+  const [datum, setDatum] = useState(heuteIso);
+  const [von, setVon] = useState('08:00');
+  const [bis, setBis] = useState('16:00');
+  const [pausenMinuten, setPausenMinuten] = useState('0');
+  const [kommentar, setKommentar] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [fehler, setFehler] = useState('');
+
+  // Wenn Ausgaben erst nachträglich geladen werden: Default nachziehen
+  useEffect(() => {
+    if (!ausgabeId && ausgaben.length > 0) setAusgabeId(ausgaben[0].id);
+  }, [ausgaben, ausgabeId]);
+
+  function kombiniereZeit(datumIso: string, zeit: string): number {
+    const [y, m, d] = datumIso.split('-').map(Number);
+    const [h, min] = zeit.split(':').map(Number);
+    return new Date(y, m - 1, d, h, min, 0, 0).getTime();
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setFehler('');
+    if (!maId) {
+      setFehler('Bitte Mitarbeiter auswählen.');
+      return;
+    }
+    if (!typ) {
+      setFehler('Bitte einen Typ auswählen.');
+      return;
+    }
+    if (typ === 'vorarbeit' && !ausgabeId) {
+      setFehler('Bitte eine Ausgabe auswählen, der die Vorarbeit zugeordnet werden soll.');
+      return;
+    }
+    const startTime = kombiniereZeit(datum, von);
+    const endTime = kombiniereZeit(datum, bis);
+    if (endTime <= startTime) {
+      setFehler('Bis-Zeit muss nach Von-Zeit liegen.');
+      return;
+    }
+    const pausen = Math.max(0, parseInt(pausenMinuten || '0', 10));
+    const bruttoMin = (endTime - startTime) / 60_000;
+    if (pausen > bruttoMin) {
+      setFehler('Pausenminuten überschreiten die Arbeitszeit.');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      // ---- Überlappungsprüfung: gleicher Mitarbeiter darf keine parallele Zeit haben ----
+      const bestehend = await ladeArbeitszeiten(maId);
+      const konflikt = bestehend.find((a) => {
+        const aEnde = a.endTime ?? Date.now(); // offene Session: bis jetzt
+        // Überlappt, wenn nicht komplett davor oder danach
+        return !(endTime <= a.startTime || startTime >= aEnde);
+      });
+      if (konflikt) {
+        const kStart = new Date(konflikt.startTime);
+        const kEnde = konflikt.endTime ? new Date(konflikt.endTime) : null;
+        const fmt = (d: Date) =>
+          d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        setFehler(
+          `Überlappung mit bestehender Arbeitszeit (${TYP_LABELS[konflikt.typ] ?? konflikt.typ}): ` +
+          `${fmt(kStart)}${kEnde ? ` → ${fmt(kEnde)}` : ' → (aktiv)'}. ` +
+          `Eine Person kann zu einem Zeitpunkt nur eine Tätigkeit ausführen.`
+        );
+        setSaving(false);
+        return;
+      }
+
+      const log: AuditEintrag = {
+        zeitstempel: Date.now(),
+        adminName: adminName || 'Admin',
+        aktion: 'Manuell erfasst',
+      };
+      if (kommentar && kommentar.trim()) {
+        log.nachher = kommentar.trim();
+      }
+      const payload: Parameters<typeof erstelleArbeitszeit>[0] = {
+        mitarbeiterId: maId,
+        startTime,
+        endTime,
+        status: 'abgeschlossen',
+        quelle: 'manuell',
+        typ: typ as ArbeitszeitsTyp,
+        pausen: [],
+        gesamtPauseMinuten: pausen,
+        korrekturLog: [log],
+        autoGeschlossenUm24: false,
+      };
+      if (ausgabeId) payload.ausgabeId = ausgabeId;
+      await erstelleArbeitszeit(payload);
+      onSaved();
+    } catch (err: any) {
+      setFehler(err?.message ?? 'Speichern fehlgeschlagen.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Mitarbeiter *</label>
+        <select
+          value={maId}
+          onChange={(e) => setMaId(e.target.value)}
+          className={inputClass}
+          required
+        >
+          <option value="">— auswählen —</option>
+          {sortiert.map((m) => (
+            <option key={m.id} value={m.id}>{m.name} ({m.nummer})</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Typ *</label>
+        <select
+          value={typ}
+          onChange={(e) => setTyp(e.target.value as ArbeitszeitsTyp | '')}
+          className={inputClass}
+          required
+        >
+          <option value="">— auswählen —</option>
+          {(Object.keys(TYP_LABELS) as ArbeitszeitsTyp[]).map((t) => (
+            <option key={t} value={t}>{TYP_LABELS[t]}</option>
+          ))}
+        </select>
+        {maId && !typ && (() => {
+          const ma = aktiveMitarbeiter.find((m) => m.id === maId);
+          if (ma?.rollen && ma.rollen.length > 1) {
+            return (
+              <p className="text-xs text-gray-500 mt-1">
+                Mitarbeiter hat mehrere Kategorien ({ma.rollen.map((r) => ROLLEN_LABELS[r] ?? r).join(', ')}) — Typ bitte manuell wählen.
+              </p>
+            );
+          }
+          return null;
+        })()}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Ausgabe {typ === 'vorarbeit' ? '*' : <span className="text-gray-400 text-xs">(optional)</span>}
+        </label>
+        <select
+          value={ausgabeId}
+          onChange={(e) => setAusgabeId(e.target.value)}
+          className={inputClass}
+          required={typ === 'vorarbeit'}
+        >
+          <option value="">— keine Zuordnung —</option>
+          {ausgaben.map((a) => (
+            <option key={a.id} value={a.id}>
+              KW {a.kw}/{a.jahr}
+              {a.vorarbeitFreigegeben ? ' ✓ (Vorarbeit erlaubt)' : ''}
+            </option>
+          ))}
+        </select>
+        {typ === 'vorarbeit' && ausgabeId && !ausgaben.find((a) => a.id === ausgabeId)?.vorarbeitFreigegeben && (
+          <p className="text-xs text-amber-600 mt-1">
+            ⚠ In dieser Ausgabe ist Vorarbeit (noch) nicht erlaubt — die Zeit wird erfasst,
+            fließt aber erst in den Lohn, wenn das Kennzeichen gesetzt wird.
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Datum *</label>
+          <input
+            type="date"
+            value={datum}
+            onChange={(e) => setDatum(e.target.value)}
+            className={inputClass}
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Von *</label>
+          <input
+            type="time"
+            value={von}
+            onChange={(e) => setVon(e.target.value)}
+            className={inputClass}
+            required
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Bis *</label>
+          <input
+            type="time"
+            value={bis}
+            onChange={(e) => setBis(e.target.value)}
+            className={inputClass}
+            required
+          />
+        </div>
+      </div>
+
+      {/* Hinweis: ausgewählter Zeitraum berührt eine bereits abgeschlossene Periode */}
+      {(() => {
+        const start = kombiniereZeit(datum, von);
+        const end = kombiniereZeit(datum, bis);
+        const periodeAbgeschlossen = findAbgeschlossenePeriodeFuerZeitraum(
+          abrechnungsperioden,
+          start,
+          end > start ? end : start
+        );
+        if (!periodeAbgeschlossen) return null;
+        return (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            ⚠ <span className="font-medium">{periodeAbgeschlossen.bezeichnung}</span> ist
+            bereits abgeschlossen. Die Zeit kann gespeichert werden, fließt aber
+            <span className="font-medium"> nicht mehr in die Abrechnung</span>{' '}
+            ein, da die Periode gesperrt und ihr Ergebnis fixiert ist.
+          </div>
+        );
+      })()}
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Pausenminuten</label>
+          <input
+            type="number"
+            min={0}
+            value={pausenMinuten}
+            onChange={(e) => setPausenMinuten(e.target.value)}
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Kommentar</label>
+          <input
+            type="text"
+            value={kommentar}
+            onChange={(e) => setKommentar(e.target.value)}
+            placeholder="optional"
+            className={inputClass}
+          />
+        </div>
+      </div>
+
+      {fehler && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+          {fehler}
+        </div>
+      )}
+
+      <div className="flex justify-end gap-3">
+        <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">
+          Abbrechen
+        </button>
+        <button
+          type="submit"
+          disabled={saving}
+          className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? 'Speichere...' : 'Speichern'}
+        </button>
+      </div>
+    </form>
+  );
+}

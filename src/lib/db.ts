@@ -9,6 +9,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
   query,
   where,
   orderBy,
@@ -33,8 +34,12 @@ import type {
   Reklamation,
   Parameter,
   AuditLog,
+  VariablerPeriodenZusatz,
+  AuslieferungsMemo,
+  LohnkontoBuchung,
 } from '../types';
 import { berechneStapel } from './berechnung';
+import { normalisiereRollen } from '../types';
 
 // ---- Hilfsfunktionen ---------------------------------------
 
@@ -49,12 +54,42 @@ function stripUndef(obj: Record<string, unknown>): Record<string, unknown> {
   );
 }
 
+/**
+ * Rekursive Variante: entfernt undefined an beliebiger Tiefe (in Objekten und
+ * innerhalb von Array-Elementen). Wird benötigt für komplexe Snapshots wie
+ * `abrechnungSnapshot.ergebnisse`, in denen viele optionale Felder eingebettet
+ * sind (z. B. `mitarbeiter.nfcUid`, `bonusKommentar`, …). Firestore lehnt
+ * jedes `undefined` mit „Unsupported field value" ab.
+ */
+function stripUndefDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => stripUndefDeep(v)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === undefined) continue;
+      out[k] = stripUndefDeep(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
 // ---- Parameter (Singleton in meta/parameter) ---------------
+
+function withParameterDefaults(p: Parameter): Parameter {
+  return {
+    ...p,
+    austragenNachIstZeit: p.austragenNachIstZeit ?? false,
+    zusammentragenNachIstZeit: p.zusammentragenNachIstZeit ?? false,
+  };
+}
 
 export async function ladeParameter(): Promise<Parameter | null> {
   const snap = await getDoc(doc(db, 'meta', 'parameter'));
   if (!snap.exists()) return null;
-  return snap.data() as Parameter;
+  return withParameterDefaults(snap.data() as Parameter);
 }
 
 export async function speichereParameter(params: Partial<Parameter>): Promise<void> {
@@ -63,22 +98,35 @@ export async function speichereParameter(params: Partial<Parameter>): Promise<vo
 
 export function parameterListener(cb: (p: Parameter | null) => void): Unsubscribe {
   return onSnapshot(doc(db, 'meta', 'parameter'), (snap) => {
-    cb(snap.exists() ? (snap.data() as Parameter) : null);
+    cb(snap.exists() ? withParameterDefaults(snap.data() as Parameter) : null);
   });
 }
 
 // ---- Mitarbeiter -------------------------------------------
 
+function normalisiereMitarbeiterDoc(id: string, raw: Record<string, unknown>): Mitarbeiter {
+  const data = { ...raw } as Record<string, unknown>;
+  // abrechnungstyp (alt) verwerfen
+  delete data.abrechnungstyp;
+  const rollen = normalisiereRollen((raw.rollen as string[] | undefined) ?? []);
+  return {
+    id,
+    ...(data as Omit<Mitarbeiter, 'id' | 'rollen' | 'hatFestgehalt'>),
+    rollen,
+    hatFestgehalt: (raw.hatFestgehalt as boolean | undefined) ?? false,
+  } as Mitarbeiter;
+}
+
 export async function ladeMitarbeiter(): Promise<Mitarbeiter[]> {
   const q = query(collection(db, 'mitarbeiter'), orderBy('name'));
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Mitarbeiter));
+  return snap.docs.map((d) => normalisiereMitarbeiterDoc(d.id, d.data()));
 }
 
 export function mitarbeiterListener(cb: (list: Mitarbeiter[]) => void): Unsubscribe {
   const q = query(collection(db, 'mitarbeiter'), orderBy('name'));
   return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Mitarbeiter)));
+    cb(snap.docs.map((d) => normalisiereMitarbeiterDoc(d.id, d.data())));
   });
 }
 
@@ -252,6 +300,10 @@ export async function aktualisiereAusgabe(
   await updateDoc(doc(db, 'ausgaben', id), update);
 }
 
+export async function loescheAusgabe(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'ausgaben', id));
+}
+
 // ---- Beilagen ----------------------------------------------
 
 export async function ladeBeilagen(ausgabeId?: string): Promise<Beilage[]> {
@@ -283,6 +335,60 @@ export async function loescheBeilage(id: string): Promise<void> {
   await deleteDoc(doc(db, 'beilagen', id));
 }
 
+// ---- Auslieferungs-Memos -----------------------------------
+
+export async function ladeAuslieferungsmemos(ausgabeId?: string): Promise<AuslieferungsMemo[]> {
+  const q = ausgabeId
+    ? query(collection(db, 'auslieferungsmemos'), where('ausgabeId', '==', ausgabeId))
+    : query(collection(db, 'auslieferungsmemos'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuslieferungsMemo));
+}
+
+export async function ladeAuslieferungsmemosFuerAusgaben(
+  ausgabeIds: string[]
+): Promise<AuslieferungsMemo[]> {
+  if (ausgabeIds.length === 0) return [];
+  // Firestore 'in'-Query: max 30 Werte
+  const result: AuslieferungsMemo[] = [];
+  for (let i = 0; i < ausgabeIds.length; i += 30) {
+    const batch = ausgabeIds.slice(i, i + 30);
+    const snap = await getDocs(
+      query(collection(db, 'auslieferungsmemos'), where('ausgabeId', 'in', batch))
+    );
+    for (const d of snap.docs) {
+      result.push({ id: d.id, ...d.data() } as AuslieferungsMemo);
+    }
+  }
+  return result;
+}
+
+export async function erstelleAuslieferungsmemo(
+  data: Omit<AuslieferungsMemo, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const now = Date.now();
+  const ref = await addDoc(collection(db, 'auslieferungsmemos'), {
+    ...data,
+    erstelltAm: now,
+    aktualisiertAm: now,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereAuslieferungsmemo(
+  id: string,
+  data: Partial<Omit<AuslieferungsMemo, 'id' | 'erstelltAm'>>
+): Promise<void> {
+  await updateDoc(doc(db, 'auslieferungsmemos', id), {
+    ...data,
+    aktualisiertAm: Date.now(),
+  });
+}
+
+export async function loescheAuslieferungsmemo(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'auslieferungsmemos', id));
+}
+
 // ---- Abrechnungsperioden -----------------------------------
 
 export async function ladeAbrechnungsperioden(): Promise<Abrechnungsperiode[]> {
@@ -310,13 +416,14 @@ export function abrechnungsperiodenListener(
 
 export async function erstelleAbrechnungsperiode(
   data: Omit<Abrechnungsperiode, 'id' | 'erstelltAm'>,
-  currentParams?: Parameter | null
+  _currentParams?: Parameter | null   // beibehalten für Rückwärtskompatibilität
 ): Promise<string> {
-  // Aktuellen Parameter-Stand als Snapshot speichern
-  const params = currentParams ?? await ladeParameter();
+  // KEIN Parameter-Snapshot beim Anlegen — solange die Periode offen ist,
+  // sollen Parameter-Änderungen weiterhin in die Berechnung einfließen.
+  // Der Snapshot wird erst bei "Periode abschließen" festgeschrieben.
+  void _currentParams;
   const ref = await addDoc(collection(db, 'abrechnungsperioden'), {
     ...stripUndef(data as Record<string, unknown>),
-    paramSnapshot: params ?? undefined,
     erstelltAm: now(),
   });
   return ref.id;
@@ -368,6 +475,33 @@ export async function setzeEinsatz(
 
 export async function loescheEinsatz(id: string): Promise<void> {
   await deleteDoc(doc(db, 'einsaetze', id));
+}
+
+/** Einsätze eines bestimmten Mitarbeiters laden (für Selbstmeldung) */
+export async function ladeEinsaetzeFuerMitarbeiter(
+  mitarbeiterId: string
+): Promise<Einsatz[]> {
+  const q = query(
+    collection(db, 'einsaetze'),
+    where('mitarbeiterId', '==', mitarbeiterId)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz));
+}
+
+/** Selbstmeldung des Austrägers speichern (Arbeitszeit + Restmenge) */
+export async function aktualisiereEinsatzMeldung(
+  id: string,
+  data: {
+    arbeitszeit: import('../types').AustraegerArbeitszeit;
+    restmenge: number;
+    meldungEingereichtAm: number;
+  }
+): Promise<void> {
+  await updateDoc(doc(db, 'einsaetze', id), {
+    ...data,
+    aktualisiertAm: now(),
+  });
 }
 
 // ---- Zusammentragen-Einsätze --------------------------------
@@ -439,9 +573,20 @@ export async function aktualisiereArbeitszeit(
   data: Partial<Arbeitszeit>
 ): Promise<void> {
   await updateDoc(doc(db, 'arbeitszeiten', id), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
     aktualisiertAm: now(),
   });
+}
+
+export async function loescheArbeitszeit(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'arbeitszeiten', id));
+}
+
+/** Lädt Arbeitszeiten einer bestimmten Ausgabe (Vorarbeit-Zuordnung) */
+export async function ladeArbeitszeitenFuerAusgabe(ausgabeId: string): Promise<Arbeitszeit[]> {
+  const q = query(collection(db, 'arbeitszeiten'), where('ausgabeId', '==', ausgabeId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
 }
 
 // ---- Fahrt-Erfassung (neue Collection) ----------------------
@@ -517,7 +662,15 @@ export async function entferneFahrtPeriode(fahrtId: string): Promise<void> {
 
 export async function schliessePeriodeAb(
   periodeId: string,
-  teilgebiete: Teilgebiet[]
+  teilgebiete: Teilgebiet[],
+  currentParams?: Parameter | null,
+  /**
+   * Berechnete Abrechnungs-Ergebnisse, die als Snapshot persistiert werden
+   * sollen. Typ ist `MitarbeiterAbrechnung[]` (aus lib/abrechnungslogik.ts) —
+   * hier `unknown[]` um zirkuläre Imports zu vermeiden. Der Aufrufer cast't
+   * entsprechend.
+   */
+  abrechnungErgebnisse?: unknown[]
 ): Promise<void> {
   const ts = now();
 
@@ -542,11 +695,36 @@ export async function schliessePeriodeAb(
     erstelltAm: ts,
   };
 
+  // Parameter-Snapshot ZUM ZEITPUNKT DES ABSCHLUSSES — danach sind die Werte
+  // für diese Periode unveränderlich und werden auch bei späteren Parameter-
+  // Änderungen nicht mehr beeinflusst (historische Richtigkeit).
+  const params = currentParams ?? (await ladeParameter());
+
+  // Abrechnungs-Snapshot (das berechnete Ergebnis) — wird hier persistiert,
+  // damit beim Anzeigen einer abgeschlossenen Periode kein Neuberechnen mehr
+  // nötig ist. Firestore akzeptiert keine `undefined`-Werte; deshalb explizit
+  // weglassen wenn nichts übergeben wurde.
+  // Datum: NICHT serverTimestamp, sondern numerischer ms-Stempel — Firestore
+  // erlaubt keine `serverTimestamp` innerhalb eines verschachtelten Arrays.
+  // WICHTIG: tief von `undefined` befreien — die `MitarbeiterAbrechnung`-
+  // Objekte enthalten viele optionale Felder (`bonusKommentar`, `nfcUid`,
+  // `stundenlohnIndividuell`, …), die Firestore sonst ablehnt.
+  const abrechnungSnapshotEintrag = abrechnungErgebnisse
+    ? {
+        ergebnisse: stripUndefDeep(abrechnungErgebnisse) as unknown[],
+        erstelltAm: ts,
+      }
+    : undefined;
+
   // Periode aktualisieren
   await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
-    status: 'abgeschlossen',
-    periodeSnapshot,
-    gesperrtAm: ts,
+    ...stripUndef({
+      status: 'abgeschlossen',
+      periodeSnapshot,
+      paramSnapshot: params ?? undefined,
+      abrechnungSnapshot: abrechnungSnapshotEintrag,
+      gesperrtAm: ts,
+    }),
   });
 
   // Alle Ausgaben dieser Periode auf 'abgeschlossen' setzen
@@ -572,9 +750,15 @@ export async function schliessePeriodeAb(
 // ---- Periode wieder öffnen (nur Admin) ---------------------
 
 export async function oeffnePeriodeWieder(periodeId: string): Promise<void> {
+  // Snapshots verwerfen — Periode soll nach Wieder-Öffnen erneut die aktuellen
+  // Parameter und Teilgebiet-Stammdaten verwenden. Beim nächsten Abschließen
+  // werden frische Snapshots geschrieben.
   await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
     status: 'offen',
     gesperrtAm: null,
+    paramSnapshot: deleteField(),
+    periodeSnapshot: deleteField(),
+    abrechnungSnapshot: deleteField(),
   });
 }
 
@@ -630,6 +814,98 @@ export async function aktualisiereReklamation(
 
 export async function loescheReklamation(id: string): Promise<void> {
   await deleteDoc(doc(db, 'reklamationen', id));
+}
+
+// ---- Variable Periodenzusätze ------------------------------
+
+export async function ladeVariablePeriodenZusaetze(
+  periodeId?: string
+): Promise<VariablerPeriodenZusatz[]> {
+  const q = periodeId
+    ? query(collection(db, 'variablePeriodenZusatz'), where('abrechnungsperiodeId', '==', periodeId))
+    : query(collection(db, 'variablePeriodenZusatz'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as VariablerPeriodenZusatz));
+}
+
+export function variablePeriodenZusaetzeListener(
+  cb: (list: VariablerPeriodenZusatz[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'variablePeriodenZusatz'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as VariablerPeriodenZusatz)));
+  });
+}
+
+export async function erstelleVariablenPeriodenZusatz(
+  data: Omit<VariablerPeriodenZusatz, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'variablePeriodenZusatz'), {
+    ...stripUndef(data as Record<string, unknown>),
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereVariablenPeriodenZusatz(
+  id: string,
+  data: Partial<VariablerPeriodenZusatz>
+): Promise<void> {
+  await updateDoc(doc(db, 'variablePeriodenZusatz', id), {
+    ...stripUndef(data as Record<string, unknown>),
+    aktualisiertAm: now(),
+  });
+}
+
+export async function loescheVariablenPeriodenZusatz(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'variablePeriodenZusatz', id));
+}
+
+// ---- Lohnkonto-Buchungen -----------------------------------
+
+export async function ladeLohnkontoBuchungen(
+  mitarbeiterId?: string
+): Promise<LohnkontoBuchung[]> {
+  const q = mitarbeiterId
+    ? query(collection(db, 'lohnkontoBuchungen'), where('mitarbeiterId', '==', mitarbeiterId))
+    : query(collection(db, 'lohnkontoBuchungen'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as LohnkontoBuchung));
+}
+
+export function lohnkontoBuchungenListener(
+  cb: (list: LohnkontoBuchung[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'lohnkontoBuchungen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as LohnkontoBuchung)));
+  });
+}
+
+export async function erstelleLohnkontoBuchung(
+  data: Omit<LohnkontoBuchung, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'lohnkontoBuchungen'), {
+    ...stripUndef(data as Record<string, unknown>),
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereLohnkontoBuchung(
+  id: string,
+  data: Partial<LohnkontoBuchung>
+): Promise<void> {
+  await updateDoc(doc(db, 'lohnkontoBuchungen', id), {
+    ...stripUndef(data as Record<string, unknown>),
+    aktualisiertAm: now(),
+  });
+}
+
+export async function loescheLohnkontoBuchung(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'lohnkontoBuchungen', id));
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

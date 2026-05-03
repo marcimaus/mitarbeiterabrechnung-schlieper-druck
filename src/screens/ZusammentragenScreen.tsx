@@ -3,39 +3,51 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import {
   ladeAusgaben,
+  ladeBeilagen,
   ladeZusammentragenEinsaetze,
   setzeZusammentragenEinsatz,
   loescheZusammentragenEinsatz,
+  ladeArbeitszeitenFuerAusgabe,
+  erstelleArbeitszeit,
+  aktualisiereArbeitszeit,
+  loescheArbeitszeit,
+  aktualisiereAusgabe,
 } from '../lib/db';
-import type { Ausgabe, ZusammentragenEinsatz } from '../types';
+import type { Ausgabe, Beilage, ZusammentragenEinsatz, Arbeitszeit } from '../types';
 import { kwLabel } from '../lib/kalender';
-
-// Sentinel-ID für Vorarbeit-Einträge (kein echtes Teilgebiet)
-const VORARBEIT_TG_ID = '__vorarbeit__';
+import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
+import { pruefeZeitUeberlappung, formatiereUeberlappungsFehler } from '../lib/zeiterfassung';
+import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
 
 export default function ZusammentragenScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <ZusammentragenInhalt />
     </AdminPinGate>
   );
 }
 
 function ZusammentragenInhalt() {
-  const { teilgebiete, mitarbeiter, touren } = useApp();
+  const { teilgebiete, mitarbeiter, touren, abrechnungsperioden, parameter } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [selectedAusgabeId, setSelectedAusgabeId] = useState('');
   const [alleEinsaetze, setAlleEinsaetze] = useState<ZusammentragenEinsatz[]>([]);
+  const [beilagen, setBeilagen] = useState<Beilage[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Vorarbeit-Dialog-State
-  const [vorarbeitNeuMA, setVorarbeitNeuMA] = useState('');
-  const [vorarbeitNeuH, setVorarbeitNeuH] = useState('0');
-  const [vorarbeitNeuM, setVorarbeitNeuM] = useState('00');
-  const [vorarbeitSaving, setVorarbeitSaving] = useState(false);
   const [vorarbeitAktiv, setVorarbeitAktiv] = useState(false); // lokaler Toggle-State
 
   const [tgSaving, setTgSaving] = useState<string | null>(null);
+
+  // ---- Such- und Filter-Zustand ----
+  const [suche, setSuche] = useState('');
+  const [filterTourId, setFilterTourId] = useState<string>('');
+  const [filterStatus, setFilterStatus] = useState<'' | 'zugewiesen' | 'offen'>('');
+
+  // ---- Mehrfachauswahl ----
+  const [auswahlIds, setAuswahlIds] = useState<Set<string>>(new Set());
+  const [bulkMitarbeiterId, setBulkMitarbeiterId] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
 
   useEffect(() => {
     ladeAusgaben().then((list) => {
@@ -50,19 +62,25 @@ function ZusammentragenInhalt() {
   useEffect(() => {
     if (!selectedAusgabeId) return;
     setLoading(true);
-    ladeZusammentragenEinsaetze(selectedAusgabeId).then((list) => {
+    const ausgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
+    // Vorarbeit-Erlaubnis aus der Ausgabe selbst (persistent) — Fallback: alte ZusammentragenEinsatz-Daten
+    Promise.all([
+      ladeZusammentragenEinsaetze(selectedAusgabeId),
+      ladeBeilagen(selectedAusgabeId),
+    ]).then(([list, bl]) => {
       setAlleEinsaetze(list);
-      // Vorarbeit-Zustand aus geladenen Daten ableiten
-      setVorarbeitAktiv(list.some((e) => e.istVorarbeit));
+      setBeilagen(bl);
+      setVorarbeitAktiv(
+        ausgabe?.vorarbeitFreigegeben === true || list.some((e) => e.istVorarbeit)
+      );
       setLoading(false);
     });
-  }, [selectedAusgabeId]);
+  }, [selectedAusgabeId, ausgaben]);
 
   const reload = async () => {
     if (!selectedAusgabeId) return;
     const list = await ladeZusammentragenEinsaetze(selectedAusgabeId);
     setAlleEinsaetze(list);
-    setVorarbeitAktiv(list.some((e) => e.istVorarbeit));
   };
 
   const selectedAusgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
@@ -78,49 +96,45 @@ function ZusammentragenInhalt() {
     .filter((tg) => tg.isActive)
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // ---- Filterung ----
+  const sucheNorm = suche.trim().toLowerCase();
+  const gefilterteTeilgebiete = aktiveTeilgebiete.filter((tg) => {
+    if (sucheNorm) {
+      const tour = touren.find((t) => t.id === tg.tourId);
+      const treffer =
+        tg.name.toLowerCase().includes(sucheNorm) ||
+        tg.plz.toLowerCase().includes(sucheNorm) ||
+        (tour?.name.toLowerCase().includes(sucheNorm) ?? false);
+      if (!treffer) return false;
+    }
+    if (filterTourId && tg.tourId !== filterTourId) return false;
+    if (filterStatus) {
+      const zugewiesen = !!tgMap[tg.id];
+      if (filterStatus === 'zugewiesen' && !zugewiesen) return false;
+      if (filterStatus === 'offen' && zugewiesen) return false;
+    }
+    return true;
+  });
+
   const zusammentraeger = mitarbeiter.filter(
     (m) => m.isActive && m.rollen.includes('zusammenträger')
   );
 
-  // Welche Zusammenträger haben noch keinen Vorarbeit-Eintrag?
-  const vorarbeitMaIds = new Set(vorarbeitEintraege.map((e) => e.mitarbeiterId));
-  const verfuegbarFuerVorarbeit = zusammentraeger.filter(
-    (m) => !vorarbeitMaIds.has(m.id)
-  );
-
   // ---- Vorarbeit-Toggle (an/aus) ---
   async function handleVorarbeitToggle(aktiv: boolean) {
+    if (!selectedAusgabe) return;
+    // Persistenz: Flag auf der Ausgabe speichern (wird auch in der Lohnberechnung geprüft)
+    await aktualisiereAusgabe(selectedAusgabe.id, { vorarbeitFreigegeben: aktiv });
+    // Lokale Ausgabenliste aktualisieren
+    setAusgaben((prev) => prev.map((a) => a.id === selectedAusgabe.id ? { ...a, vorarbeitFreigegeben: aktiv } : a));
+    // Ggf. alte ZusammentragenEinsatz-Vorarbeit-Einträge bei Deaktivierung löschen
     if (!aktiv && vorarbeitEintraege.length > 0) {
-      // Alle Vorarbeit-Einträge löschen
       for (const e of vorarbeitEintraege) {
         await loescheZusammentragenEinsatz(e.id);
       }
       await reload();
     }
     setVorarbeitAktiv(aktiv);
-  }
-
-  // ---- Vorarbeit-Eintrag hinzufügen ---
-  async function handleVorarbeitHinzufuegen() {
-    if (!selectedAusgabe || !vorarbeitNeuMA) return;
-    const minuten = parseInt(vorarbeitNeuH || '0') * 60 + parseInt(vorarbeitNeuM || '0');
-    setVorarbeitSaving(true);
-    try {
-      await setzeZusammentragenEinsatz({
-        ausgabeId: selectedAusgabe.id,
-        teilgebietId: VORARBEIT_TG_ID,
-        mitarbeiterId: vorarbeitNeuMA,
-        stapelBearbeitet: selectedAusgabe.stapelAnzahl,
-        istVorarbeit: true,
-        vorarbeitMinuten: minuten,
-      });
-      setVorarbeitNeuMA('');
-      setVorarbeitNeuH('0');
-      setVorarbeitNeuM('00');
-      await reload();
-    } finally {
-      setVorarbeitSaving(false);
-    }
   }
 
   // ---- Vorarbeit-Zeit aktualisieren ---
@@ -140,6 +154,53 @@ function ZusammentragenInhalt() {
   async function handleVorarbeitLoeschen(id: string) {
     await loescheZusammentragenEinsatz(id);
     await reload();
+  }
+
+  // ---- Mehrfachauswahl ---
+  function toggleAuswahl(tgId: string) {
+    setAuswahlIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(tgId)) n.delete(tgId);
+      else n.add(tgId);
+      return n;
+    });
+  }
+  function toggleAlleGefilterten(alleIds: string[]) {
+    const allSelected = alleIds.every((id) => auswahlIds.has(id));
+    setAuswahlIds((prev) => {
+      const n = new Set(prev);
+      if (allSelected) alleIds.forEach((id) => n.delete(id));
+      else alleIds.forEach((id) => n.add(id));
+      return n;
+    });
+  }
+  function leereAuswahl() {
+    setAuswahlIds(new Set());
+  }
+  async function handleBulkZuweisen() {
+    if (!selectedAusgabe || auswahlIds.size === 0) return;
+    setBulkSaving(true);
+    try {
+      for (const tgId of auswahlIds) {
+        if (!bulkMitarbeiterId) {
+          // Zuweisung entfernen
+          const e = tgMap[tgId];
+          if (e) await loescheZusammentragenEinsatz(e.id);
+        } else {
+          await setzeZusammentragenEinsatz({
+            ausgabeId: selectedAusgabe.id,
+            teilgebietId: tgId,
+            mitarbeiterId: bulkMitarbeiterId,
+            stapelBearbeitet: selectedAusgabe.stapelAnzahl,
+            istVorarbeit: false,
+          });
+        }
+      }
+      await reload();
+      leereAuswahl();
+    } finally {
+      setBulkSaving(false);
+    }
   }
 
   // ---- Normales Zusammentragen ---
@@ -168,7 +229,10 @@ function ZusammentragenInhalt() {
     }
   }
 
-  const istGesperrt = selectedAusgabe?.status === 'abgeschlossen';
+  const zugehoerigerPeriode = selectedAusgabe
+    ? abrechnungsperioden.find((p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen.includes(selectedAusgabe.kw))
+    : undefined;
+  const istGesperrt = zugehoerigerPeriode?.status === 'abgeschlossen';
   const zugewiesen = normalEinsaetze.length;
   const gesamt = aktiveTeilgebiete.length;
 
@@ -233,7 +297,7 @@ function ZusammentragenInhalt() {
                   }}
                   className="w-4 h-4 accent-amber-600"
                 />
-                <span className="font-semibold text-amber-900">Vorarbeit für diese Ausgabe</span>
+                <span className="font-semibold text-amber-900">Vorarbeit für diese Ausgabe erlauben</span>
               </label>
               <span className="text-xs text-amber-700">
                 (Zusatzarbeit vor dem eigentlichen Zusammentragen, wird nach Zeit abgerechnet)
@@ -267,37 +331,6 @@ function ZusammentragenInhalt() {
                   );
                 })}
 
-                {/* Neuen Vorarbeit-Eintrag hinzufügen */}
-                {verfuegbarFuerVorarbeit.length > 0 && (
-                  <div className="flex items-center gap-3 bg-white rounded-lg border border-dashed border-amber-300 px-4 py-2.5">
-                    <select
-                      value={vorarbeitNeuMA}
-                      onChange={(e) => setVorarbeitNeuMA(e.target.value)}
-                      className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
-                    >
-                      <option value="">— Zusammenträger wählen —</option>
-                      {verfuegbarFuerVorarbeit.map((m) => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </select>
-                    <VorarbeitZeitEingabe
-                      stunden={parseInt(vorarbeitNeuH) || 0}
-                      minuten={parseInt(vorarbeitNeuM) || 0}
-                      onSave={(h, m) => { setVorarbeitNeuH(h.toString()); setVorarbeitNeuM(m.toString().padStart(2, '0')); }}
-                    />
-                    <button
-                      onClick={handleVorarbeitHinzufuegen}
-                      disabled={!vorarbeitNeuMA || vorarbeitSaving || istGesperrt}
-                      className="ml-2 bg-amber-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-amber-700 disabled:opacity-50 transition-colors"
-                    >
-                      + Hinzufügen
-                    </button>
-                  </div>
-                )}
-
-                {verfuegbarFuerVorarbeit.length === 0 && zusammentraeger.length > 0 && (
-                  <p className="text-xs text-amber-700 pl-1">Alle Zusammenträger sind bereits eingetragen.</p>
-                )}
               </div>
             )}
 
@@ -306,29 +339,151 @@ function ZusammentragenInhalt() {
                 Haken setzen um Vorarbeit-Zeiten für diese Ausgabe zu erfassen.
               </p>
             )}
+
+            {vorarbeitAktiv && (
+              <ArbeitszeitVorarbeitSektion
+                ausgabeId={selectedAusgabe.id}
+                gesperrt={istGesperrt}
+                zusammentraeger={zusammentraeger}
+              />
+            )}
           </div>
 
           {/* ---- NORMALES ZUSAMMENTRAGEN (per Teilgebiet) ---- */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
-              <h2 className="font-semibold text-gray-800 text-sm">Zusammentragen je Teilgebiet</h2>
+            <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 flex flex-wrap items-center gap-3">
+              <h2 className="font-semibold text-gray-800 text-sm mr-2">Zusammentragen je Teilgebiet</h2>
+              <input
+                type="text"
+                placeholder="Suche Teilgebiet, PLZ, Tour…"
+                value={suche}
+                onChange={(e) => setSuche(e.target.value)}
+                className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
+              />
+              <select
+                value={filterTourId}
+                onChange={(e) => setFilterTourId(e.target.value)}
+                className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— alle Touren —</option>
+                {touren.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as '' | 'zugewiesen' | 'offen')}
+                className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— alle Status —</option>
+                <option value="zugewiesen">Zugewiesen</option>
+                <option value="offen">Offen</option>
+              </select>
+              {(suche || filterTourId || filterStatus) && (
+                <button
+                  type="button"
+                  onClick={() => { setSuche(''); setFilterTourId(''); setFilterStatus(''); }}
+                  className="text-xs text-gray-500 hover:text-gray-700 underline"
+                >
+                  Filter zurücksetzen
+                </button>
+              )}
+              <span className="ml-auto text-xs text-gray-500">
+                {gefilterteTeilgebiete.length} von {aktiveTeilgebiete.length}
+              </span>
             </div>
+            {/* ---- Bulk-Aktionsleiste ---- */}
+            {auswahlIds.size > 0 && !istGesperrt && (
+              <div className="px-4 py-2.5 bg-blue-50 border-b border-blue-200 flex flex-wrap items-center gap-3">
+                <span className="text-sm font-medium text-blue-900">
+                  {auswahlIds.size} Teilgebiet{auswahlIds.size === 1 ? '' : 'e'} ausgewählt
+                </span>
+                <select
+                  value={bulkMitarbeiterId}
+                  onChange={(e) => setBulkMitarbeiterId(e.target.value)}
+                  className="border border-blue-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">— Zuweisung entfernen —</option>
+                  {zusammentraeger.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleBulkZuweisen}
+                  disabled={bulkSaving}
+                  className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {bulkSaving ? '…' : bulkMitarbeiterId ? 'Zuweisen' : 'Entfernen'}
+                </button>
+                <button
+                  type="button"
+                  onClick={leereAuswahl}
+                  className="text-xs text-gray-500 hover:text-gray-700 underline"
+                >
+                  Auswahl leeren
+                </button>
+              </div>
+            )}
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
+                  <th className="px-3 py-3 w-8 text-center">
+                    <input
+                      type="checkbox"
+                      disabled={istGesperrt || gefilterteTeilgebiete.length === 0}
+                      checked={
+                        gefilterteTeilgebiete.length > 0 &&
+                        gefilterteTeilgebiete.every((tg) => auswahlIds.has(tg.id))
+                      }
+                      onChange={() => toggleAlleGefilterten(gefilterteTeilgebiete.map((tg) => tg.id))}
+                      className="w-4 h-4 rounded"
+                      title="Alle in der aktuellen Filteransicht auswählen"
+                    />
+                  </th>
                   <th className="px-4 py-3 text-left font-medium text-gray-600">Teilgebiet</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-600">Tour</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600" title="Anzahl interner Beilagen dieses Teilgebiets">int. Beil.</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600" title="Soll-Zeit für das Zusammentragen">Soll-Zeit</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-600">Zusammenträger</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {aktiveTeilgebiete.map((tg) => {
+                {gefilterteTeilgebiete.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-400">
+                      Keine Teilgebiete entsprechen den Filterkriterien.
+                    </td>
+                  </tr>
+                )}
+                {gefilterteTeilgebiete.map((tg) => {
                   const e = tgMap[tg.id];
                   const tour = touren.find((t) => t.id === tg.tourId);
                   const isSaving = tgSaving === tg.id;
+                  const selected = auswahlIds.has(tg.id);
+                  const intBeilTg = beilagen.filter(
+                    (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id)
+                  ).length;
+                  const sollZeitH = selectedAusgabe && parameter
+                    ? berechneZusammentragZeit(
+                        tg.stueckzahl,
+                        selectedAusgabe.stapelAnzahl,
+                        intBeilTg,
+                        parameter
+                      )
+                    : 0;
 
                   return (
-                    <tr key={tg.id} className={e ? 'bg-white' : 'bg-gray-50'}>
+                    <tr key={tg.id} className={selected ? 'bg-blue-50' : (e ? 'bg-white' : 'bg-gray-50')}>
+                      <td className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          disabled={istGesperrt}
+                          checked={selected}
+                          onChange={() => toggleAuswahl(tg.id)}
+                          className="w-4 h-4 rounded"
+                        />
+                      </td>
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-gray-900">{tg.name}</div>
                         <div className="text-xs text-gray-400">{tg.plz} · {tg.stueckzahl} Stk</div>
@@ -342,6 +497,12 @@ function ZusammentragenInhalt() {
                             {tour.name}
                           </span>
                         ) : <span className="text-gray-300">—</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-xs text-gray-600">
+                        {intBeilTg > 0 ? intBeilTg : <span className="text-gray-300">0</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-xs font-mono text-gray-700">
+                        {sollZeitH > 0 ? formatierStunden(sollZeitH) : <span className="text-gray-300">—</span>}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-2">
@@ -423,6 +584,384 @@ function VorarbeitZeitEingabe({
         title="Minuten"
       />
       <span className="text-xs text-gray-400 ml-0.5">h</span>
+    </div>
+  );
+}
+
+// ---- Arbeitszeit-basierte Vorarbeit-Sektion -------------------
+// Zeigt alle Arbeitszeit-Einträge mit typ='vorarbeit' und ausgabeId=<aktuelle Ausgabe>
+// Ermöglicht Neuanlage, Bearbeitung (Start/Ende) und Löschen.
+
+function ArbeitszeitVorarbeitSektion({
+  ausgabeId,
+  gesperrt,
+  zusammentraeger,
+}: {
+  ausgabeId: string;
+  gesperrt: boolean;
+  zusammentraeger: ReturnType<typeof useApp>['mitarbeiter'];
+}) {
+  const [zeiten, setZeiten] = useState<Arbeitszeit[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [neuForm, setNeuForm] = useState(false);
+
+  async function reload() {
+    setLoading(true);
+    try {
+      const all = await ladeArbeitszeitenFuerAusgabe(ausgabeId);
+      setZeiten(all.filter((a) => a.typ === 'vorarbeit').sort((a, b) => b.startTime - a.startTime));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ausgabeId]);
+
+  function formatDauer(a: Arbeitszeit): string {
+    if (!a.endTime) return '— aktiv —';
+    const ms = a.endTime - a.startTime - (a.gesamtPauseMinuten ?? 0) * 60_000;
+    const min = Math.max(0, Math.round(ms / 60_000));
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return `${h}h ${m.toString().padStart(2, '0')}min`;
+  }
+
+  function formatDatum(ts: number): string {
+    const d = new Date(ts);
+    return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  async function handleLoeschen(id: string) {
+    if (!confirm('Diesen Vorarbeit-Eintrag wirklich löschen?')) return;
+    await loescheArbeitszeit(id);
+    await reload();
+  }
+
+  return (
+    <div className="mt-5 pt-4 border-t border-amber-200">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-amber-900">
+          Erfasste Vorarbeitszeiten (aus Zeiterfassung) — {zeiten.length}
+        </h3>
+        {!gesperrt && !neuForm && (
+          <button
+            onClick={() => setNeuForm(true)}
+            className="text-xs bg-white border border-amber-400 text-amber-800 px-2.5 py-1 rounded hover:bg-amber-100 font-medium"
+          >
+            + Zeit hinzufügen
+          </button>
+        )}
+      </div>
+
+      {loading && <p className="text-xs text-amber-700">Lade...</p>}
+
+      {!loading && zeiten.length === 0 && !neuForm && (
+        <p className="text-xs text-amber-700 italic">Noch keine Arbeitszeit-Einträge für diese Ausgabe erfasst.</p>
+      )}
+
+      <div className="space-y-2">
+        {zeiten.map((z) => {
+          const ma = zusammentraeger.find((m) => m.id === z.mitarbeiterId)
+            ?? { id: z.mitarbeiterId, name: '(unbekannt / andere Rolle)' } as { id: string; name: string };
+          const isEditing = editId === z.id;
+          if (isEditing) {
+            return (
+              <ArbeitszeitEditForm
+                key={z.id}
+                arbeitszeit={z}
+                maName={ma.name}
+                onCancel={() => setEditId(null)}
+                onSaved={async () => { setEditId(null); await reload(); }}
+              />
+            );
+          }
+          return (
+            <div key={z.id} className="flex items-center gap-3 bg-white rounded-lg border border-amber-200 px-4 py-2">
+              <span className="font-medium text-gray-900 w-40 shrink-0 text-sm">{ma.name}</span>
+              <span className="text-xs text-gray-600">
+                {formatDatum(z.startTime)}
+                {z.endTime ? ` → ${formatDatum(z.endTime)}` : ''}
+              </span>
+              <span className="text-xs font-semibold text-amber-800 ml-2">{formatDauer(z)}</span>
+              <span className="text-[10px] uppercase tracking-wide text-gray-400 ml-auto">{z.quelle}</span>
+              {!gesperrt && (
+                <>
+                  <button
+                    onClick={() => setEditId(z.id)}
+                    className="text-blue-500 hover:text-blue-700 text-xs px-2 py-0.5 rounded hover:bg-blue-50"
+                  >
+                    Bearbeiten
+                  </button>
+                  <button
+                    onClick={() => handleLoeschen(z.id)}
+                    className="text-red-400 hover:text-red-600 text-sm px-2 py-0.5 rounded hover:bg-red-50"
+                    title="Eintrag löschen"
+                  >
+                    ✕
+                  </button>
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        {neuForm && (
+          <ArbeitszeitNeuForm
+            ausgabeId={ausgabeId}
+            zusammentraeger={zusammentraeger}
+            onCancel={() => setNeuForm(false)}
+            onSaved={async () => { setNeuForm(false); await reload(); }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---- Neu-Form für Arbeitszeit-Vorarbeit -----------------------
+
+function ArbeitszeitNeuForm({
+  ausgabeId,
+  zusammentraeger,
+  onCancel,
+  onSaved,
+}: {
+  ausgabeId: string;
+  zusammentraeger: ReturnType<typeof useApp>['mitarbeiter'];
+  onCancel: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const { abrechnungsperioden } = useApp();
+  const heute = new Date();
+  const defDatum = heute.toISOString().slice(0, 10);
+  const [maId, setMaId] = useState('');
+  const [datum, setDatum] = useState(defDatum);
+  const [startZeit, setStartZeit] = useState('08:00');
+  const [endZeit, setEndZeit] = useState('10:00');
+  const [saving, setSaving] = useState(false);
+
+  // Live-Warnung wenn der gewählte Zeitraum eine abgeschlossene Periode berührt.
+  const warnungPeriode = (() => {
+    const start = new Date(`${datum}T${startZeit}:00`).getTime();
+    const end = new Date(`${datum}T${endZeit}:00`).getTime();
+    return findAbgeschlossenePeriodeFuerZeitraum(
+      abrechnungsperioden,
+      start,
+      end > start ? end : start
+    );
+  })();
+
+  async function handleSpeichern() {
+    if (!maId) return;
+    const start = new Date(`${datum}T${startZeit}:00`).getTime();
+    const end = new Date(`${datum}T${endZeit}:00`).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      alert('Ende muss nach Start liegen.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const konflikt = await pruefeZeitUeberlappung(maId, start, end);
+      if (konflikt) {
+        alert(formatiereUeberlappungsFehler(konflikt));
+        setSaving(false);
+        return;
+      }
+      await erstelleArbeitszeit({
+        mitarbeiterId: maId,
+        startTime: start,
+        endTime: end,
+        status: 'abgeschlossen',
+        quelle: 'manuell',
+        typ: 'vorarbeit',
+        pausen: [],
+        gesamtPauseMinuten: 0,
+        korrekturLog: [{
+          zeitstempel: Date.now(),
+          adminName: 'Admin',
+          aktion: 'Vorarbeit manuell erfasst (Zusammentragen-Screen)',
+        }],
+        ausgabeId,
+      });
+      await onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-lg border-2 border-dashed border-amber-400 p-3 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <select
+          value={maId}
+          onChange={(e) => setMaId(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+        >
+          <option value="">— Mitarbeiter wählen —</option>
+          {zusammentraeger.map((m) => (
+            <option key={m.id} value={m.id}>{m.name}</option>
+          ))}
+        </select>
+        <input
+          type="date"
+          value={datum}
+          onChange={(e) => setDatum(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+        />
+        <input
+          type="time"
+          value={startZeit}
+          onChange={(e) => setStartZeit(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+        />
+        <span className="text-gray-400">bis</span>
+        <input
+          type="time"
+          value={endZeit}
+          onChange={(e) => setEndZeit(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+        />
+        <button
+          onClick={handleSpeichern}
+          disabled={!maId || saving}
+          className="bg-amber-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+        >
+          {saving ? '...' : 'Speichern'}
+        </button>
+        <button
+          onClick={onCancel}
+          className="text-gray-500 hover:text-gray-700 text-sm px-2"
+        >
+          Abbrechen
+        </button>
+      </div>
+      {warnungPeriode && (
+        <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+          ⚠ <span className="font-medium">{warnungPeriode.bezeichnung}</span> ist
+          bereits abgeschlossen. Die Zeit kann gespeichert werden, fließt aber
+          nicht mehr in die Abrechnung ein.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Edit-Form für Arbeitszeit-Vorarbeit ----------------------
+
+function ArbeitszeitEditForm({
+  arbeitszeit,
+  maName,
+  onCancel,
+  onSaved,
+}: {
+  arbeitszeit: Arbeitszeit;
+  maName: string;
+  onCancel: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const { abrechnungsperioden } = useApp();
+  const startDate = new Date(arbeitszeit.startTime);
+  const endDate = arbeitszeit.endTime ? new Date(arbeitszeit.endTime) : new Date(arbeitszeit.startTime + 60 * 60_000);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  const toDatum = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const toZeit = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const [datum, setDatum] = useState(toDatum(startDate));
+  const [startZeit, setStartZeit] = useState(toZeit(startDate));
+  const [endZeit, setEndZeit] = useState(toZeit(endDate));
+  const [saving, setSaving] = useState(false);
+
+  const warnungPeriode = (() => {
+    const start = new Date(`${datum}T${startZeit}:00`).getTime();
+    const end = new Date(`${datum}T${endZeit}:00`).getTime();
+    return findAbgeschlossenePeriodeFuerZeitraum(
+      abrechnungsperioden,
+      start,
+      end > start ? end : start
+    );
+  })();
+
+  async function handleSpeichern() {
+    const start = new Date(`${datum}T${startZeit}:00`).getTime();
+    const end = new Date(`${datum}T${endZeit}:00`).getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      alert('Ende muss nach Start liegen.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const konflikt = await pruefeZeitUeberlappung(arbeitszeit.mitarbeiterId, start, end, arbeitszeit.id);
+      if (konflikt) {
+        alert(formatiereUeberlappungsFehler(konflikt));
+        setSaving(false);
+        return;
+      }
+      await aktualisiereArbeitszeit(arbeitszeit.id, {
+        startTime: start,
+        endTime: end,
+        status: 'abgeschlossen',
+        korrekturLog: [
+          ...(arbeitszeit.korrekturLog ?? []),
+          {
+            zeitstempel: Date.now(),
+            adminName: 'Admin',
+            aktion: 'Vorarbeit Zeitbereich geändert (Zusammentragen-Screen)',
+          },
+        ],
+      });
+      await onSaved();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-blue-50 rounded-lg border-2 border-blue-300 p-3 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="font-medium text-gray-900 w-40 shrink-0 text-sm">{maName}</span>
+        <input
+          type="date"
+          value={datum}
+          onChange={(e) => setDatum(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+        />
+        <input
+          type="time"
+          value={startZeit}
+          onChange={(e) => setStartZeit(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+        />
+        <span className="text-gray-400">bis</span>
+        <input
+          type="time"
+          value={endZeit}
+          onChange={(e) => setEndZeit(e.target.value)}
+          className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+        />
+        <button
+          onClick={handleSpeichern}
+          disabled={saving}
+          className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? '...' : 'Speichern'}
+        </button>
+        <button
+          onClick={onCancel}
+          className="text-gray-500 hover:text-gray-700 text-sm px-2"
+        >
+          Abbrechen
+        </button>
+      </div>
+      {warnungPeriode && (
+        <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+          ⚠ <span className="font-medium">{warnungPeriode.bezeichnung}</span> ist
+          bereits abgeschlossen. Die Änderung kann gespeichert werden, fließt
+          aber nicht mehr in die Abrechnung ein.
+        </div>
+      )}
     </div>
   );
 }

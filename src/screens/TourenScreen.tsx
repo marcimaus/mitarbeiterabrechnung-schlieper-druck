@@ -8,14 +8,16 @@ import { STANDARD_TOUREN } from '../types';
 
 export default function TourenScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <TourenInhalt />
     </AdminPinGate>
   );
 }
 
 function TourenInhalt() {
-  const { touren, teilgebiete } = useApp();
+  const { touren, teilgebiete, userRole } = useApp();
+  // Abrechnung-Rolle: nur lesender Zugriff.
+  const isAdmin = userRole === 'admin';
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Tour | null>(null);
   const [selectedTourId, setSelectedTourId] = useState<string | null>(
@@ -50,22 +52,24 @@ function TourenInhalt() {
           <h1 className="text-2xl font-bold text-gray-900">Touren</h1>
           <p className="text-gray-500 text-sm">{touren.length} Touren angelegt</p>
         </div>
-        <div className="flex gap-2">
-          {touren.length === 0 && (
+        {isAdmin && (
+          <div className="flex gap-2">
+            {touren.length === 0 && (
+              <button
+                onClick={initialisierStandardTouren}
+                className="border border-blue-600 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
+              >
+                Standard-Touren anlegen
+              </button>
+            )}
             <button
-              onClick={initialisierStandardTouren}
-              className="border border-blue-600 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
+              onClick={() => { setEditTarget(null); setShowForm(true); }}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
             >
-              Standard-Touren anlegen
+              + Neue Tour
             </button>
-          )}
-          <button
-            onClick={() => { setEditTarget(null); setShowForm(true); }}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-          >
-            + Neue Tour
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-6">
@@ -124,14 +128,16 @@ function TourenInhalt() {
                   style={{ backgroundColor: selectedTour.farbe }}
                 />
                 <h2 className="font-semibold text-lg text-gray-900">{selectedTour.name}</h2>
-                <div className="flex gap-2 ml-auto">
-                  <button
-                    onClick={() => { setEditTarget(selectedTour); setShowForm(true); }}
-                    className="text-sm text-blue-600 hover:text-blue-800"
-                  >
-                    Bearbeiten
-                  </button>
-                </div>
+                {isAdmin && (
+                  <div className="flex gap-2 ml-auto">
+                    <button
+                      onClick={() => { setEditTarget(selectedTour); setShowForm(true); }}
+                      className="text-sm text-blue-600 hover:text-blue-800"
+                    >
+                      Bearbeiten
+                    </button>
+                  </div>
+                )}
               </div>
 
               <h3 className="text-sm font-medium text-gray-600 mb-3">

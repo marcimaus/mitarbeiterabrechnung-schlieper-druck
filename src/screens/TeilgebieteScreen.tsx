@@ -2,14 +2,14 @@ import { useState, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
-import { erstelleTeilgebiet, aktualisiereTeilgebiet } from '../lib/db';
+import { erstelleTeilgebiet, aktualisiereTeilgebiet, aktualisiereMitarbeiter } from '../lib/db';
 import type { Teilgebiet, Strasse, Sonderauslage, NichtBeliefen } from '../types';
 
 // ---- Hilfsfunktionen -------------------------------------------------------
 
 const newId = () => `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
 
-type TabId = 'grunddaten' | 'strassen' | 'sonderauslagen' | 'nichtBeliefen';
+type TabId = 'grunddaten' | 'strassen' | 'sonderauslagen' | 'nichtBeliefen' | 'freigaben';
 
 const DEFAULT_FORM: Omit<
   Teilgebiet,
@@ -34,18 +34,40 @@ const smallInputClass =
 
 export default function TeilgebieteScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <TeilgebieteInhalt />
     </AdminPinGate>
   );
 }
 
 function TeilgebieteInhalt() {
-  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden } = useApp();
+  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole } = useApp();
+  // Abrechnung-Rolle: nur lesender Zugriff (keine Bearbeitung).
+  const isAdmin = userRole === 'admin';
+
+  // Zeitwert (Stunden) aus Wegstrecke + Stückzahl
+  const zeitwertStunden = (tg: Teilgebiet): number => {
+    if (!parameter) return 0;
+    const laufH = parameter.laufgeschwindigkeitMProH > 0
+      ? tg.wegstreckeM / parameter.laufgeschwindigkeitMProH : 0;
+    const steckH = parameter.steckzeitStkProH > 0
+      ? tg.stueckzahl / parameter.steckzeitStkProH : 0;
+    return laufH + steckH;
+  };
+  const formatZeitwert = (tg: Teilgebiet) => {
+    if (!parameter) return '—';
+    const totalMin = Math.round(zeitwertStunden(tg) * 60);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h}:${m.toString().padStart(2, '0')} h`;
+  };
+  const formatEur = (betrag: number) =>
+    betrag.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Teilgebiet | null>(null);
   const [filterText, setFilterText] = useState('');
   const [filterTour, setFilterTour] = useState('');
+  const [filterAustraegerId, setFilterAustraegerId] = useState('');
   const [nurAktive, setNurAktive] = useState(true);
   const [historiePeriodeId, setHistoriePeriodeId] = useState('');
 
@@ -61,8 +83,20 @@ function TeilgebieteInhalt() {
       if (filterTour === '__keine__' && tg.tourId !== null) return false;
       if (filterTour !== '__keine__' && tg.tourId !== filterTour) return false;
     }
+    if (filterAustraegerId) {
+      if (filterAustraegerId === '__keiner__') {
+        if (tg.standardAustraegerId) return false;
+      } else if (tg.standardAustraegerId !== filterAustraegerId) {
+        return false;
+      }
+    }
     return true;
   });
+
+  // Austräger-Filterliste (alle Mitarbeiter mit Rolle 'austräger'), sortiert
+  const austraegerOptionen = mitarbeiter
+    .filter((m) => m.rollen.includes('austräger'))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const getTourName = (id: string | null) => {
     if (!id) return '—';
@@ -86,15 +120,17 @@ function TeilgebieteInhalt() {
             {teilgebiete.filter((t) => t.isActive).length} aktive Gebiete
           </p>
         </div>
-        <button
-          onClick={() => {
-            setEditTarget(null);
-            setShowForm(true);
-          }}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          + Neues Teilgebiet
-        </button>
+        {isAdmin && (
+          <button
+            onClick={() => {
+              setEditTarget(null);
+              setShowForm(true);
+            }}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+          >
+            + Neues Teilgebiet
+          </button>
+        )}
       </div>
 
       {/* Filter */}
@@ -119,6 +155,20 @@ function TeilgebieteInhalt() {
             </option>
           ))}
         </select>
+        <select
+          value={filterAustraegerId}
+          onChange={(e) => setFilterAustraegerId(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          title="Filter auf Standardausträger"
+        >
+          <option value="">Alle Austräger</option>
+          <option value="__keiner__">Ohne Austräger</option>
+          {austraegerOptionen.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
             type="checkbox"
@@ -128,6 +178,18 @@ function TeilgebieteInhalt() {
           />
           Nur aktive
         </label>
+        {(filterText || filterTour || filterAustraegerId) && (
+          <button
+            type="button"
+            onClick={() => { setFilterText(''); setFilterTour(''); setFilterAustraegerId(''); }}
+            className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+          >
+            ✕ Filter zurücksetzen
+          </button>
+        )}
+        <span className="text-xs text-gray-400 ml-auto self-center">
+          {gefiltert.length} {gefiltert.length === 1 ? 'Teilgebiet' : 'Teilgebiete'}
+        </span>
       </div>
 
       {/* Tabelle */}
@@ -139,6 +201,8 @@ function TeilgebieteInhalt() {
               <th className="text-left px-4 py-3 font-medium text-gray-600">PLZ</th>
               <th className="text-right px-4 py-3 font-medium text-gray-600">Stück</th>
               <th className="text-right px-4 py-3 font-medium text-gray-600">Wegstrecke</th>
+              <th className="text-right px-4 py-3 font-medium text-gray-600" title="Zeitwert aus Wegstrecke + Stückzahl laut Parameter">Zeitwert</th>
+              <th className="text-right px-4 py-3 font-medium text-gray-600" title="Mindestlohn Austräger je Ausgabe ohne Beilagen / Gewichtszuschlag — Erwachsen / Minderjährig">Mindestlohn<br /><span className="text-[10px] font-normal text-gray-400">erw. / minderj.</span></th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Tour</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Standardausträger</th>
               <th className="px-4 py-3"></th>
@@ -147,7 +211,7 @@ function TeilgebieteInhalt() {
           <tbody className="divide-y divide-gray-100">
             {gefiltert.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-center py-8 text-gray-400">
+                <td colSpan={9} className="text-center py-8 text-gray-400">
                   Keine Teilgebiete gefunden
                 </td>
               </tr>
@@ -168,6 +232,17 @@ function TeilgebieteInhalt() {
                   {tg.wegstreckeM >= 1000
                     ? `${(tg.wegstreckeM / 1000).toFixed(1)} km`
                     : `${tg.wegstreckeM} m`}
+                </td>
+                <td className="px-4 py-3 text-right text-gray-700 font-mono text-xs">
+                  {formatZeitwert(tg)}
+                </td>
+                <td className="px-4 py-3 text-right text-gray-700 font-mono text-xs">
+                  {parameter ? (
+                    <>
+                      <div>{formatEur(zeitwertStunden(tg) * parameter.stundenlohnErwachseneAustr)}</div>
+                      <div className="text-gray-400">{formatEur(zeitwertStunden(tg) * parameter.stundenlohnMinderjAustr)}</div>
+                    </>
+                  ) : '—'}
                 </td>
                 <td className="px-4 py-3">
                   {tg.tourId ? (
@@ -192,7 +267,7 @@ function TeilgebieteInhalt() {
                     }}
                     className="text-blue-600 hover:text-blue-800 text-xs font-medium"
                   >
-                    Bearbeiten
+                    {isAdmin ? 'Bearbeiten' : 'Anzeigen'}
                   </button>
                 </td>
               </tr>
@@ -482,8 +557,10 @@ function TeilgebietForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const { touren, mitarbeiter } = useApp();
+  const { touren, mitarbeiter, userRole } = useApp();
+  const isAdmin = userRole === 'admin';
   const [tab, setTab] = useState<TabId>('grunddaten');
+  const [nurAktiveAustraeger, setNurAktiveAustraeger] = useState(true);
 
   // Grunddaten
   const [form, setForm] = useState<typeof DEFAULT_FORM>(() =>
@@ -534,6 +611,17 @@ function TeilgebietForm({
     bemerkung: '',
   });
 
+  // Freigaben: Set der Mitarbeiter-IDs, die dieses Teilgebiet bedienen dürfen
+  const initialFreigabenIds = initial
+    ? mitarbeiter
+        .filter((m) => (m.teilgebietFreigaben ?? []).includes(initial.id))
+        .map((m) => m.id)
+    : [];
+  const [freigegebeneMitarbeiterIds, setFreigegebeneMitarbeiterIds] =
+    useState<string[]>(initialFreigabenIds);
+  const [freigabeFilter, setFreigabeFilter] = useState('');
+  const [freigabeNurAktive, setFreigabeNurAktive] = useState(true);
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -541,13 +629,11 @@ function TeilgebietForm({
   const strasseSumme = strassen.reduce((s, r) => s + (r.stueckzahl || 0), 0);
   const effektiveStueckzahl = form.stueckzahlManuell ? form.stueckzahl : strasseSumme;
 
-  // Nur Austräger zeigen die für dieses Teilgebiet freigegeben sind
-  // (oder keine Freigaben-Liste haben = alte Datensätze ohne Konfiguration)
+  // Nur Mitarbeiter mit expliziter Freigabe für dieses Teilgebiet (aus der aktuellen Freigabeliste).
+  // Strikt: auch bei neuem TG muss der MA in der Freigabeliste dieses Formulars stehen.
   const austraeger = mitarbeiter.filter((m) => {
-    if (!m.isActive || !m.rollen.includes('austräger')) return false;
-    const freigaben = m.teilgebietFreigaben;
-    if (!freigaben || freigaben.length === 0) return true; // keine Einschränkung
-    return initial ? freigaben.includes(initial.id) : true;
+    if (nurAktiveAustraeger && !m.isActive) return false;
+    return freigegebeneMitarbeiterIds.includes(m.id);
   });
 
   // ---- Speichern ----
@@ -572,11 +658,36 @@ function TeilgebietForm({
         sonderauslagen,
         nichtBeliefen,
       };
+      let tgId: string;
       if (initial) {
         await aktualisiereTeilgebiet(initial.id, payload);
+        tgId = initial.id;
       } else {
-        await erstelleTeilgebiet(payload);
+        tgId = await erstelleTeilgebiet(payload);
       }
+
+      // Freigaben je Mitarbeiter synchronisieren
+      const alt = new Set(initialFreigabenIds);
+      const neu = new Set(freigegebeneMitarbeiterIds);
+      const hinzuzufuegen = [...neu].filter((id) => !alt.has(id));
+      const zuEntfernen = [...alt].filter((id) => !neu.has(id));
+
+      const updates: Promise<void>[] = [];
+      for (const maId of hinzuzufuegen) {
+        const m = mitarbeiter.find((x) => x.id === maId);
+        if (!m) continue;
+        const liste = [...(m.teilgebietFreigaben ?? [])];
+        if (!liste.includes(tgId)) liste.push(tgId);
+        updates.push(aktualisiereMitarbeiter(maId, { teilgebietFreigaben: liste }));
+      }
+      for (const maId of zuEntfernen) {
+        const m = mitarbeiter.find((x) => x.id === maId);
+        if (!m) continue;
+        const liste = (m.teilgebietFreigaben ?? []).filter((x) => x !== tgId);
+        updates.push(aktualisiereMitarbeiter(maId, { teilgebietFreigaben: liste }));
+      }
+      await Promise.all(updates);
+
       onSave();
     } catch (err) {
       setError('Fehler beim Speichern.');
@@ -638,6 +749,7 @@ function TeilgebietForm({
     { id: 'strassen', label: 'Straßenliste', count: strassen.length },
     { id: 'sonderauslagen', label: 'Sonderauslagen', count: sonderauslagen.length },
     { id: 'nichtBeliefen', label: 'Nicht beliefern', count: nichtBeliefen.length },
+    { id: 'freigaben', label: 'Freigaben', count: freigegebeneMitarbeiterIds.length },
   ];
 
   return (
@@ -770,9 +882,25 @@ function TeilgebietForm({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Standardausträger
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-sm font-medium text-gray-700">
+                Standardausträger
+                {initial && (
+                  <span className="ml-1 text-xs font-normal text-gray-400">
+                    (nur mit Gebietsfreigabe)
+                  </span>
+                )}
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={nurAktiveAustraeger}
+                  onChange={(e) => setNurAktiveAustraeger(e.target.checked)}
+                  className="rounded"
+                />
+                nur aktive
+              </label>
+            </div>
             <select
               value={form.standardAustraegerId ?? ''}
               onChange={(e) =>
@@ -781,11 +909,26 @@ function TeilgebietForm({
               className={inputClass}
             >
               <option value="">Kein Standardausträger</option>
+              {austraeger.length === 0 && (
+                <option disabled value="">— keine Freigaben für dieses Gebiet vergeben —</option>
+              )}
               {austraeger.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name} ({m.nummer})
+                  {m.name} ({m.nummer}){!m.isActive ? ' [inaktiv]' : ''}
                 </option>
               ))}
+              {/* Falls bereits ein Standardausträger gesetzt ist, der NICHT freigegeben ist:
+                  trotzdem anzeigen, damit der Wert nicht unsichtbar verloren geht. */}
+              {form.standardAustraegerId &&
+                !austraeger.some((m) => m.id === form.standardAustraegerId) && (() => {
+                  const ma = mitarbeiter.find((m) => m.id === form.standardAustraegerId);
+                  if (!ma) return null;
+                  return (
+                    <option value={ma.id}>
+                      ⚠ {ma.name} ({ma.nummer}) — ohne Freigabe
+                    </option>
+                  );
+                })()}
             </select>
           </div>
 
@@ -1226,6 +1369,123 @@ function TeilgebietForm({
         </div>
       )}
 
+      {/* ---- Tab: Freigaben ---- */}
+      {tab === 'freigaben' && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Mitarbeiter mit der Rolle <strong>Austräger</strong>, die dieses Teilgebiet bedienen dürfen.
+            Die Freigabe ist bidirektional: Änderungen hier werden auch auf die jeweiligen Mitarbeiter-Stammdaten übertragen.
+          </p>
+
+          {/* Filter + Zähler */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <input
+              type="text"
+              placeholder="Mitarbeiter suchen..."
+              value={freigabeFilter}
+              onChange={(e) => setFreigabeFilter(e.target.value)}
+              className={smallInputClass + ' w-56'}
+            />
+            <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={freigabeNurAktive}
+                onChange={(e) => setFreigabeNurAktive(e.target.checked)}
+                className="rounded"
+              />
+              nur aktive
+            </label>
+            <span className="ml-auto text-xs text-gray-500">
+              {freigegebeneMitarbeiterIds.length} Freigabe
+              {freigegebeneMitarbeiterIds.length !== 1 ? 'n' : ''}
+            </span>
+          </div>
+
+          {/* Liste */}
+          <div className="border border-gray-200 rounded-lg overflow-hidden max-h-96 overflow-y-auto">
+            {(() => {
+              const sichtbar = mitarbeiter
+                .filter((m) => m.rollen?.includes('austräger'))
+                .filter((m) => !freigabeNurAktive || m.isActive)
+                .filter((m) => {
+                  if (!freigabeFilter.trim()) return true;
+                  const s = freigabeFilter.toLowerCase();
+                  return (
+                    m.name.toLowerCase().includes(s) || m.nummer.includes(freigabeFilter)
+                  );
+                })
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              if (sichtbar.length === 0) {
+                return (
+                  <div className="text-center py-6 text-gray-400 text-sm">
+                    Keine passenden Mitarbeiter gefunden.
+                  </div>
+                );
+              }
+
+              return (
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b border-gray-200 sticky top-0">
+                    <tr>
+                      <th className="px-3 py-2 w-10"></th>
+                      <th className="text-left px-3 py-2 font-medium text-gray-600">Name</th>
+                      <th className="text-left px-3 py-2 font-medium text-gray-600">Nummer</th>
+                      <th className="text-left px-3 py-2 font-medium text-gray-600">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {sichtbar.map((m) => {
+                      const checked = freigegebeneMitarbeiterIds.includes(m.id);
+                      return (
+                        <tr
+                          key={m.id}
+                          className={`hover:bg-gray-50 cursor-pointer ${checked ? 'bg-blue-50/40' : ''}`}
+                          onClick={() =>
+                            setFreigegebeneMitarbeiterIds((prev) =>
+                              checked ? prev.filter((x) => x !== m.id) : [...prev, m.id]
+                            )
+                          }
+                        >
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setFreigegebeneMitarbeiterIds((prev) =>
+                                  checked ? prev.filter((x) => x !== m.id) : [...prev, m.id]
+                                )
+                              }
+                              onClick={(e) => e.stopPropagation()}
+                              className="rounded"
+                            />
+                          </td>
+                          <td className="px-3 py-2 font-medium text-gray-800">{m.name}</td>
+                          <td className="px-3 py-2 text-gray-500 font-mono text-xs">{m.nummer}</td>
+                          <td className="px-3 py-2 text-xs">
+                            {m.isActive ? (
+                              <span className="text-green-700">aktiv</span>
+                            ) : (
+                              <span className="text-gray-400">inaktiv</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              );
+            })()}
+          </div>
+
+          {!initial && (
+            <p className="text-xs text-amber-600">
+              Hinweis: Bei einem neuen Teilgebiet werden die Freigaben erst nach dem Speichern wirksam.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Fehler + Aktionen (immer sichtbar) */}
       {error && <p className="text-red-600 text-sm mt-4">{error}</p>}
 
@@ -1240,15 +1500,17 @@ function TeilgebietForm({
         </div>
         <div className="flex gap-3">
           <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">
-            Abbrechen
+            {isAdmin ? 'Abbrechen' : 'Schließen'}
           </button>
-          <button
-            type="submit"
-            disabled={saving}
-            className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Speichere...' : initial ? 'Speichern' : 'Erstellen'}
-          </button>
+          {isAdmin && (
+            <button
+              type="submit"
+              disabled={saving}
+              className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              {saving ? 'Speichere...' : initial ? 'Speichern' : 'Erstellen'}
+            </button>
+          )}
         </div>
       </div>
     </form>

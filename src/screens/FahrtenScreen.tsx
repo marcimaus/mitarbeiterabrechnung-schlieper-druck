@@ -14,6 +14,15 @@ import {
 import type { Fahrt } from '../types';
 
 export default function FahrtenScreen() {
+  const [searchParams] = useSearchParams();
+  const { userRole, mitarbeiter } = useApp();
+  const urlMaId = searchParams.get('ma') ?? '';
+
+  // Wenn ?ma= gesetzt und NICHT eingeloggt → Login-freie Schnellerfassung
+  if (urlMaId && !userRole) {
+    return <FahrtNfcModus mitarbeiterId={urlMaId} mitarbeiter={mitarbeiter} />;
+  }
+
   return (
     <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>
       <FahrtenInhalt />
@@ -349,6 +358,153 @@ function FahrtenInhalt() {
           onCancel={() => setShowForm(false)}
         />
       </Modal>
+    </div>
+  );
+}
+
+// ---- NFC-Schnellerfassung (ohne Login) ---------------------
+
+function FahrtNfcModus({
+  mitarbeiterId,
+  mitarbeiter,
+}: {
+  mitarbeiterId: string;
+  mitarbeiter: ReturnType<typeof useApp>['mitarbeiter'];
+}) {
+  const ma = mitarbeiter.find((m) => m.id === mitarbeiterId);
+  const heute = new Date().toISOString().slice(0, 10);
+
+  const [datum, setDatum] = useState(heute);
+  const [ziel, setZiel] = useState('');
+  const [km, setKm] = useState('');
+  const [bemerkung, setBemerkung] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [meldung, setMeldung] = useState('');
+
+  // Warte bis Mitarbeiter geladen
+  if (mitarbeiter.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-gray-400 text-sm">Lade...</div>
+      </div>
+    );
+  }
+
+  if (!ma) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
+        <div className="bg-white rounded-xl shadow p-8 text-center max-w-sm w-full">
+          <div className="text-4xl mb-4">❌</div>
+          <p className="text-gray-700 font-medium">Mitarbeiter nicht gefunden.</p>
+        </div>
+      </div>
+    );
+  }
+
+  async function handleSpeichern(e: FormEvent) {
+    e.preventDefault();
+    const kmVal = parseFloat(km.replace(',', '.'));
+    if (!ziel.trim() || isNaN(kmVal) || kmVal <= 0) {
+      setMeldung('Bitte Ziel und gültige km-Anzahl eingeben.');
+      return;
+    }
+    setSaving(true);
+    setMeldung('');
+    try {
+      await erstelleFahrt({
+        mitarbeiterId,
+        datum,
+        streckKm: kmVal,
+        ziel: ziel.trim(),
+        bemerkung: bemerkung.trim() || undefined,
+      });
+      setMeldung('✓ Fahrt gespeichert');
+      setZiel('');
+      setKm('');
+      setBemerkung('');
+      setDatum(new Date().toISOString().slice(0, 10));
+    } catch (err) {
+      setMeldung('Fehler beim Speichern.');
+      console.error(err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-start justify-center pt-8 p-4">
+      <div className="bg-white rounded-2xl shadow-lg w-full max-w-sm overflow-hidden">
+        {/* Header */}
+        <div className="bg-blue-600 p-5 text-white text-center">
+          <div className="text-3xl mb-1">🚗</div>
+          <h1 className="text-lg font-bold">{ma.name}</h1>
+          <p className="text-sm opacity-80">Fahrtkosten erfassen</p>
+        </div>
+
+        <form onSubmit={handleSpeichern} className="p-5 space-y-3">
+          {meldung && (
+            <div className={`text-center text-sm font-medium py-2 px-3 rounded-lg ${
+              meldung.startsWith('✓') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+            }`}>
+              {meldung}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Datum</label>
+            <input
+              type="date"
+              value={datum}
+              onChange={(e) => setDatum(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Ziel / Route *</label>
+            <input
+              type="text"
+              value={ziel}
+              onChange={(e) => setZiel(e.target.value)}
+              placeholder="z.B. Göttingen – Lager"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Kilometer *</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.1"
+              value={km}
+              onChange={(e) => setKm(e.target.value)}
+              placeholder="0"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Bemerkung (optional)</label>
+            <input
+              type="text"
+              value={bemerkung}
+              onChange={(e) => setBemerkung(e.target.value)}
+              placeholder="optional"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={saving}
+            className="w-full py-3 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 transition-colors mt-1"
+          >
+            {saving ? 'Speichern…' : '💾 Fahrt speichern'}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

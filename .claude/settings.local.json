@@ -6,7 +6,16 @@
       "Bash(gh pr create --title 'Phase 4: Abrechnung & Excel-Export' --body ':*)",
       "Bash(where gh:*)",
       "mcp__Claude_Preview__preview_start",
-      "Bash(firebase deploy:*)"
+      "Bash(firebase deploy:*)",
+      "Bash(node -e \"const xlsx = require\\('xlsx'\\); console.log\\('xlsx ok'\\);\")",
+      "Bash(pip show:*)",
+      "Bash(python -c \"from odf.opendocument import load; print\\('odfpy ok'\\)\")",
+      "Bash(python -c \"import openpyxl; print\\('openpyxl ok'\\)\")",
+      "Bash(python -c \"import pandas; print\\('pandas ok'\\)\")",
+      "Bash(npm install:*)",
+      "Bash(node -e ':*)",
+      "Bash(findstr /i \"firebase service\")",
+      "Bash(node scripts/import-firestore.mjs)"
     ]
   }
 }

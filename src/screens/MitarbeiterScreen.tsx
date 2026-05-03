@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
 import {
   erstelleMitarbeiter,
   aktualisiereMitarbeiter,
@@ -9,9 +10,11 @@ import {
 } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { Mitarbeiter, Rolle, Abrechnungstyp, TeilgebietBonus } from '../types';
+import type { Mitarbeiter, Rolle, TeilgebietBonus } from '../types';
 import { ROLLEN_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
+import { nameMitFestgehaltSymbol } from '../utils';
+import { eur } from '../lib/abrechnungslogik';
 
 type MaFormTab = 'stammdaten' | 'freigaben' | 'boni';
 
@@ -24,25 +27,40 @@ const DEFAULT_FORM: Omit<Mitarbeiter, 'id' | 'erstelltAm' | 'aktualisiertAm' | '
   telefon: '',
   geburtsdatum: '',
   rollen: [],
-  abrechnungstyp: 'variabel',
+  hatFestgehalt: false,
+  istMinijob: false,
+  sozialversicherungsBefreit: false,
   isActive: true,
 };
 
 export default function MitarbeiterScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <MitarbeiterInhalt />
     </AdminPinGate>
   );
 }
 
 function MitarbeiterInhalt() {
-  const { mitarbeiter } = useApp();
+  const { mitarbeiter, lohnkontoBuchungen, userRole } = useApp();
+  const isAdmin = userRole === 'admin';
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Mitarbeiter | null>(null);
   const [filterText, setFilterText] = useState('');
   const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
   const [nurAktive, setNurAktive] = useState(true);
+  const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
+
+  // Maps: mitarbeiterId → Anzahl Buchungen / aktueller Saldo des Lohnkontos.
+  // Saldo: Verschiebung (+), Verrechnung (−). Damit das Icon auch dann angezeigt
+  // wird, wenn der Saldo negativ ist (selten, aber möglich), prüfen wir auf ≠ 0.
+  const lohnkontoCountMap = new Map<string, number>();
+  const lohnkontoSaldoMap = new Map<string, number>();
+  for (const b of lohnkontoBuchungen) {
+    lohnkontoCountMap.set(b.mitarbeiterId, (lohnkontoCountMap.get(b.mitarbeiterId) ?? 0) + 1);
+    const delta = b.art === 'verschiebung' ? b.betragEur : -b.betragEur;
+    lohnkontoSaldoMap.set(b.mitarbeiterId, (lohnkontoSaldoMap.get(b.mitarbeiterId) ?? 0) + delta);
+  }
 
   const gefiltert = mitarbeiter.filter((m) => {
     if (nurAktive && !m.isActive) return false;
@@ -126,7 +144,7 @@ function MitarbeiterInhalt() {
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="font-semibold text-gray-900 truncate">{m.name}</span>
+                    <span className="font-semibold text-gray-900 truncate">{nameMitFestgehaltSymbol(m)}</span>
                     {minderjährig && <span className="text-orange-500 text-xs shrink-0">⚠ {alter} J.</span>}
                   </div>
                   <div className="text-xs text-gray-400 font-mono mb-2">{m.nummer}</div>
@@ -163,13 +181,16 @@ function MitarbeiterInhalt() {
               <th className="text-left px-4 py-3 font-medium text-gray-600">Alter</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Abrechnung</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
+              {isAdmin && (
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Lohnkonto</th>
+              )}
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {gefiltert.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-center py-8 text-gray-400">
+                <td colSpan={isAdmin ? 8 : 7} className="text-center py-8 text-gray-400">
                   Keine Mitarbeiter gefunden
                 </td>
               </tr>
@@ -180,7 +201,23 @@ function MitarbeiterInhalt() {
               return (
                 <tr key={m.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => oeffneBearbeiten(m)}>
                   <td className="px-4 py-3 font-mono text-gray-500">{m.nummer}</td>
-                  <td className="px-4 py-3 font-medium text-gray-900">{m.name}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span>{nameMitFestgehaltSymbol(m)}</span>
+                      {isAdmin && (lohnkontoSaldoMap.get(m.id) ?? 0) !== 0 && (
+                        <span
+                          title={`Lohnkonto-Saldo: ${eur(lohnkontoSaldoMap.get(m.id) ?? 0)}`}
+                          className={`text-xs ${
+                            (lohnkontoSaldoMap.get(m.id) ?? 0) > 0
+                              ? 'text-amber-700'
+                              : 'text-red-700'
+                          }`}
+                        >
+                          💰
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {m.rollen.map((r) => (
@@ -199,8 +236,7 @@ function MitarbeiterInhalt() {
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     <span className="text-xs bg-gray-100 px-2 py-0.5 rounded">
-                      {m.abrechnungstyp === 'fix' ? 'Fix' :
-                       m.abrechnungstyp === 'variabel' ? 'Variabel' : 'Fix + Variabel'}
+                      {m.hatFestgehalt ? `Festgehalt${m.festgehaltEur ? ` (${m.festgehaltEur.toFixed(2)} €)` : ''}` : 'Variabel'}
                     </span>
                     {m.stundenlohnIndividuell !== undefined && (
                       <span className="ml-1 text-xs text-gray-400">
@@ -215,6 +251,22 @@ function MitarbeiterInhalt() {
                       {m.isActive ? 'Aktiv' : 'Inaktiv'}
                     </span>
                   </td>
+                  {isAdmin && (
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      {(lohnkontoCountMap.get(m.id) ?? 0) > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setVerlaufFor(m)}
+                          className="text-xs bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 px-2 py-1 rounded inline-flex items-center gap-1"
+                          title={`Lohnkonto-Verlauf anzeigen — Saldo: ${eur(lohnkontoSaldoMap.get(m.id) ?? 0)}`}
+                        >
+                          📜 Verlauf ({lohnkontoCountMap.get(m.id)})
+                        </button>
+                      ) : (
+                        <span className="text-xs text-gray-300">—</span>
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-right">
                     <span className="text-blue-600 text-xs font-medium">Bearbeiten</span>
                   </td>
@@ -238,6 +290,15 @@ function MitarbeiterInhalt() {
           onCancel={() => setShowForm(false)}
         />
       </Modal>
+
+      {/* Lohnkonto-Verlauf Modal */}
+      {verlaufFor && (
+        <LohnkontoVerlauf
+          isOpen={!!verlaufFor}
+          onClose={() => setVerlaufFor(null)}
+          mitarbeiter={verlaufFor}
+        />
+      )}
     </div>
   );
 }
@@ -253,7 +314,8 @@ function MitarbeiterForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const { parameter, teilgebiete } = useApp();
+  const { parameter, teilgebiete, mitarbeiter, userRole } = useApp();
+  const isAdmin = userRole === 'admin';
   const [tab, setTab] = useState<MaFormTab>('stammdaten');
   const [form, setForm] = useState<typeof DEFAULT_FORM>(() => {
     if (initial) {
@@ -264,9 +326,14 @@ function MitarbeiterForm({
         telefon: initial.telefon,
         geburtsdatum: initial.geburtsdatum,
         rollen: [...initial.rollen],
-        abrechnungstyp: initial.abrechnungstyp,
+        hatFestgehalt: initial.hatFestgehalt ?? false,
+        festgehaltEur: initial.festgehaltEur,
         fixesGehalt: initial.fixesGehalt,
         stundenlohnIndividuell: initial.stundenlohnIndividuell,
+        istMinijob: initial.istMinijob ?? false,
+        sozialversicherungsBefreit: initial.sozialversicherungsBefreit ?? false,
+        ausgabenBonusMinuten: initial.ausgabenBonusMinuten,
+        ausgabenBonusKommentar: initial.ausgabenBonusKommentar,
         isActive: initial.isActive,
       };
     }
@@ -296,7 +363,38 @@ function MitarbeiterForm({
     e.preventDefault();
     if (!form.name.trim()) { setError('Name ist erforderlich.'); return; }
     if (!form.nummer.trim()) { setError('Mitarbeiternummer ist erforderlich.'); return; }
+    const nummerBelegt = mitarbeiter.some(
+      (m) => m.nummer === form.nummer.trim() && m.id !== initial?.id
+    );
+    if (nummerBelegt) { setError(`Mitarbeiternummer ${form.nummer.trim()} ist bereits vergeben.`); return; }
     if (form.rollen.length === 0) { setError('Mindestens eine Rolle muss ausgewählt werden.'); return; }
+    if (!form.geburtsdatum) { setError('Geburtsdatum ist erforderlich.'); return; }
+
+    // Plausibilität Geburtsdatum
+    const geb = new Date(form.geburtsdatum);
+    const heute = new Date();
+    if (isNaN(geb.getTime())) { setError('Geburtsdatum ist ungültig.'); return; }
+    if (geb.getTime() > heute.getTime()) { setError('Geburtsdatum darf nicht in der Zukunft liegen.'); return; }
+    if (geb.getFullYear() < 1930) { setError('Geburtsdatum darf nicht vor 1930 liegen.'); return; }
+    const alterJahre = berechneAlter(form.geburtsdatum);
+    if (alterJahre < 13) {
+      if (!confirm(`Der Mitarbeiter ist laut Geburtsdatum erst ${alterJahre} Jahre alt. Trotzdem speichern?`)) {
+        return;
+      }
+    }
+
+    // Plausibilität PLZ (optional, nur wenn eingetragen)
+    if (form.adresse.plz && form.adresse.plz.trim() && !/^\d{5}$/.test(form.adresse.plz.trim())) {
+      if (!confirm(`PLZ "${form.adresse.plz}" entspricht nicht dem 5-stelligen Format. Trotzdem speichern?`)) {
+        return;
+      }
+    }
+
+    // Plausibilität Festgehalt
+    if (form.hatFestgehalt && (!form.festgehaltEur || form.festgehaltEur <= 0)) {
+      setError('Wenn "Festgehalt" aktiviert ist, muss ein Festgehalt > 0 € eingetragen werden.');
+      return;
+    }
 
     setSaving(true);
     setError('');
@@ -446,9 +544,10 @@ function MitarbeiterForm({
             className={inputClass}
           />
         </FormField>
-        <FormField label="Geburtsdatum">
+        <FormField label="Geburtsdatum *">
           <input
             type="date"
+            required
             value={form.geburtsdatum}
             onChange={(e) => setForm((f) => ({ ...f, geburtsdatum: e.target.value }))}
             className={inputClass}
@@ -481,79 +580,162 @@ function MitarbeiterForm({
         </div>
       </FormField>
 
-      {/* Abrechnung */}
-      <FormField label="Abrechnungstyp">
-        <select
-          value={form.abrechnungstyp}
-          onChange={(e) => setForm((f) => ({ ...f, abrechnungstyp: e.target.value as Abrechnungstyp }))}
-          className={inputClass}
-        >
-          <option value="variabel">Variabel (nach Zeit/Leistung)</option>
-          <option value="fix">Fixes Gehalt</option>
-          <option value="beides">Fixes Gehalt + variabler Anteil</option>
-        </select>
+      {/* Festgehalt — nur Admin sieht / bearbeitet dieses Kennzeichen */}
+      {isAdmin && (
+        <>
+          <FormField label="Abrechnung">
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={form.hatFestgehalt}
+                onChange={(e) => setForm((f) => ({ ...f, hatFestgehalt: e.target.checked }))}
+                className="rounded"
+              />
+              Mitarbeiter bekommt Festgehalt (fixes Monatsgehalt, keine Leistungsabrechnung)
+            </label>
+          </FormField>
+
+          {form.hatFestgehalt && (
+            <FormField label="Festgehalt (EUR/Monat)">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.festgehaltEur ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, festgehaltEur: e.target.value ? parseFloat(e.target.value) : undefined }))}
+                placeholder="0.00"
+                className={inputClass}
+              />
+            </FormField>
+          )}
+        </>
+      )}
+
+      {/* Sozialversicherungs-Status */}
+      <FormField label="Sozialversicherung / Minijob">
+        <div className="space-y-2">
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.istMinijob ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, istMinijob: e.target.checked }))}
+              className="rounded mt-0.5"
+            />
+            <span>
+              <span className="font-medium">Minijob</span>
+              <span className="block text-xs text-gray-500">
+                In der Abrechnung erscheint eine Warnung, wenn der Bruttolohn im Monat die Minijob-Grenze überschreitet.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.sozialversicherungsBefreit ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, sozialversicherungsBefreit: e.target.checked }))}
+              className="rounded mt-0.5"
+            />
+            <span>
+              <span className="font-medium">Befreiung von Sozialversicherung liegt vor</span>
+              <span className="block text-xs text-gray-500">
+                Nur bei gekennzeichneten Mitarbeitern gilt Brutto = Netto — der Auszahlungsbetrag wird in der Abrechnung direkt berechnet.
+                Bei allen anderen übernimmt das Lohnbüro die Berechnung der Sozialversicherungsabzüge.
+              </span>
+            </span>
+          </label>
+        </div>
       </FormField>
 
-      {(form.abrechnungstyp === 'fix' || form.abrechnungstyp === 'beides') && (
-        <FormField label="Fixes Gehalt (EUR/Monat)">
+      {isAdmin && (
+        <FormField
+          label="Individueller Stundenlohn (EUR/h)"
+          hint={`Leer lassen für Standard (${
+            minderjährig
+              ? `${parameter?.stundenlohnMinderjAustr ?? 10.0} €/h Minderjährige`
+              : `${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h MiLoG`
+          })`}
+        >
           <input
             type="number"
             min="0"
             step="0.01"
-            value={form.fixesGehalt ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, fixesGehalt: e.target.value ? parseFloat(e.target.value) : undefined }))}
-            placeholder="0.00"
+            value={form.stundenlohnIndividuell ?? ''}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              stundenlohnIndividuell: e.target.value ? parseFloat(e.target.value) : undefined,
+            }))}
+            placeholder="Leer = Standard"
             className={inputClass}
+          />
+          {form.stundenlohnIndividuell !== undefined &&
+            parameter?.stundenlohnErwachseneAustr !== undefined &&
+            form.stundenlohnIndividuell < parameter.mindeststundenlohn && (
+              <p className="text-xs text-red-600 mt-1">
+                ⚠ Stundenlohn liegt unter dem konfigurierten Mindestlohn ({parameter.mindeststundenlohn} €/h)!
+              </p>
+            )}
+        </FormField>
+      )}
+
+      {/* Pauschaler Tätigkeitsbonus je Ausgabe — Abrechnungs-Rolle sieht nur (read-only) */}
+      <FormField
+        label="Tätigkeitsbonus je Ausgabe (Minuten)"
+        hint={
+          isAdmin
+            ? 'Pauschal pro Ausgabe einer Abrechnungsperiode — wird mit dem Stundensatz vergütet (z. B. 60 Min × Stundensatz × Anzahl Ausgaben).'
+            : 'Anzeige — Bearbeitung nur durch Admin.'
+        }
+      >
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={form.ausgabenBonusMinuten ?? ''}
+          onChange={(e) => setForm((f) => ({
+            ...f,
+            ausgabenBonusMinuten: e.target.value ? parseFloat(e.target.value) : undefined,
+          }))}
+          placeholder={isAdmin ? 'z. B. 60' : '—'}
+          readOnly={!isAdmin}
+          className={`${inputClass} ${!isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''}`}
+        />
+      </FormField>
+
+      {(form.ausgabenBonusMinuten ?? 0) > 0 && (
+        <FormField label="Grund / Vermerk zum Tätigkeitsbonus">
+          <input
+            type="text"
+            value={form.ausgabenBonusKommentar ?? ''}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              ausgabenBonusKommentar: e.target.value || undefined,
+            }))}
+            placeholder="z. B. Betreuung der Zusammenträger und Orga.-Tätigkeiten"
+            readOnly={!isAdmin}
+            className={`${inputClass} ${!isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''}`}
           />
         </FormField>
       )}
 
-      <FormField
-        label="Individueller Stundenlohn (EUR/h)"
-        hint={`Leer lassen für Standard (${
-          minderjährig
-            ? `${parameter?.stundenlohnMinderjAustr ?? 10.0} €/h Minderjährige`
-            : `${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h MiLoG`
-        })`}
-      >
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          value={form.stundenlohnIndividuell ?? ''}
-          onChange={(e) => setForm((f) => ({
-            ...f,
-            stundenlohnIndividuell: e.target.value ? parseFloat(e.target.value) : undefined,
-          }))}
-          placeholder="Leer = Standard"
-          className={inputClass}
-        />
-        {form.stundenlohnIndividuell !== undefined &&
-          parameter?.stundenlohnErwachseneAustr !== undefined &&
-          form.stundenlohnIndividuell < parameter.mindeststundenlohn && (
-            <p className="text-xs text-red-600 mt-1">
-              ⚠ Stundenlohn liegt unter dem konfigurierten Mindestlohn ({parameter.mindeststundenlohn} €/h)!
-            </p>
-          )}
-      </FormField>
-
-      <FormField
-        label="Individueller Fahrkostensatz (EUR/km)"
-        hint={`Leer lassen für globalen Standardsatz (${parameter?.fahrkostenEurProKm ?? 0.30} €/km)`}
-      >
-        <input
-          type="number"
-          min="0"
-          step="0.01"
-          value={(form as any).fahrkostenEurProKm ?? ''}
-          onChange={(e) => setForm((f) => ({
-            ...f,
-            fahrkostenEurProKm: e.target.value ? parseFloat(e.target.value) : undefined,
-          } as any))}
-          placeholder="Leer = Standard"
-          className={inputClass}
-        />
-      </FormField>
+      {isAdmin && (
+        <FormField
+          label="Individueller Fahrkostensatz (EUR/km)"
+          hint={`Leer lassen für globalen Standardsatz (${parameter?.fahrkostenEurProKm ?? 0.30} €/km)`}
+        >
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={(form as any).fahrkostenEurProKm ?? ''}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              fahrkostenEurProKm: e.target.value ? parseFloat(e.target.value) : undefined,
+            } as any))}
+            placeholder="Leer = Standard"
+            className={inputClass}
+          />
+        </FormField>
+      )}
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
@@ -586,6 +768,11 @@ function MitarbeiterForm({
             )}
         </div>
       </div>
+
+      {/* QR-Code / Meldungslink — für alle Mitarbeiter mit Teilgebietsfreigaben */}
+      {initial && freigaben.length > 0 && (
+        <AustraegerMeldungsLink mitarbeiterId={initial.id} name={form.name} />
+      )}
 
       </div>
       )}
@@ -656,13 +843,15 @@ function MitarbeiterForm({
                           + {b.betragEur.toFixed(2)} €
                         </td>
                         <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => setBoni((prev) => prev.filter((x) => x.teilgebietId !== b.teilgebietId))}
-                            className="text-red-400 hover:text-red-600 text-xs"
-                          >
-                            ✕
-                          </button>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => setBoni((prev) => prev.filter((x) => x.teilgebietId !== b.teilgebietId))}
+                              className="text-red-400 hover:text-red-600 text-xs"
+                            >
+                              ✕
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -672,7 +861,8 @@ function MitarbeiterForm({
             </div>
           )}
 
-          {/* Neue Bonus-Zeile */}
+          {/* Neue Bonus-Zeile — nur Admin darf hinzufügen */}
+          {isAdmin && (
           <div className="border border-dashed border-gray-300 rounded-lg p-3">
             <p className="text-xs font-medium text-gray-500 mb-2">Bonus hinzufügen</p>
             <div className="flex gap-2 items-end">
@@ -714,6 +904,7 @@ function MitarbeiterForm({
               </button>
             </div>
           </div>
+          )}
         </div>
       )}
 
@@ -750,7 +941,11 @@ function MitarbeiterForm({
 
 // ---- PIN-Verwaltung für Mitarbeiter ------------------------
 
-function PinVerwaltung({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
+function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter }) {
+  // Immer die aktuellen Daten aus dem Context holen (wird per Real-time-Listener aktualisiert)
+  const { mitarbeiter: alleMitarbeiter } = useApp();
+  const mitarbeiter = alleMitarbeiter.find((m) => m.id === initialMa.id) ?? initialMa;
+
   const [neuerPin, setNeuerPin] = useState('');
   const [pinBestaetigung, setPinBestaetigung] = useState('');
   const [showPinForm, setShowPinForm] = useState(false);
@@ -759,9 +954,9 @@ function PinVerwaltung({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
 
   const hatPin = !!mitarbeiter.pinHash;
 
-  async function handlePinSetzen(e: FormEvent) {
-    e.preventDefault();
+  async function handlePinSetzen() {
     if (neuerPin.length < 4) { setMessage('PIN muss mindestens 4 Stellen haben.'); return; }
+    if (pinBestaetigung.length < 4) { setMessage('Bitte PIN-Bestätigung eingeben.'); return; }
     if (neuerPin !== pinBestaetigung) { setMessage('PINs stimmen nicht überein.'); return; }
     setSaving(true);
     setMessage('');
@@ -829,7 +1024,7 @@ function PinVerwaltung({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
       </div>
 
       {showPinForm && (
-        <form onSubmit={handlePinSetzen} className="mt-3 bg-gray-50 rounded-lg p-3 space-y-2">
+        <div className="mt-3 bg-gray-50 rounded-lg p-3 space-y-2">
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block text-xs text-gray-600 mb-1">Neuer PIN (min. 4 Stellen)</label>
@@ -844,7 +1039,7 @@ function PinVerwaltung({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-600 mb-1">Bestätigung</label>
+              <label className="block text-xs text-gray-600 mb-1">Bestätigung *</label>
               <input
                 type="password"
                 inputMode="numeric"
@@ -852,14 +1047,22 @@ function PinVerwaltung({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
                 value={pinBestaetigung}
                 onChange={(e) => setPinBestaetigung(e.target.value.replace(/\D/g, ''))}
                 placeholder="••••"
-                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className={`w-full border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                  pinBestaetigung && pinBestaetigung !== neuerPin
+                    ? 'border-red-400 bg-red-50'
+                    : 'border-gray-300'
+                }`}
               />
+              {pinBestaetigung && pinBestaetigung !== neuerPin && (
+                <p className="text-xs text-red-500 mt-0.5">Stimmt nicht überein</p>
+              )}
             </div>
           </div>
           <div className="flex gap-2 items-center">
             <button
-              type="submit"
-              disabled={saving || neuerPin.length < 4}
+              type="button"
+              onClick={handlePinSetzen}
+              disabled={saving || neuerPin.length < 4 || pinBestaetigung.length < 4 || neuerPin !== pinBestaetigung}
               className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50"
             >
               {saving ? '...' : 'PIN setzen'}
@@ -872,7 +1075,7 @@ function PinVerwaltung({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
               Abbrechen
             </button>
           </div>
-        </form>
+        </div>
       )}
       {message && (
         <p className={`text-xs mt-1 ${message.startsWith('✓') ? 'text-green-600' : 'text-red-600'}`}>
@@ -980,6 +1183,97 @@ function NfcSchreibenButton({ mitarbeiterId }: { mitarbeiterId: string }) {
           </button>
           <p className="text-xs text-gray-400 mt-2 text-center">
             Oder öffne diese Seite auf dem Android-Handy und tippe dort auf 📲 NFC
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- QR-Code / Meldungslink für Austräger ------------------
+
+function AustraegerMeldungsLink({
+  mitarbeiterId,
+  name,
+}: {
+  mitarbeiterId: string;
+  name: string;
+}) {
+  const [kopiert, setKopiert] = useState(false);
+  const [qrOffen, setQrOffen] = useState(false);
+
+  const url = `${window.location.origin}/meldung?ma=${encodeURIComponent(mitarbeiterId)}`;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(url)}`;
+
+  async function handleKopieren() {
+    await navigator.clipboard.writeText(url);
+    setKopiert(true);
+    setTimeout(() => setKopiert(false), 2500);
+  }
+
+  return (
+    <div className="mt-4 pt-4 border-t border-gray-200">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-semibold text-gray-700 mb-0.5">📋 Meldungs-Link (Austräger)</h4>
+          <p className="text-xs text-gray-400">
+            QR-Code auf Lieferschein drucken oder Link teilen. Kein Login nötig.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setQrOffen((v) => !v)}
+          className={`shrink-0 text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+            qrOffen
+              ? 'border-green-400 bg-green-50 text-green-700'
+              : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
+          }`}
+        >
+          {qrOffen ? '▲ Schließen' : '📷 QR-Code anzeigen'}
+        </button>
+      </div>
+
+      {qrOffen && (
+        <div className="mt-3 bg-gray-50 border border-gray-200 rounded-xl p-4">
+          <div className="flex gap-4 items-start">
+            {/* QR Code */}
+            <div className="shrink-0 bg-white border border-gray-200 rounded-lg p-1">
+              <img
+                src={qrUrl}
+                alt={`QR-Code Meldungslink ${name}`}
+                width={110}
+                height={110}
+                className="rounded"
+                loading="lazy"
+              />
+            </div>
+            {/* Info + Aktionen */}
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-medium text-gray-700 mb-1">Persönlicher Meldungslink:</p>
+              <div className="bg-white border border-gray-200 rounded-lg px-2.5 py-2 mb-2.5 overflow-hidden">
+                <p className="text-xs font-mono text-blue-700 break-all leading-relaxed">{url}</p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={handleKopieren}
+                  className="w-full text-xs bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium"
+                >
+                  {kopiert ? '✓ Kopiert!' : '📋 Link kopieren'}
+                </button>
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full text-xs text-center bg-white border border-gray-300 text-gray-700 py-2 rounded-lg hover:border-gray-400 transition-colors"
+                >
+                  🔗 Link öffnen (Test)
+                </a>
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-3 text-center">
+            QR-Code auf Lieferschein drucken — Austräger scannt und erfasst seine Zeiten direkt.
           </p>
         </div>
       )}

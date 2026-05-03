@@ -12,6 +12,8 @@ import type {
   Teilgebiet,
   Parameter,
   Abrechnungsperiode,
+  VariablerPeriodenZusatz,
+  LohnkontoBuchung,
 } from '../types';
 import {
   mitarbeiterListener,
@@ -19,6 +21,8 @@ import {
   teilgebieteListener,
   parameterListener,
   abrechnungsperiodenListener,
+  variablePeriodenZusaetzeListener,
+  lohnkontoBuchungenListener,
 } from '../lib/db';
 
 // ---- State -------------------------------------------------
@@ -35,6 +39,8 @@ interface AppState {
   teilgebiete: Teilgebiet[];
   parameter: Parameter | null;
   abrechnungsperioden: Abrechnungsperiode[];
+  variablePeriodenZusaetze: VariablerPeriodenZusatz[];
+  lohnkontoBuchungen: LohnkontoBuchung[];
   aktivePeriodeId: string | null;
   isOnline: boolean;
   isLoading: boolean;
@@ -49,6 +55,8 @@ const initialState: AppState = {
   teilgebiete: [],
   parameter: null,
   abrechnungsperioden: [],
+  variablePeriodenZusaetze: [],
+  lohnkontoBuchungen: [],
   aktivePeriodeId: null,
   isOnline: navigator.onLine,
   isLoading: true,
@@ -63,6 +71,8 @@ type Action =
   | { type: 'SET_TEILGEBIETE'; payload: Teilgebiet[] }
   | { type: 'SET_PARAMETER'; payload: Parameter | null }
   | { type: 'SET_ABRECHNUNGSPERIODEN'; payload: Abrechnungsperiode[] }
+  | { type: 'SET_VARIABLE_PERIODEN_ZUSAETZE'; payload: VariablerPeriodenZusatz[] }
+  | { type: 'SET_LOHNKONTO_BUCHUNGEN'; payload: LohnkontoBuchung[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_LOADING'; payload: boolean };
@@ -88,6 +98,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, parameter: action.payload };
     case 'SET_ABRECHNUNGSPERIODEN':
       return { ...state, abrechnungsperioden: action.payload };
+    case 'SET_VARIABLE_PERIODEN_ZUSAETZE':
+      return { ...state, variablePeriodenZusaetze: action.payload };
+    case 'SET_LOHNKONTO_BUCHUNGEN':
+      return { ...state, lohnkontoBuchungen: action.payload };
     case 'SET_AKTIVE_PERIODE':
       return { ...state, aktivePeriodeId: action.payload };
     case 'SET_ONLINE':
@@ -167,6 +181,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubPerioden = abrechnungsperiodenListener((list) => {
       dispatch({ type: 'SET_ABRECHNUNGSPERIODEN', payload: list });
     });
+    const unsubZusaetze = variablePeriodenZusaetzeListener((list) => {
+      dispatch({ type: 'SET_VARIABLE_PERIODEN_ZUSAETZE', payload: list });
+    });
+    const unsubLohnkonto = lohnkontoBuchungenListener((list) => {
+      dispatch({ type: 'SET_LOHNKONTO_BUCHUNGEN', payload: list });
+    });
 
     return () => {
       unsubMitarbeiter();
@@ -174,6 +194,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubTeilgebiete();
       unsubParameter();
       unsubPerioden();
+      unsubZusaetze();
+      unsubLohnkonto();
     };
   }, []);
 

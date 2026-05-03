@@ -49,7 +49,8 @@ export async function ladeAktiveSessionFuerMitarbeiter(
 export async function einstempeln(
   mitarbeiterId: string,
   typ: ArbeitszeitsTyp,
-  quelle: 'nfc' | 'manuell' = 'nfc'
+  quelle: 'nfc' | 'manuell' = 'nfc',
+  ausgabeId?: string
 ): Promise<Arbeitszeit> {
   // Sicherheitscheck: keine doppelte Session
   const existing = await ladeAktiveSessionFuerMitarbeiter(mitarbeiterId);
@@ -68,6 +69,7 @@ export async function einstempeln(
     korrekturLog: [],
     erstelltAm: ts,
     aktualisiertAm: ts,
+    ...(ausgabeId ? { ausgabeId } : {}),
   };
   const ref = await addDoc(collection(db, 'arbeitszeiten'), session);
   return { id: ref.id, ...session };
@@ -178,18 +180,40 @@ export async function schliesseAbgelaufeneSessions(): Promise<void> {
   }
 }
 
+// ---- Auto-geschlossene Session vom Vortag laden ------------
+
+export async function ladeVortagesAutoGeschlossen(
+  mitarbeiterId: string
+): Promise<Arbeitszeit | null> {
+  // Suche in den letzten 3 Tagen nach auto-geschlossenen Sessions
+  const grenze = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  const q = query(
+    collection(db, 'arbeitszeiten'),
+    where('mitarbeiterId', '==', mitarbeiterId),
+    where('startTime', '>=', grenze),
+    orderBy('startTime', 'desc')
+  );
+  const snap = await getDocs(q);
+  for (const d of snap.docs) {
+    const s = { id: d.id, ...d.data() } as Arbeitszeit;
+    if (s.autoGeschlossenUm24) return s;
+  }
+  return null;
+}
+
 // ---- NFC-Scan verarbeiten ----------------------------------
 
 export type NfcAktion = 'eingestempelt' | 'ausgestempelt' | 'pause_gestartet' | 'pause_beendet' | 'bereits_eingestempelt';
 
 export async function verarbeiteNfcScan(
   mitarbeiterId: string,
-  standardTyp: ArbeitszeitsTyp = 'büro'
+  standardTyp: ArbeitszeitsTyp = 'sonstige',
+  ausgabeId?: string
 ): Promise<{ aktion: NfcAktion; session: Arbeitszeit }> {
   const aktive = await ladeAktiveSessionFuerMitarbeiter(mitarbeiterId);
 
   if (!aktive) {
-    const session = await einstempeln(mitarbeiterId, standardTyp, 'nfc');
+    const session = await einstempeln(mitarbeiterId, standardTyp, 'nfc', ausgabeId);
     return { aktion: 'eingestempelt', session };
   }
 
@@ -348,4 +372,67 @@ export async function ladeAlleMonatsarbeitszeiten(
   );
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
+}
+
+// ---- Überlappungs-Prüfung (Plausi-Check) --------------------
+// Für manuelle Erfassung / Korrektur von Arbeitszeiten.
+// Ein Mitarbeiter kann zu einem Zeitpunkt nur EINE Tätigkeit ausführen.
+
+/**
+ * Prüft, ob sich [start, end) mit einer vorhandenen Arbeitszeit des Mitarbeiters
+ * überschneidet. Offene Sessions (endTime === null) werden bis "jetzt" gewertet.
+ * @param mitarbeiterId Mitarbeiter-ID
+ * @param start Start in ms (inklusive)
+ * @param end Ende in ms (exklusive)
+ * @param excludeId Optionale Arbeitszeit-ID, die ignoriert werden soll (beim Bearbeiten)
+ * @returns Konflikt-Session oder null
+ */
+export async function pruefeZeitUeberlappung(
+  mitarbeiterId: string,
+  start: number,
+  end: number,
+  excludeId?: string
+): Promise<Arbeitszeit | null> {
+  const q = query(
+    collection(db, 'arbeitszeiten'),
+    where('mitarbeiterId', '==', mitarbeiterId)
+  );
+  const snap = await getDocs(q);
+  const jetzt = Date.now();
+  for (const d of snap.docs) {
+    if (excludeId && d.id === excludeId) continue;
+    const a = { id: d.id, ...d.data() } as Arbeitszeit;
+    const aEnde = a.endTime ?? jetzt;
+    // Überlappung: NICHT (neu komplett davor ODER neu komplett danach)
+    if (!(end <= a.startTime || start >= aEnde)) {
+      return a;
+    }
+  }
+  return null;
+}
+
+/**
+ * Formatiert einen Konflikt als Fehlermeldung für Alerts.
+ */
+export function formatiereUeberlappungsFehler(konflikt: Arbeitszeit): string {
+  const fmt = (ts: number) =>
+    new Date(ts).toLocaleString('de-DE', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  const typLabels: Record<string, string> = {
+    austragen: 'Austragen',
+    zusammentragen: 'Zusammentragen',
+    vorarbeit: 'Vorarbeit',
+    buero: 'Büro',
+    fahrt: 'Fahrt',
+    sonstiges: 'Sonstiges',
+  };
+  const typText = typLabels[konflikt.typ] ?? konflikt.typ;
+  const endText = konflikt.endTime ? fmt(konflikt.endTime) : '(noch aktiv)';
+  return (
+    `Überlappung mit bestehender Arbeitszeit (${typText}):\n` +
+    `${fmt(konflikt.startTime)} → ${endText}\n\n` +
+    `Eine Person kann zu einem Zeitpunkt nur eine Tätigkeit ausführen.`
+  );
 }

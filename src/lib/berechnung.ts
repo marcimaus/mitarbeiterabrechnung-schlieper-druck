@@ -47,15 +47,50 @@ export function berechneAustraegezeit(
 ): number {
   const laufzeit = tg.wegstreckeM / params.laufgeschwindigkeitMProH;
   const steckzeit = tg.stueckzahl / params.steckzeitStkProH;
-  // Externe Beilagen: jede externe Beilage kostet zusätzliche Steckzeit
-  // (vereinfacht: gleiche Steckrate wie Hauptblatt)
+  // Externe Beilagen: jede externe Beilage kostet zusätzliche Einlegezeit.
+  // Verwendet die eigene Geschwindigkeit externeBeilageEinlegeGeschwStkProH (Standard 442 Stk/h).
+  const extGeschw = params.externeBeilageEinlegeGeschwStkProH || params.steckzeitStkProH;
   const beilagenzeit = anzahlExtBeilagen > 0
-    ? (tg.stueckzahl * anzahlExtBeilagen) / params.steckzeitStkProH
+    ? (tg.stueckzahl * anzahlExtBeilagen) / extGeschw
     : 0;
   return laufzeit + steckzeit + beilagenzeit;
 }
 
+// ---- Zusammentragen-Zeitwert je Teilgebiet -----------------
+/**
+ * Soll-Zeit für das Zusammentragen eines Teilgebiets (Stunden).
+ * - Bei 1 Stapel und keiner internen Beilage: 0 h (nichts einzulegen).
+ * - Ab 2 Stapeln: Basis = Stückzahl / Geschw1 (konstant, unabhängig 1/2 Stapel).
+ * - Je weiterem Stapel (ab 3.) oder je interner Beilage: + Stückzahl / Geschw2.
+ */
+export function berechneZusammentragZeit(
+  stueckzahl: number,
+  stapelAnzahl: number,
+  anzahlIntBeilagen: number,
+  params: Parameter
+): number {
+  const hatArbeit = stapelAnzahl >= 2 || anzahlIntBeilagen > 0;
+  if (!hatArbeit) return 0;
+  const geschw1 = params.zusammentragGeschwErste2StapelStkProH || 1700;
+  const geschw2 = params.zusammentragGeschwWeitereStapelStkProH || 3400;
+  const anzWeitere = Math.max(0, stapelAnzahl - 2);
+  const zeitBasis = stueckzahl / geschw1;
+  const zeitZusatz = (stueckzahl * (anzWeitere + anzahlIntBeilagen)) / geschw2;
+  return zeitBasis + zeitZusatz;
+}
+
 // ---- Gewicht je Ausgabe/Teilgebiet -------------------------
+
+/**
+ * Gewicht eines einzelnen Exemplars des Anzeigenblattes (ohne Beilagen) in Gramm.
+ * Berechnung: Fläche (m²) × Grammatur (g/m²) × Anzahl Blätter (= Seitenzahl / 2).
+ */
+export function berechneGewichtProExemplarG(ausgabe: Ausgabe): number {
+  const blaetter = ausgabe.seitenzahl / 2;
+  const flaechemQm =
+    (ausgabe.seitenformatMm.breite * ausgabe.seitenformatMm.hoehe) / 1_000_000;
+  return blaetter * flaechemQm * ausgabe.grammaturGqm;
+}
 
 export function berechneGewichtAnzeigenblattKg(
   tg: Teilgebiet,
@@ -110,13 +145,29 @@ export function ermittleStundenlohn(
     : params.stundenlohnErwachseneAustr;
 }
 
+export function ermittleStundenlohnZusammen(
+  mitarbeiter: Mitarbeiter,
+  params: Parameter
+): number {
+  if (mitarbeiter.stundenlohnIndividuell !== undefined) {
+    return mitarbeiter.stundenlohnIndividuell;
+  }
+  return istMinderjährig(mitarbeiter.geburtsdatum)
+    ? params.stundenlohnMinderjZusammen
+    : params.stundenlohnErwachseneZusammen;
+}
+
 // ---- Austräger-Lohn je Einsatz ----------------------------
 
 export interface AustraegerLohnDetail {
   zeitStunden: number;
+  zeitExtBeilagenStunden: number;   // Anteil der Zeit, der aus dem Einlegen externer Beilagen resultiert
+  anzahlExtBeilagen: number;        // Anzahl externer Beilagen in diesem Teilgebiet
   grundlohn: number;
   springerZuschlag: number;
   gewichtsbonus: number;
+  gewichtsbonusAnzeigenblatt: number;
+  gewichtsbonusBeilagen: number;
   sonderbetrag: number;
   gesamt: number;
 }
@@ -136,6 +187,10 @@ export function berechneAustraegerLohn(
     (b) => b.kennzeichen === 'ext' && b.teilgebietIds.includes(teilgebiet.id)
   ).length;
   const zeitStunden = berechneAustraegezeit(teilgebiet, params, extBeilagen);
+  // Anteil der Austräger-Zeit, der auf das Einlegen externer Beilagen entfällt:
+  const extGeschwZeit = params.externeBeilageEinlegeGeschwStkProH || params.steckzeitStkProH;
+  const zeitExtBeilagenStunden =
+    extBeilagen > 0 ? (teilgebiet.stueckzahl * extBeilagen) / extGeschwZeit : 0;
 
   const springerProzent =
     einsatz.typ === 'springer'
@@ -145,12 +200,13 @@ export function berechneAustraegerLohn(
 
   const grundlohn = zeitStunden * stundenlohn;
   const springerZuschlag = grundlohn * (springerProzent / 100);
-  const gewichtsbonus = berechneGewichtsbonus(
-    teilgebiet,
-    ausgabe,
-    beilagen,
-    params
-  );
+  const gwAnzeigenblatt = berechneGewichtAnzeigenblattKg(teilgebiet, ausgabe);
+  const gwBeilagen = berechneGewichtBeilagenKg(teilgebiet, beilagen);
+  const gewichtsbonusAnzeigenblatt =
+    gwAnzeigenblatt * params.gewichtszulageAnzeigenblattEurKg;
+  const gewichtsbonusBeilagen =
+    gwBeilagen * params.gewichtszulageBeilagenEurKg;
+  const gewichtsbonus = gewichtsbonusAnzeigenblatt + gewichtsbonusBeilagen;
   const sonderbetrag = sondervereinbarung?.betragEur ?? 0;
 
   const gesamt =
@@ -158,9 +214,13 @@ export function berechneAustraegerLohn(
 
   return {
     zeitStunden,
+    zeitExtBeilagenStunden,
+    anzahlExtBeilagen: extBeilagen,
     grundlohn,
     springerZuschlag,
     gewichtsbonus,
+    gewichtsbonusAnzeigenblatt,
+    gewichtsbonusBeilagen,
     sonderbetrag,
     gesamt,
   };

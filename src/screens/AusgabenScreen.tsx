@@ -6,21 +6,20 @@ import {
   ladeAusgaben,
   erstelleAusgabe,
   aktualisiereAusgabe,
+  loescheAusgabe,
   ladeBeilagen,
   erstelleBeilage,
   aktualisiereBeilage,
   loescheBeilage,
   ladeEinsaetze,
 } from '../lib/db';
-import { berechneStapel } from '../lib/berechnung';
+import { berechneStapel, berechneGewichtProExemplarG } from '../lib/berechnung';
 import {
   getCurrentKW,
-  alleKWsImJahr,
   kwLabel,
   formatDonnerstag,
-  maxKWinJahr,
 } from '../lib/kalender';
-import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, AusgabeStatus, Einsatz } from '../types';
+import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, Einsatz } from '../types';
 
 const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
   { value: 'A4', label: 'DIN A4' },
@@ -30,7 +29,7 @@ const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
 
 export default function AusgabenScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <AusgabenInhalt />
     </AdminPinGate>
   );
@@ -42,7 +41,7 @@ function AusgabenInhalt() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Ausgabenplanung</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Ausgaben & Beilagen</h1>
         <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm">
           <button
             onClick={() => setTab('ausgaben')}
@@ -78,10 +77,51 @@ function AusgabenListe() {
   const [filterJahr, setFilterJahr] = useState(new Date().getFullYear());
 
   useEffect(() => {
-    ladeAusgaben().then((list) => {
-      setAusgaben(list);
+    // Lade Ausgaben und Perioden parallel; lege fehlende Ausgaben für Periode-KWs automatisch an
+    Promise.all([ladeAusgaben(), ladeAbrechnungsperioden()]).then(async ([list, perioden]) => {
+      const vorhandeneKeys = new Set(list.map((a) => `${a.jahr}-${a.kw}`));
+      const neuAngelegt: Ausgabe[] = [];
+      for (const periode of perioden) {
+        for (const kw of periode.kalenderwochen) {
+          const key = `${periode.jahr}-${kw}`;
+          if (!vorhandeneKeys.has(key)) {
+            vorhandeneKeys.add(key); // Duplikate innerhalb des Loops verhindern
+            const standardSeitenzahl = 16;
+            const id = await erstelleAusgabe({
+              kw,
+              jahr: periode.jahr,
+              seitenzahl: standardSeitenzahl,
+              stapelAnzahl: berechneStapel(standardSeitenzahl).length,
+              grammaturGqm: parameter?.standardGrammurGqm ?? 65,
+              seitenformatMm: {
+                breite: parameter?.standardSeitenformatBreiteMm ?? 305,
+                hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
+              },
+              status: 'geplant',
+            });
+            neuAngelegt.push({
+              id, kw, jahr: periode.jahr,
+              seitenzahl: standardSeitenzahl,
+              stapelAnzahl: berechneStapel(standardSeitenzahl).length,
+              grammaturGqm: parameter?.standardGrammurGqm ?? 65,
+              seitenformatMm: {
+                breite: parameter?.standardSeitenformatBreiteMm ?? 305,
+                hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
+              },
+              status: 'geplant',
+              erstelltAm: Date.now(),
+              aktualisiertAm: Date.now(),
+            });
+          }
+        }
+      }
+      const alle = [...list, ...neuAngelegt].sort((a, b) => b.jahr - a.jahr || b.kw - a.kw);
+      setAusgaben(alle);
       setLoading(false);
-      if (list.length > 0) setSelected(list[0]);
+      if (alle.length > 0) {
+        setFilterJahr(alle[0].jahr); // aktuellstes Jahr mit Ausgaben auswählen
+        setSelected(alle[0]);
+      }
     });
   }, []);
 
@@ -102,16 +142,6 @@ function AusgabenListe() {
     setShowForm(false);
   }
 
-  const statusBadge = (status: AusgabeStatus) => {
-    const map = {
-      geplant: 'bg-gray-100 text-gray-600',
-      laufend: 'bg-blue-100 text-blue-700',
-      abgeschlossen: 'bg-green-100 text-green-700',
-    };
-    const labels = { geplant: 'Geplant', laufend: 'Laufend', abgeschlossen: 'Abgeschlossen' };
-    return <span className={`text-xs px-2 py-0.5 rounded-full ${map[status]}`}>{labels[status]}</span>;
-  };
-
   return (
     <div className="flex gap-6">
       {/* Liste links */}
@@ -125,12 +155,6 @@ function AusgabenListe() {
             {jahre.length === 0 && <option value={new Date().getFullYear()}>{new Date().getFullYear()}</option>}
             {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
           </select>
-          <button
-            onClick={() => { setEditTarget(null); setShowForm(true); }}
-            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
-          >
-            + Neu
-          </button>
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -141,7 +165,7 @@ function AusgabenListe() {
           {gefilterteAusgaben.map((a) => (
             <button
               key={a.id}
-              onClick={() => setSelected(a)}
+              onClick={() => { setSelected(a); setFilterJahr(a.jahr); }}
               className={`w-full text-left px-4 py-3 border-b border-gray-100 last:border-0 transition-colors ${
                 selected?.id === a.id ? 'bg-blue-50' : 'hover:bg-gray-50'
               }`}
@@ -150,7 +174,6 @@ function AusgabenListe() {
                 <span className={`font-medium text-sm ${selected?.id === a.id ? 'text-blue-700' : 'text-gray-800'}`}>
                   {kwLabel(a.kw, a.jahr)}
                 </span>
-                {statusBadge(a.status)}
               </div>
               <div className="text-xs text-gray-400 mt-0.5">{formatDonnerstag(a.kw, a.jahr)}</div>
             </button>
@@ -164,11 +187,10 @@ function AusgabenListe() {
           <AusgabeDetail
             ausgabe={selected}
             onEdit={() => { setEditTarget(selected); setShowForm(true); }}
-            onStatusChange={async (status) => {
-              await aktualisiereAusgabe(selected.id, { status });
-              const aktualisiert = { ...selected, status };
-              setSelected(aktualisiert);
-              handleSave(aktualisiert);
+            onDelete={async () => {
+              await loescheAusgabe(selected.id);
+              setAusgaben((prev) => prev.filter((a) => a.id !== selected.id));
+              setSelected(null);
             }}
           />
         ) : (
@@ -201,17 +223,23 @@ function AusgabenListe() {
 function AusgabeDetail({
   ausgabe,
   onEdit,
-  onStatusChange,
+  onDelete,
 }: {
   ausgabe: Ausgabe;
   onEdit: () => void;
-  onStatusChange: (s: AusgabeStatus) => void;
+  onDelete: () => Promise<void>;
 }) {
   const { abrechnungsperioden } = useApp();
-  const istGesperrt = ausgabe.status === 'abgeschlossen';
   const zugehoerigerPeriode = abrechnungsperioden.find(
     (p) => p.jahr === ausgabe.jahr && p.kalenderwochen.includes(ausgabe.kw)
   );
+  const istGesperrt = zugehoerigerPeriode?.status === 'abgeschlossen';
+  const kannGeloeschtWerden = !zugehoerigerPeriode;
+
+  async function handleLoeschen() {
+    if (!confirm(`Ausgabe ${kwLabel(ausgabe.kw, ausgabe.jahr)} wirklich löschen?`)) return;
+    await onDelete();
+  }
 
   return (
     <div className="space-y-4">
@@ -222,14 +250,19 @@ function AusgabeDetail({
             <h2 className="text-lg font-bold text-gray-900">{kwLabel(ausgabe.kw, ausgabe.jahr)}</h2>
             <p className="text-sm text-gray-500">Erscheint: {formatDonnerstag(ausgabe.kw, ausgabe.jahr)}</p>
           </div>
-          {!istGesperrt && (
-            <button onClick={onEdit} className="text-sm text-blue-600 hover:text-blue-800">Bearbeiten</button>
-          )}
+          <div className="flex items-center gap-3">
+            {!istGesperrt && (
+              <button onClick={onEdit} className="text-sm text-blue-600 hover:text-blue-800">Bearbeiten</button>
+            )}
+            {kannGeloeschtWerden && (
+              <button onClick={handleLoeschen} className="text-sm text-red-500 hover:text-red-700">Löschen</button>
+            )}
+          </div>
         </div>
 
         {istGesperrt && (
           <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 flex items-center gap-1">
-            🔒 Gehört zu einer abgeschlossenen Abrechnungsperiode — keine Änderungen möglich
+            🔒 Abrechnungsperiode abgeschlossen — keine Änderungen möglich
           </div>
         )}
 
@@ -252,37 +285,26 @@ function AusgabeDetail({
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-4 mt-4">
+        <div className="grid grid-cols-4 gap-4 mt-4">
           <InfoBox label="Seitenzahl" value={`${ausgabe.seitenzahl} Seiten`} />
           <InfoBox label="Stapel" value={`${ausgabe.stapelAnzahl} Stapel`} hint="Für Zusammentragen" />
           <InfoBox label="Grammatur" value={`${ausgabe.grammaturGqm} g/m²`} />
+          <InfoBox
+            label="Gewicht je Exemplar"
+            value={`${berechneGewichtProExemplarG(ausgabe).toLocaleString('de-DE', { maximumFractionDigits: 1 })} g`}
+            hint={`${ausgabe.seitenformatMm.breite}×${ausgabe.seitenformatMm.hoehe} mm · ohne Beilagen`}
+          />
         </div>
-
-        {!istGesperrt && (
-          <div className="mt-4 flex items-center gap-3">
-            <span className="text-sm text-gray-600">Status:</span>
-            {(['geplant', 'laufend', 'abgeschlossen'] as AusgabeStatus[]).map((s) => (
-              <button
-                key={s}
-                onClick={() => onStatusChange(s)}
-                className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                  ausgabe.status === s
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
-                }`}
-              >
-                {s === 'geplant' ? 'Geplant' : s === 'laufend' ? 'Laufend' : 'Abgeschlossen'}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* Beilagen */}
-      <BeilagenVerwaltung ausgabe={ausgabe} />
+      <BeilagenVerwaltung ausgabe={ausgabe} istGesperrt={istGesperrt} />
 
       {/* Austräger-Einsätze */}
       <EinsaetzeUebersicht ausgabe={ausgabe} />
+
+      {/* Teilgebiet-Beilagen-Matrix: für jedes Teilgebiet die gebuchten Beilagen */}
+      <TeilgebietBeilagenUebersicht ausgabe={ausgabe} />
     </div>
   );
 }
@@ -323,9 +345,11 @@ function AusgabeForm({
   const [grammatur, setGrammatur] = useState(
     initial?.grammaturGqm ?? parameter?.standardGrammurGqm ?? 65
   );
+  const [vorarbeitFreigegeben, setVorarbeitFreigegeben] = useState<boolean>(
+    initial?.vorarbeitFreigegeben ?? false
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const maxKW = maxKWinJahr(jahr);
 
   // Welche Periode enthält diese KW aktuell?
   const findPeriodeForKW = (kwVal: number, jahrVal: number) =>
@@ -344,6 +368,10 @@ function AusgabeForm({
     .filter((p) => p.status === 'offen')
     .sort((a, b) => b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat);
 
+  // Ausgewählte Periode und ob sie KWs vorgibt
+  const selectedPeriode = periodeId ? abrechnungsperioden.find((p) => p.id === periodeId) : null;
+  const periodeHatKWs = !!(selectedPeriode && selectedPeriode.kalenderwochen.length > 0);
+
   const kwBereitsVorhanden = vorhandeneKWs.some(
     (v) => v.kw === kw && v.jahr === jahr && v.kw !== initial?.kw
   );
@@ -351,19 +379,40 @@ function AusgabeForm({
   // KW gehört zu einer abgeschlossenen Periode?
   const kwInGesperrterPeriode = abrechnungsperioden.some(
     (p) => p.status === 'abgeschlossen' && p.jahr === jahr && p.kalenderwochen.includes(kw) &&
-           p.id !== originalPeriodeId  // Eigene abgeschlossene Periode ist schon blockiert
+           p.id !== originalPeriodeId
   );
 
-  // Automatisch Periode vorschlagen wenn KW/Jahr geändert wird
+  // Periode geändert → Jahr und KW anpassen
+  function handlePeriodeChange(newPeriodeId: string) {
+    setPeriodeId(newPeriodeId);
+    const p = abrechnungsperioden.find((x) => x.id === newPeriodeId);
+    if (!p) return;
+    setJahr(p.jahr);
+    if (p.kalenderwochen.length > 0) {
+      const sortedKWs = [...p.kalenderwochen].sort((a, b) => a - b);
+      const ersteFreie = sortedKWs.find(
+        (kwVal) =>
+          kwVal === initial?.kw ||
+          !vorhandeneKWs.some((v) => v.kw === kwVal && v.jahr === p.jahr)
+      );
+      if (ersteFreie != null) setKw(ersteFreie);
+    }
+  }
+
+  // Automatisch Periode vorschlagen wenn KW/Jahr manuell geändert wird (Fallback ohne Perioden-KWs)
   function handleKWChange(newKw: number) {
     setKw(newKw);
-    const auto = findPeriodeForKW(newKw, jahr);
-    if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+    if (!periodeHatKWs) {
+      const auto = findPeriodeForKW(newKw, jahr);
+      if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+    }
   }
   function handleJahrChange(newJahr: number) {
     setJahr(newJahr);
-    const auto = findPeriodeForKW(kw, newJahr);
-    if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+    if (!periodeHatKWs) {
+      const auto = findPeriodeForKW(kw, newJahr);
+      if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -380,8 +429,9 @@ function AusgabeForm({
         await aktualisiereAusgabe(initial.id, {
           kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur,
           seitenformatMm: initial.seitenformatMm,
+          vorarbeitFreigegeben,
         });
-        onSave({ ...initial, kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur });
+        onSave({ ...initial, kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur, vorarbeitFreigegeben });
       } else {
         const id = await erstelleAusgabe({
           kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur,
@@ -390,6 +440,7 @@ function AusgabeForm({
             hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
           },
           status: 'geplant',
+          vorarbeitFreigegeben,
         });
         onSave({
           id, kw, jahr, seitenzahl, stapelAnzahl,
@@ -399,6 +450,7 @@ function AusgabeForm({
             hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
           },
           status: 'geplant',
+          vorarbeitFreigegeben,
           erstelltAm: Date.now(),
           aktualisiertAm: Date.now(),
         });
@@ -433,39 +485,8 @@ function AusgabeForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Kalenderwoche</label>
-          <input
-            type="number"
-            min={1}
-            max={maxKW}
-            value={kw}
-            onChange={(e) => handleKWChange(Number(e.target.value))}
-            className={inputClass}
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Jahr</label>
-          <input
-            type="number"
-            min={2020}
-            max={2099}
-            value={jahr}
-            onChange={(e) => handleJahrChange(Number(e.target.value))}
-            className={inputClass}
-          />
-        </div>
-      </div>
 
-      {kwBereitsVorhanden && (
-        <p className="text-amber-600 text-sm">⚠ KW {kw}/{jahr} ist bereits angelegt.</p>
-      )}
-      {kwInGesperrterPeriode && (
-        <p className="text-red-600 text-sm">🔒 KW {kw}/{jahr} gehört zu einer abgeschlossenen Abrechnungsperiode — keine neue Ausgabe möglich.</p>
-      )}
-
-      {/* Abrechnungsperiode — Pflichtfeld */}
+      {/* ① Abrechnungsperiode — zuerst wählen */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
           Abrechnungsperiode <span className="text-red-500">*</span>
@@ -477,7 +498,7 @@ function AusgabeForm({
         ) : (
           <select
             value={periodeId}
-            onChange={(e) => setPeriodeId(e.target.value)}
+            onChange={(e) => handlePeriodeChange(e.target.value)}
             className={inputClass}
             required
           >
@@ -487,15 +508,68 @@ function AusgabeForm({
             ))}
           </select>
         )}
-        {periodeId && (() => {
-          const p = abrechnungsperioden.find((x) => x.id === periodeId);
-          return p && p.kalenderwochen.length > 0 ? (
-            <p className="text-xs text-gray-400 mt-1">
-              Bereits in dieser Periode: KW {p.kalenderwochen.sort((a,b)=>a-b).join(', ')}
-            </p>
-          ) : null;
-        })()}
       </div>
+
+      {/* ② KW-Auswahl — gefiltert nach Periode (wenn Periode KWs hat) */}
+      {periodeHatKWs ? (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Kalenderwoche</label>
+          <select
+            value={kw}
+            onChange={(e) => setKw(Number(e.target.value))}
+            className={inputClass}
+          >
+            {[...selectedPeriode!.kalenderwochen].sort((a, b) => a - b).map((kwVal) => {
+              const vergeben = kwVal !== initial?.kw && vorhandeneKWs.some((v) => v.kw === kwVal && v.jahr === jahr);
+              return (
+                <option key={kwVal} value={kwVal} disabled={vergeben}>
+                  KW {kwVal.toString().padStart(2, '0')}/{jahr}{vergeben ? ' (bereits vorhanden)' : ''}
+                </option>
+              );
+            })}
+          </select>
+          <p className="text-xs text-gray-400 mt-1">
+            Jahr {jahr} · {selectedPeriode!.kalenderwochen.length} KWs in dieser Periode
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Kalenderwoche</label>
+            <input
+              type="number"
+              min={1}
+              max={53}
+              value={kw}
+              onChange={(e) => handleKWChange(Number(e.target.value))}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Jahr</label>
+            <input
+              type="number"
+              min={2020}
+              max={2099}
+              value={jahr}
+              onChange={(e) => handleJahrChange(Number(e.target.value))}
+              className={inputClass}
+            />
+          </div>
+        </div>
+      )}
+
+      {kwBereitsVorhanden && (
+        <p className="text-amber-600 text-sm">⚠ KW {kw}/{jahr} ist bereits angelegt.</p>
+      )}
+      {kwInGesperrterPeriode && (
+        <p className="text-red-600 text-sm">🔒 KW {kw}/{jahr} gehört zu einer abgeschlossenen Abrechnungsperiode — keine neue Ausgabe möglich.</p>
+      )}
+      {periodeId && !periodeHatKWs && (
+        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          ℹ Diese Periode hat noch keine Kalenderwochen festgelegt. KW wird beim Speichern automatisch hinzugefügt.
+        </p>
+      )}
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Erscheinungsdatum</label>
@@ -558,6 +632,23 @@ function AusgabeForm({
           onChange={(e) => setGrammatur(Number(e.target.value))}
           className={inputClass}
         />
+      </div>
+
+      <div className="border-t pt-4">
+        <label className="flex items-start gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={vorarbeitFreigegeben}
+            onChange={(e) => setVorarbeitFreigegeben(e.target.checked)}
+            className="mt-0.5 rounded"
+          />
+          <span>
+            <span className="font-medium">Vorarbeit für diese Ausgabe erlauben</span>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Nur wenn aktiviert, wird Vorarbeit in die Lohnberechnung aufgenommen.
+            </p>
+          </span>
+        </label>
       </div>
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
@@ -791,7 +882,7 @@ function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
 // BEILAGEN
 // ============================================================
 
-function BeilagenVerwaltung({ ausgabe }: { ausgabe: Ausgabe }) {
+function BeilagenVerwaltung({ ausgabe, istGesperrt }: { ausgabe: Ausgabe; istGesperrt: boolean }) {
   const { teilgebiete } = useApp();
   const [beilagen, setBeilagen] = useState<Beilage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -819,8 +910,6 @@ function BeilagenVerwaltung({ ausgabe }: { ausgabe: Ausgabe }) {
     }, 0);
     return ((b.gewichtGStk * anzahl) / 1000).toFixed(2);
   };
-
-  const istGesperrt = ausgabe.status === 'abgeschlossen';
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
@@ -938,12 +1027,21 @@ function BeilageForm({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [tourFilter, setTourFilter] = useState('');
+  const [tourFilterIds, setTourFilterIds] = useState<Set<string>>(new Set());
 
   const aktiveTeilgebiete = teilgebiete.filter((t) => t.isActive);
-  const gefilterteTG = tourFilter
-    ? aktiveTeilgebiete.filter((t) => t.tourId === tourFilter)
+  const gefilterteTG = tourFilterIds.size > 0
+    ? aktiveTeilgebiete.filter((t) => t.tourId && tourFilterIds.has(t.tourId))
     : aktiveTeilgebiete;
+
+  function toggleTourFilter(tourId: string) {
+    setTourFilterIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(tourId)) n.delete(tourId);
+      else n.add(tourId);
+      return n;
+    });
+  }
 
   function toggleTeilgebiet(id: string) {
     setAusgewaehlteTeilgebiete((prev) =>
@@ -1073,23 +1171,52 @@ function BeilageForm({
           <label className="text-sm font-medium text-gray-700">
             Teilgebiete ({ausgewaehlteTeilgebiete.length} gewählt · {gesamtStueckzahl.toLocaleString('de-DE')} Stk)
           </label>
-          <div className="flex gap-2">
-            <select
-              value={tourFilter}
-              onChange={(e) => setTourFilter(e.target.value)}
-              className="border border-gray-300 rounded px-2 py-1 text-xs"
-            >
-              <option value="">Alle Touren</option>
-              {touren.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-            <button
-              type="button"
-              onClick={alleToggeln}
-              className="text-xs text-blue-600 hover:text-blue-800"
-            >
-              {gefilterteTG.every((t) => ausgewaehlteTeilgebiete.includes(t.id)) ? 'Alle abwählen' : 'Alle wählen'}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={alleToggeln}
+            className="text-xs text-blue-600 hover:text-blue-800"
+          >
+            {gefilterteTG.every((t) => ausgewaehlteTeilgebiete.includes(t.id)) ? 'Alle abwählen' : 'Alle wählen'}
+          </button>
+        </div>
+        {/* Tour-Filter: Mehrfachauswahl als Chips */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <span className="text-xs text-gray-500 mr-1">Nach Touren filtern:</span>
+          <button
+            type="button"
+            onClick={() => setTourFilterIds(new Set())}
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              tourFilterIds.size === 0
+                ? 'bg-gray-800 text-white border-gray-800'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+            }`}
+          >
+            Alle
+          </button>
+          {touren.map((t) => {
+            const active = tourFilterIds.has(t.id);
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => toggleTourFilter(t.id)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  active
+                    ? 'text-white border-transparent'
+                    : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                }`}
+                style={active ? { backgroundColor: t.farbe } : undefined}
+                title={active ? 'Tour entfernen' : 'Tour hinzufügen'}
+              >
+                {active && '✓ '}{t.name}
+              </button>
+            );
+          })}
+          {tourFilterIds.size > 0 && (
+            <span className="text-xs text-gray-400 ml-1">
+              ({tourFilterIds.size} Tour{tourFilterIds.size === 1 ? '' : 'en'} · {gefilterteTG.length} TG)
+            </span>
+          )}
         </div>
         <div className="border border-gray-200 rounded-lg p-3 max-h-48 overflow-y-auto grid grid-cols-3 gap-1">
           {gefilterteTG.map((tg) => (
@@ -1255,6 +1382,7 @@ function PeriodeForm({
   onSave: (p: Abrechnungsperiode) => void;
   onCancel: () => void;
 }) {
+  const { parameter } = useApp();
   const heute = new Date();
   const [monat, setMonat] = useState(initial?.monat ?? heute.getMonth() + 1);
   const [jahr, setJahr] = useState(initial?.jahr ?? heute.getFullYear());
@@ -1263,7 +1391,7 @@ function PeriodeForm({
   const [error, setError] = useState('');
 
   const bezeichnung = `${MONATSNAMEN[monat - 1]} ${jahr}`;
-  const verfuegbareKWs = alleKWsImJahr(jahr);
+  const verfuegbareKWs = Array.from({ length: 53 }, (_, i) => i + 1);
 
   // KWs die bereits zu Ausgaben existieren
   const kwsMitAusgabe = new Set(
@@ -1293,6 +1421,26 @@ function PeriodeForm({
           monat, jahr, bezeichnung, kalenderwochen: gewaehlteKWs, status: 'offen',
         });
         onSave({ id, monat, jahr, bezeichnung, kalenderwochen: gewaehlteKWs, status: 'offen', erstelltAm: Date.now() });
+      }
+
+      // Für jede KW in der Periode automatisch eine Ausgabe anlegen, falls noch keine vorhanden
+      const kwsMitAusgabeAktuell = new Set(ausgaben.filter((a) => a.jahr === jahr).map((a) => a.kw));
+      const standardSeitenzahl = 16;
+      for (const kw of gewaehlteKWs) {
+        if (!kwsMitAusgabeAktuell.has(kw)) {
+          await erstelleAusgabe({
+            kw,
+            jahr,
+            seitenzahl: standardSeitenzahl,
+            stapelAnzahl: berechneStapel(standardSeitenzahl).length,
+            grammaturGqm: parameter?.standardGrammurGqm ?? 65,
+            seitenformatMm: {
+              breite: parameter?.standardSeitenformatBreiteMm ?? 305,
+              hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
+            },
+            status: 'geplant',
+          });
+        }
       }
     } catch (err) {
       setError('Fehler beim Speichern.');
@@ -1337,9 +1485,9 @@ function PeriodeForm({
       <div>
         <div className="flex items-center justify-between mb-2">
           <label className="text-sm font-medium text-gray-700">
-            Kalenderwochen ({gewaehlteKWs.length} gewählt)
+            Ausgaben / Kalenderwochen ({gewaehlteKWs.length} gewählt)
           </label>
-          <p className="text-xs text-gray-400">Grau = bereits vergeben · Blau = hat Ausgabe</p>
+          <p className="text-xs text-gray-400">Grau = vergeben · Blau = Ausgabe bereits vorhanden</p>
         </div>
         <div className="border border-gray-200 rounded-lg p-3 grid grid-cols-6 gap-1.5 max-h-52 overflow-y-auto">
           {verfuegbareKWs.map((kw) => {
@@ -1370,7 +1518,7 @@ function PeriodeForm({
           })}
         </div>
         <p className="text-xs text-gray-400 mt-1">
-          Jede KW darf nur einer Periode zugeordnet sein.
+          Jede gewählte KW wird automatisch als Ausgabe angelegt (falls noch nicht vorhanden).
         </p>
       </div>
 
@@ -1391,3 +1539,204 @@ function PeriodeForm({
 }
 
 const inputClass = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+
+// ============================================================
+// TEILGEBIET × BEILAGEN — Übersicht für eine Ausgabe
+// Zeigt alle aktiven Teilgebiete und welche Beilagen je TG gebucht sind
+// (intern + extern getrennt). Wird unten in der Ausgaben-Detailansicht
+// angezeigt — komplementär zur Beilagen-Verwaltung darüber, die je
+// Beilage zeigt, welche Teilgebiete sie erhält.
+// ============================================================
+
+function TeilgebietBeilagenUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
+  const { teilgebiete, touren } = useApp();
+  const [beilagen, setBeilagen] = useState<Beilage[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    ladeBeilagen(ausgabe.id).then((list) => {
+      setBeilagen(list);
+      setLoading(false);
+    });
+  }, [ausgabe.id]);
+
+  const aktiveTeilgebiete = teilgebiete
+    .filter((tg) => tg.isActive)
+    .sort((a, b) => {
+      // Erst nach Tour, dann Name
+      const ta = touren.find((t) => t.id === a.tourId)?.name ?? 'zzz';
+      const tb = touren.find((t) => t.id === b.tourId)?.name ?? 'zzz';
+      if (ta !== tb) return ta.localeCompare(tb);
+      return a.name.localeCompare(b.name);
+    });
+
+  const tourFarbe = (tourId: string | null): string => {
+    const t = touren.find((x) => x.id === tourId);
+    return t?.farbe ?? '#9ca3af';
+  };
+  const tourName = (tourId: string | null): string => {
+    if (!tourId) return 'Ohne Tour';
+    return touren.find((t) => t.id === tourId)?.name ?? '?';
+  };
+
+  // Reihenfolge der Beilagen-Spalten: erst intern (grau), dann extern (orange).
+  const beilagenSortiert = [
+    ...beilagen.filter((b) => b.kennzeichen === 'int'),
+    ...beilagen.filter((b) => b.kennzeichen === 'ext'),
+  ].sort((a, b) => {
+    if (a.kennzeichen !== b.kennzeichen) return a.kennzeichen === 'int' ? -1 : 1;
+    return a.arbeitstitel.localeCompare(b.arbeitstitel);
+  });
+
+  // Pro Beilage: Anzahl Teilgebiete in denen sie gebucht ist (für Σ-Zeile).
+  function anzahlTgFuerBeilage(b: Beilage): number {
+    return aktiveTeilgebiete.filter((tg) => b.teilgebietIds.includes(tg.id)).length;
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold text-gray-800">
+          Teilgebiete &amp; gebuchte Beilagen
+          <span className="ml-2 text-sm text-gray-400 font-normal">
+            ({aktiveTeilgebiete.length} TG · {beilagenSortiert.length} Beilagen)
+          </span>
+        </h3>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-6 text-gray-400 text-sm">Lädt…</div>
+      ) : beilagenSortiert.length === 0 ? (
+        <div className="text-center py-6 text-gray-400 text-sm">
+          Keine Beilagen für diese Ausgabe gebucht.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="text-xs border-separate" style={{ borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-10 bg-gray-50 px-2 py-1.5 text-left font-medium text-gray-600 border-b border-gray-200 whitespace-nowrap">
+                  Tour
+                </th>
+                <th className="sticky bg-gray-50 px-2 py-1.5 text-left font-medium text-gray-600 border-b border-gray-200 whitespace-nowrap"
+                    style={{ left: '70px' }}>
+                  Teilgebiet
+                </th>
+                <th className="bg-gray-50 px-2 py-1.5 text-right font-medium text-gray-600 border-b border-gray-200 whitespace-nowrap">
+                  Stk
+                </th>
+                {beilagenSortiert.map((b) => (
+                  <th
+                    key={b.id}
+                    className={`px-1 py-1.5 text-center font-medium border-b border-gray-200 align-bottom ${
+                      b.kennzeichen === 'int' ? 'bg-gray-50' : 'bg-orange-50'
+                    }`}
+                    style={{ minWidth: '48px', maxWidth: '90px' }}
+                  >
+                    <div
+                      className={`flex flex-col items-center text-[10px] leading-tight ${
+                        b.kennzeichen === 'int' ? 'text-gray-700' : 'text-orange-800'
+                      }`}
+                      title={`${b.arbeitstitel} · ${b.kundenname} · ${b.format} · ${b.gewichtGStk} g/Stk · ${b.kennzeichen === 'int' ? 'intern' : 'extern'}`}
+                    >
+                      <span className="font-semibold truncate w-full">{b.arbeitstitel}</span>
+                      <span className="text-gray-500 truncate w-full">{b.kundenname}</span>
+                      <span className="text-gray-400">
+                        {b.format} · {b.gewichtGStk}g
+                      </span>
+                      <span className="mt-0.5 inline-block">
+                        {b.kennzeichen === 'int' ? '🏭' : '🚚'}
+                      </span>
+                    </div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {aktiveTeilgebiete.length === 0 && (
+                <tr>
+                  <td colSpan={3 + beilagenSortiert.length} className="text-center py-4 text-gray-400">
+                    Keine aktiven Teilgebiete
+                  </td>
+                </tr>
+              )}
+              {aktiveTeilgebiete.map((tg) => (
+                <tr key={tg.id} className="hover:bg-blue-50/40">
+                  <td className="sticky left-0 z-10 bg-white hover:bg-blue-50/40 px-2 py-1 whitespace-nowrap border-b border-gray-100"
+                      style={{ width: '70px' }}>
+                    <span className="inline-flex items-center gap-1">
+                      <span
+                        className="w-2 h-2 rounded-full inline-block shrink-0"
+                        style={{ backgroundColor: tourFarbe(tg.tourId) }}
+                      />
+                      <span className="text-gray-600 text-[10px] truncate">
+                        {tourName(tg.tourId)}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="sticky bg-white hover:bg-blue-50/40 px-2 py-1 whitespace-nowrap border-b border-gray-100 font-medium text-gray-900"
+                      style={{ left: '70px' }}>
+                    {tg.name}
+                  </td>
+                  <td className="bg-white px-2 py-1 text-right text-gray-600 font-mono border-b border-gray-100 whitespace-nowrap">
+                    {tg.stueckzahl.toLocaleString('de-DE')}
+                  </td>
+                  {beilagenSortiert.map((b) => {
+                    const istGebucht = b.teilgebietIds.includes(tg.id);
+                    return (
+                      <td
+                        key={b.id}
+                        className={`px-1 py-1 text-center border-b border-gray-100 ${
+                          b.kennzeichen === 'int' ? 'bg-gray-50/30' : 'bg-orange-50/30'
+                        }`}
+                      >
+                        {istGebucht ? (
+                          <span
+                            className={b.kennzeichen === 'int' ? 'text-gray-700' : 'text-orange-700'}
+                            title={`${b.arbeitstitel} bei ${tg.name} gebucht`}
+                          >
+                            ✓
+                          </span>
+                        ) : (
+                          <span className="text-gray-200">·</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              {/* Σ-Zeile: in wie vielen Teilgebieten ist diese Beilage gebucht? */}
+              <tr className="bg-blue-50 font-semibold text-blue-900">
+                <td colSpan={2}
+                    className="sticky left-0 z-10 bg-blue-50 px-2 py-1.5 text-right border-t-2 border-blue-200 whitespace-nowrap">
+                  Σ Teilgebiete (von {aktiveTeilgebiete.length})
+                </td>
+                <td className="bg-blue-50 px-2 py-1.5 border-t-2 border-blue-200" />
+                {beilagenSortiert.map((b) => {
+                  const n = anzahlTgFuerBeilage(b);
+                  const alle = n === aktiveTeilgebiete.length;
+                  return (
+                    <td
+                      key={b.id}
+                      className="px-1 py-1.5 text-center border-t-2 border-blue-200"
+                      title={
+                        alle
+                          ? 'In allen Teilgebieten gebucht'
+                          : `In ${n} von ${aktiveTeilgebiete.length} Teilgebieten gebucht`
+                      }
+                    >
+                      <span className={alle ? 'text-green-700' : n === 0 ? 'text-gray-400' : 'text-blue-800'}>
+                        {n}
+                      </span>
+                    </td>
+                  );
+                })}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -31,7 +31,7 @@ export default function HomeScreen() {
           {isAdminAuthenticated && (
             <>
               <QuickLink href="/mitarbeiter" icon="👥" title="Mitarbeiter" desc="Stammdaten verwalten" />
-              <QuickLink href="/ausgaben" icon="📄" title="Ausgaben" desc="Wochenausgaben planen" />
+              <QuickLink href="/ausgaben" icon="📄" title="Ausgaben & Beilagen" desc="Wochenausgaben planen" />
               <QuickLink href="/einsaetze" icon="🗓" title="Einsätze" desc="Austräger zuweisen" />
               <QuickLink href="/reklamationen" icon="📞" title="Reklamationen" desc="Leser-Reklamationen erfassen" />
               <QuickLink href="/abrechnung" icon="💰" title="Abrechnung" desc="Monatsabrechnung & Export" />

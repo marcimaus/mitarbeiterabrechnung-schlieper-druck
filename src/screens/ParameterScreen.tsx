@@ -11,6 +11,11 @@ const STANDARD_PARAMETER: Omit<Parameter, 'adminPinHash' | 'adminName' | 'beilag
   stundenlohnErwachseneAustr: 13.90,
   stundenlohnMinderjAustr: 10.00,
   mindeststundenlohn: 13.90,
+  zusammentragGeschwErste2StapelStkProH: 1700,
+  zusammentragGeschwWeitereStapelStkProH: 3400,
+  externeBeilageEinlegeGeschwStkProH: 442,
+  stundenlohnErwachseneZusammen: 13.90,
+  stundenlohnMinderjZusammen: 10.00,
   springerZuschlagProzent: 25,
   springerZuschlagOptionen: [25, 30],
   gewichtszulageAnzeigenblattEurKg: 0.05,
@@ -19,6 +24,11 @@ const STANDARD_PARAMETER: Omit<Parameter, 'adminPinHash' | 'adminName' | 'beilag
   standardSeitenformatBreiteMm: 305,
   standardSeitenformatHoeheMm: 215,
   fahrkostenEurProKm: 0.30,
+  minijobGrenzeEurProMonat: 556,
+  gewichtToleranzObenProzent: 2,
+  gewichtToleranzUntenProzent: 1,
+  austragenNachIstZeit: false,
+  zusammentragenNachIstZeit: false,
 };
 
 export default function ParameterScreen() {
@@ -38,6 +48,11 @@ function ParameterInhalt() {
     stundenlohnErwachseneAustr: STANDARD_PARAMETER.stundenlohnErwachseneAustr,
     stundenlohnMinderjAustr: STANDARD_PARAMETER.stundenlohnMinderjAustr,
     mindeststundenlohn: STANDARD_PARAMETER.mindeststundenlohn,
+    zusammentragGeschwErste2StapelStkProH: STANDARD_PARAMETER.zusammentragGeschwErste2StapelStkProH,
+    zusammentragGeschwWeitereStapelStkProH: STANDARD_PARAMETER.zusammentragGeschwWeitereStapelStkProH,
+    externeBeilageEinlegeGeschwStkProH: STANDARD_PARAMETER.externeBeilageEinlegeGeschwStkProH,
+    stundenlohnErwachseneZusammen: STANDARD_PARAMETER.stundenlohnErwachseneZusammen,
+    stundenlohnMinderjZusammen: STANDARD_PARAMETER.stundenlohnMinderjZusammen,
     springerZuschlagProzent: STANDARD_PARAMETER.springerZuschlagProzent,
     springerZuschlagOptionen: [25, 30] as number[],
     gewichtszulageAnzeigenblattEurKg: STANDARD_PARAMETER.gewichtszulageAnzeigenblattEurKg,
@@ -46,6 +61,11 @@ function ParameterInhalt() {
     standardSeitenformatBreiteMm: STANDARD_PARAMETER.standardSeitenformatBreiteMm,
     standardSeitenformatHoeheMm: STANDARD_PARAMETER.standardSeitenformatHoeheMm,
     fahrkostenEurProKm: STANDARD_PARAMETER.fahrkostenEurProKm,
+    minijobGrenzeEurProMonat: STANDARD_PARAMETER.minijobGrenzeEurProMonat,
+    gewichtToleranzObenProzent: STANDARD_PARAMETER.gewichtToleranzObenProzent,
+    gewichtToleranzUntenProzent: STANDARD_PARAMETER.gewichtToleranzUntenProzent,
+    austragenNachIstZeit: false,
+    zusammentragenNachIstZeit: false,
     adminName: adminName || '',
   });
   const [neueOption, setNeueOption] = useState('');
@@ -67,6 +87,16 @@ function ParameterInhalt() {
         stundenlohnErwachseneAustr: parameter.stundenlohnErwachseneAustr,
         stundenlohnMinderjAustr: parameter.stundenlohnMinderjAustr,
         mindeststundenlohn: parameter.mindeststundenlohn,
+        zusammentragGeschwErste2StapelStkProH:
+          parameter.zusammentragGeschwErste2StapelStkProH ?? STANDARD_PARAMETER.zusammentragGeschwErste2StapelStkProH,
+        zusammentragGeschwWeitereStapelStkProH:
+          parameter.zusammentragGeschwWeitereStapelStkProH ?? STANDARD_PARAMETER.zusammentragGeschwWeitereStapelStkProH,
+        externeBeilageEinlegeGeschwStkProH:
+          parameter.externeBeilageEinlegeGeschwStkProH ?? STANDARD_PARAMETER.externeBeilageEinlegeGeschwStkProH,
+        stundenlohnErwachseneZusammen:
+          parameter.stundenlohnErwachseneZusammen ?? STANDARD_PARAMETER.stundenlohnErwachseneZusammen,
+        stundenlohnMinderjZusammen:
+          parameter.stundenlohnMinderjZusammen ?? STANDARD_PARAMETER.stundenlohnMinderjZusammen,
         springerZuschlagProzent: parameter.springerZuschlagProzent,
         springerZuschlagOptionen: parameter.springerZuschlagOptionen ?? [25, 30],
         gewichtszulageAnzeigenblattEurKg: parameter.gewichtszulageAnzeigenblattEurKg,
@@ -75,6 +105,11 @@ function ParameterInhalt() {
         standardSeitenformatBreiteMm: parameter.standardSeitenformatBreiteMm,
         standardSeitenformatHoeheMm: parameter.standardSeitenformatHoeheMm,
         fahrkostenEurProKm: parameter.fahrkostenEurProKm ?? 0.30,
+        minijobGrenzeEurProMonat: parameter.minijobGrenzeEurProMonat ?? 556,
+        gewichtToleranzObenProzent: parameter.gewichtToleranzObenProzent ?? 2,
+        gewichtToleranzUntenProzent: parameter.gewichtToleranzUntenProzent ?? 1,
+        austragenNachIstZeit: parameter.austragenNachIstZeit ?? false,
+        zusammentragenNachIstZeit: parameter.zusammentragenNachIstZeit ?? false,
         adminName: parameter.adminName || '',
       }));
     }
@@ -280,6 +315,68 @@ function ParameterInhalt() {
           </Field>
         </Section>
 
+        {/* Zusammentragen & externe Beilagen */}
+        <Section title="Zusammentragen & externe Beilagen">
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Geschwindigkeit erste 2 Anzeigenblatt-Stapel (Stk/h)" hint="Standard: 1700">
+              <input
+                type="number"
+                min="1"
+                value={form.zusammentragGeschwErste2StapelStkProH}
+                onChange={(e) => setForm((f) => ({ ...f, zusammentragGeschwErste2StapelStkProH: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Geschwindigkeit weitere Stapel + Beilagen (Stk/h)" hint="Standard: 4300">
+              <input
+                type="number"
+                min="1"
+                value={form.zusammentragGeschwWeitereStapelStkProH}
+                onChange={(e) => setForm((f) => ({ ...f, zusammentragGeschwWeitereStapelStkProH: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <Field
+            label="Geschwindigkeit Einlegen externer Beilagen (Stk/h)"
+            hint="Je externer Beilage — Austräger/Springer legt die Beilage selbst in das bereits zusammengetragene Anzeigenblatt ein. Standard: 442"
+          >
+            <input
+              type="number"
+              min="1"
+              value={form.externeBeilageEinlegeGeschwStkProH}
+              onChange={(e) => setForm((f) => ({ ...f, externeBeilageEinlegeGeschwStkProH: num(e.target.value) }))}
+              className={inputClass}
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Stundenlohn Zusammenträger erwachsen (EUR/h)" hint="Standard: 13,90 €">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.stundenlohnErwachseneZusammen}
+                onChange={(e) => setForm((f) => ({ ...f, stundenlohnErwachseneZusammen: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Stundenlohn Zusammenträger minderjährig (EUR/h)" hint="Standard: 10,00 €">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.stundenlohnMinderjZusammen}
+                onChange={(e) => setForm((f) => ({ ...f, stundenlohnMinderjZusammen: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <p className="text-xs text-gray-400 mt-2">
+            Die Abrechnung erfolgt nach errechneter Soll-Zeit (Stückzahl / Geschwindigkeit), nicht nach Ist-Zeit aus der Stempeluhr.
+            Die Stundenlöhne werden je nach Alter automatisch gewählt (≥ 18 Jahre = erwachsen).
+          </p>
+        </Section>
+
         {/* Gewichtszulagen */}
         <Section title="Gewichtszulagen (EUR/kg)">
           <div className="grid grid-cols-2 gap-4">
@@ -318,6 +415,82 @@ function ParameterInhalt() {
               className={inputClass}
             />
           </Field>
+        </Section>
+
+        {/* Minijob-Grenze */}
+        <Section title="Minijob-Grenze">
+          <Field
+            label="Minijob-Grenze (EUR/Monat)"
+            hint="Aktuell gültige Monatsgrenze für geringfügig Beschäftigte (seit 2025: 556 €). Bei als 'Minijob' markierten Mitarbeitern erscheint in der Abrechnung eine Warnung, wenn der Bruttolohn diese Grenze überschreitet."
+          >
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.minijobGrenzeEurProMonat}
+              onChange={(e) => setForm((f) => ({ ...f, minijobGrenzeEurProMonat: num(e.target.value) }))}
+              className={inputClass}
+            />
+          </Field>
+        </Section>
+
+        {/* Gewichtskontrolle */}
+        <Section title="Gewichtskontrolle Zusammentragen">
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Toleranz nach oben (%)" hint="Standard: 2 — max. zulässige Überschreitung des Soll-Gewichts">
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={form.gewichtToleranzObenProzent}
+                onChange={(e) => setForm((f) => ({ ...f, gewichtToleranzObenProzent: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Toleranz nach unten (%)" hint="Standard: 1 — max. zulässige Unterschreitung des Soll-Gewichts">
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={form.gewichtToleranzUntenProzent}
+                onChange={(e) => setForm((f) => ({ ...f, gewichtToleranzUntenProzent: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+        </Section>
+
+        {/* Abrechnungsmodus */}
+        <Section title="Abrechnungsmodus">
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.austragenNachIstZeit}
+              onChange={(e) => setForm((f) => ({ ...f, austragenNachIstZeit: e.target.checked }))}
+              className="mt-0.5 rounded"
+            />
+            <span>
+              <span className="font-medium">Austragen: Abrechnung nach Ist-Zeit (Zeiterfassung) statt Plan-Zeit (Parameter)</span>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Wenn aktiviert, werden erfasste Stempeluhr-Zeiten (Typ "Austragen") zur Austragen-Abrechnung verwendet.
+                Standard ist die Plan-Zeit aus den Teilgebiets-Parametern.
+              </p>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.zusammentragenNachIstZeit}
+              onChange={(e) => setForm((f) => ({ ...f, zusammentragenNachIstZeit: e.target.checked }))}
+              className="mt-0.5 rounded"
+            />
+            <span>
+              <span className="font-medium">Zusammentragen: Abrechnung nach Ist-Zeit (Zeiterfassung) statt Plan-Zeit (Stapel + Vorarbeit)</span>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Wenn aktiviert, werden erfasste Stempeluhr-Zeiten (Typ "Zusammentragen") zur Zusammentragen-Abrechnung verwendet.
+              </p>
+            </span>
+          </label>
         </Section>
 
         {/* Ausgabe-Standardwerte */}
@@ -367,6 +540,11 @@ function ParameterInhalt() {
           {saving ? 'Speichere...' : 'Parameter speichern'}
         </button>
       </form>
+
+      {/* Historischer Snapshot-Viewer */}
+      <div className="mt-8 border-t border-gray-200 pt-6">
+        <SnapshotViewer />
+      </div>
 
       {/* PINs ändern */}
       <div className="mt-8 border-t border-gray-200 pt-6 grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -489,6 +667,163 @@ function AbrechnungPinSection({ inputClass }: { inputClass: string }) {
           {saving ? 'Speichere...' : 'Abrechnungs-PIN setzen'}
         </button>
       </form>
+    </div>
+  );
+}
+
+// ---- Snapshot-Viewer: Parameter abgeschlossener Perioden -----
+//
+// Zeigt schreibgeschützt die Parameter, die bei einer abgeschlossenen
+// Abrechnungsperiode festgeschrieben wurden (paramSnapshot). Damit lässt
+// sich nachvollziehen, mit welchen Werten ein Monat tatsächlich gerechnet
+// wurde — auch wenn die aktuellen Parameter inzwischen geändert wurden.
+
+interface ParamFeld {
+  key: keyof Parameter;
+  label: string;
+  einheit?: string;
+  istBoolean?: boolean;
+}
+
+const SNAPSHOT_FELDER: ParamFeld[] = [
+  { key: 'laufgeschwindigkeitMProH', label: 'Laufgeschwindigkeit', einheit: 'm/h' },
+  { key: 'steckzeitStkProH', label: 'Steckzeit', einheit: 'Stk/h' },
+  { key: 'stundenlohnErwachseneAustr', label: 'Stundenlohn Austragen (Erwachsene)', einheit: '€/h' },
+  { key: 'stundenlohnMinderjAustr', label: 'Stundenlohn Austragen (Minderjährige)', einheit: '€/h' },
+  { key: 'mindeststundenlohn', label: 'Mindeststundenlohn', einheit: '€/h' },
+  { key: 'zusammentragGeschwErste2StapelStkProH', label: 'Zusammentragen Geschw. (1.–2. Stapel)', einheit: 'Stk/h' },
+  { key: 'zusammentragGeschwWeitereStapelStkProH', label: 'Zusammentragen Geschw. (weitere Stapel + Beilagen)', einheit: 'Stk/h' },
+  { key: 'externeBeilageEinlegeGeschwStkProH', label: 'Geschw. externe Beilagen einlegen (Austräger)', einheit: 'Stk/h' },
+  { key: 'stundenlohnErwachseneZusammen', label: 'Stundenlohn Zusammentragen (Erwachsene)', einheit: '€/h' },
+  { key: 'stundenlohnMinderjZusammen', label: 'Stundenlohn Zusammentragen (Minderjährige)', einheit: '€/h' },
+  { key: 'springerZuschlagProzent', label: 'Springer-Zuschlag (Standard)', einheit: '%' },
+  { key: 'gewichtszulageAnzeigenblattEurKg', label: 'Gewichtszulage Anzeigenblatt', einheit: '€/kg' },
+  { key: 'gewichtszulageBeilagenEurKg', label: 'Gewichtszulage Beilagen', einheit: '€/kg' },
+  { key: 'standardGrammurGqm', label: 'Standard Grammatur', einheit: 'g/m²' },
+  { key: 'standardSeitenformatBreiteMm', label: 'Standard Seitenbreite', einheit: 'mm' },
+  { key: 'standardSeitenformatHoeheMm', label: 'Standard Seitenhöhe', einheit: 'mm' },
+  { key: 'fahrkostenEurProKm', label: 'Fahrkostensatz', einheit: '€/km' },
+  { key: 'minijobGrenzeEurProMonat', label: 'Minijob-Grenze', einheit: '€/Monat' },
+  { key: 'gewichtToleranzObenProzent', label: 'Gewichtstoleranz oben', einheit: '%' },
+  { key: 'gewichtToleranzUntenProzent', label: 'Gewichtstoleranz unten', einheit: '%' },
+  { key: 'austragenNachIstZeit', label: 'Austragen nach Ist-Zeit', istBoolean: true },
+  { key: 'zusammentragenNachIstZeit', label: 'Zusammentragen nach Ist-Zeit', istBoolean: true },
+];
+
+function SnapshotViewer() {
+  const { abrechnungsperioden, parameter } = useApp();
+  const [selectedId, setSelectedId] = useState('');
+
+  // Nur Perioden mit gespeichertem Snapshot anzeigen.
+  const verfuegbarePerioden = [...abrechnungsperioden]
+    .filter((p) => !!p.paramSnapshot)
+    .sort((a, b) => (b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat));
+
+  const ausgewaehlt = verfuegbarePerioden.find((p) => p.id === selectedId);
+  const snap = ausgewaehlt?.paramSnapshot;
+
+  function formatWert(wert: unknown, feld: ParamFeld): string {
+    if (wert === undefined || wert === null) return '—';
+    if (feld.istBoolean) return wert ? 'Ja' : 'Nein';
+    if (typeof wert === 'number') {
+      const fmt = wert.toLocaleString('de-DE', {
+        minimumFractionDigits: Number.isInteger(wert) ? 0 : 2,
+        maximumFractionDigits: 2,
+      });
+      return feld.einheit ? `${fmt} ${feld.einheit}` : fmt;
+    }
+    return String(wert);
+  }
+
+  return (
+    <div>
+      <h2 className="font-semibold text-gray-900 mb-2">📚 Historische Parameter</h2>
+      <p className="text-xs text-gray-500 mb-4">
+        Zeigt die Parameter, die beim Abschluss einer Abrechnungsperiode festgeschrieben
+        wurden. Schreibgeschützt — dient nur der Nachvollziehbarkeit.
+      </p>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Abgeschlossene Periode wählen
+          </label>
+          <select
+            value={selectedId}
+            onChange={(e) => setSelectedId(e.target.value)}
+            className={inputClass}
+          >
+            <option value="">— Periode auswählen —</option>
+            {verfuegbarePerioden.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.bezeichnung}
+                {p.status === 'abgeschlossen' ? ' (abgeschlossen)' : ' (offen, alter Snapshot)'}
+                {p.gesperrtAm
+                  ? ` — gesperrt am ${new Date(p.gesperrtAm).toLocaleDateString('de-DE')}`
+                  : ''}
+              </option>
+            ))}
+          </select>
+          {verfuegbarePerioden.length === 0 && (
+            <p className="text-xs text-gray-400 mt-2">
+              Keine Periode mit gespeichertem Parameter-Snapshot vorhanden. Snapshots
+              werden beim Abschließen einer Periode erstellt.
+            </p>
+          )}
+        </div>
+
+        {snap && parameter && (
+          <div className="overflow-hidden rounded-lg border border-gray-200">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 text-gray-600">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Parameter</th>
+                  <th className="px-3 py-2 text-right font-medium">
+                    Wert in Periode<br />
+                    <span className="text-[10px] font-normal text-gray-500">
+                      ({ausgewaehlt?.bezeichnung})
+                    </span>
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium">
+                    Aktueller Wert
+                  </th>
+                  <th className="px-3 py-2 text-center font-medium w-12">∆</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {SNAPSHOT_FELDER.map((feld) => {
+                  const snapWert = (snap as Partial<Parameter>)[feld.key];
+                  const aktWert = (parameter as Parameter)[feld.key];
+                  const abweichung =
+                    snapWert !== undefined && aktWert !== undefined && snapWert !== aktWert;
+                  return (
+                    <tr key={feld.key} className={abweichung ? 'bg-amber-50' : ''}>
+                      <td className="px-3 py-2 text-gray-700">{feld.label}</td>
+                      <td className="px-3 py-2 text-right font-medium text-gray-900">
+                        {formatWert(snapWert, feld)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-600">
+                        {formatWert(aktWert, feld)}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        {abweichung ? (
+                          <span title="Wert hat sich seit Periodenabschluss geändert" className="text-amber-700">
+                            ≠
+                          </span>
+                        ) : snapWert !== undefined ? (
+                          <span className="text-gray-300">=</span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

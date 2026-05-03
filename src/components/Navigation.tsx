@@ -13,17 +13,29 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Start', icon: '🏠' },
   { to: '/zeiterfassung', label: 'Stempeluhr', icon: '⏱' },
   { to: '/fahrten', label: 'Fahrtkosten', icon: '🚗', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
-  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', roles: ['admin'] },
-  { to: '/mitarbeiter', label: 'Mitarbeiter', icon: '👥', roles: ['admin'] },
-  { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin'] },
-  { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin'] },
-  { to: '/ausgaben', label: 'Ausgaben', icon: '📄', roles: ['admin', 'abrechnung'] },
+  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', roles: ['admin', 'abrechnung'] },
+  { to: '/mitarbeiter', label: 'Mitarbeiter', icon: '👥', roles: ['admin', 'abrechnung'] },
+  { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin', 'abrechnung'] },
+  { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin', 'abrechnung'] },
+  { to: '/ausgaben', label: 'Ausgaben & Beilagen', icon: '📄', roles: ['admin', 'abrechnung'] },
   { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
+  { to: '/verteilplan', label: 'Verteilplan', icon: '📋', roles: ['admin', 'abrechnung'] },
   { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung'] },
   { to: '/reklamationen', label: 'Reklamationen', icon: '📞', roles: ['admin', 'abrechnung'] },
-  { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin', 'abrechnung'] },
+  // Abrechnung & Parameter: nur Admin. Lieferscheine: ausgeblendet, Druck
+  // erfolgt aus dem Einsätze-Screen heraus.
+  { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin'] },
   { to: '/parameter', label: 'Parameter', icon: '⚙️', roles: ['admin'] },
 ];
+
+// ---- Rollenbalken-Konfiguration --------------------------------
+
+function rollenConfig(userRole: string | null, adminName: string) {
+  if (userRole === 'admin') return { label: 'Admin', bg: 'bg-red-600' };
+  if (userRole === 'abrechnung') return { label: 'Abrechnung', bg: 'bg-blue-600' };
+  if (userRole === 'mitarbeiter') return { label: adminName || 'Mitarbeiter', bg: 'bg-green-700' };
+  return null;
+}
 
 export default function Navigation() {
   const { userRole, isAdminAuthenticated, logoutAdmin, adminName } = useApp();
@@ -36,75 +48,88 @@ export default function Navigation() {
     return item.roles.includes(userRole);
   });
 
-  const rollenLabel =
-    userRole === 'admin' ? 'Admin' :
-    userRole === 'abrechnung' ? 'Abrechnung' :
-    userRole === 'mitarbeiter' ? 'Mitarbeiter' : '';
+  const rolle = rollenConfig(userRole, adminName);
 
-  const navContent = (
-    <>
-      {/* Nav-Links */}
-      <div className="flex-1 overflow-y-auto py-2">
-        {visibleItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === '/'}
-            onClick={() => setMobileOpen(false)}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-4 py-3 md:py-2.5 text-sm transition-colors ${
-                isActive
-                  ? 'bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-600'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 active:bg-gray-100'
-              }`
-            }
-          >
-            <span className="text-base">{item.icon}</span>
-            {item.label}
-          </NavLink>
-        ))}
-      </div>
+  const navLinks = (
+    <div className="flex-1 overflow-y-auto py-2">
+      {visibleItems.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={item.to === '/'}
+          onClick={() => setMobileOpen(false)}
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-4 py-3 md:py-2.5 text-sm transition-colors ${
+              isActive
+                ? 'bg-blue-50 text-blue-700 font-medium border-r-2 border-blue-600'
+                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900 active:bg-gray-100'
+            }`
+          }
+        >
+          <span className="text-base">{item.icon}</span>
+          {item.label}
+        </NavLink>
+      ))}
+    </div>
+  );
 
-      {/* Login/Logout */}
-      <div className="p-3 border-t border-gray-200 shrink-0">
-        {isAdminAuthenticated ? (
-          <div className="space-y-2">
-            <p className="text-xs text-gray-500 truncate">
-              {rollenLabel}: {adminName}
-            </p>
-            <button
-              onClick={() => { logoutAdmin(); navigate('/'); setMobileOpen(false); }}
-              className="w-full text-xs text-red-600 hover:text-red-700 text-left px-2 py-1.5 rounded hover:bg-red-50 transition-colors"
-            >
-              🔓 Abmelden
-            </button>
-          </div>
-        ) : (
-          <NavLink
-            to="/admin"
-            onClick={() => setMobileOpen(false)}
-            className="flex items-center gap-2 text-xs text-gray-500 hover:text-blue-600 px-2 py-1.5 rounded hover:bg-blue-50 transition-colors"
-          >
-            🔒 Anmelden
-          </NavLink>
-        )}
-      </div>
-    </>
+  const logoutSection = (
+    <div className="p-3 border-t border-gray-200 shrink-0">
+      {isAdminAuthenticated ? (
+        <button
+          onClick={() => { logoutAdmin(); navigate('/'); setMobileOpen(false); }}
+          className="w-full text-xs text-red-600 hover:text-red-700 text-left px-2 py-1.5 rounded hover:bg-red-50 transition-colors"
+        >
+          🔓 Abmelden
+        </button>
+      ) : (
+        <NavLink
+          to="/admin"
+          onClick={() => setMobileOpen(false)}
+          className="flex items-center gap-2 text-xs text-gray-500 hover:text-blue-600 px-2 py-1.5 rounded hover:bg-blue-50 transition-colors"
+        >
+          🔒 Anmelden
+        </NavLink>
+      )}
+    </div>
   );
 
   return (
     <>
-      {/* ---- Desktop Sidebar ---- */}
+      {/* ======== DESKTOP SIDEBAR ======== */}
       <nav className="hidden md:flex bg-white border-r border-gray-200 w-52 shrink-0 flex-col h-full">
+        {/* App-Titel */}
         <div className="p-4 border-b border-gray-200 shrink-0">
           <h1 className="font-bold text-blue-700 text-sm leading-tight">Schlieper-Druck</h1>
           <p className="text-xs text-gray-500">Mitarbeiterabrechnung</p>
         </div>
-        {navContent}
+
+        {/* Rollenbalken Desktop */}
+        {rolle && (
+          <div className={`${rolle.bg} px-4 py-1.5 shrink-0 flex items-center gap-2`}>
+            <span className="text-xs font-semibold text-white tracking-wide">{rolle.label}</span>
+          </div>
+        )}
+
+        {navLinks}
+        {logoutSection}
       </nav>
 
-      {/* ---- Mobile: Header-Bar ---- */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-40 bg-white border-b border-gray-200 flex items-center justify-between px-4 py-3">
+      {/* ======== MOBILE: Rollenbalken (fixiert, ganz oben, z-50) ======== */}
+      {rolle && (
+        <div
+          className={`md:hidden fixed top-0 left-0 right-0 z-50 h-7 flex items-center px-4 ${rolle.bg}`}
+        >
+          <span className="text-xs font-semibold text-white tracking-wide">{rolle.label}</span>
+        </div>
+      )}
+
+      {/* ======== MOBILE: Header-Bar (unter Rollenbalken, z-40) ======== */}
+      <div
+        className={`md:hidden fixed left-0 right-0 z-40 bg-white border-b border-gray-200 flex items-center justify-between px-4 py-3 ${
+          rolle ? 'top-7' : 'top-0'
+        }`}
+      >
         <div>
           <span className="font-bold text-blue-700 text-sm">Schlieper-Druck</span>
           <span className="text-xs text-gray-400 ml-2">Abrechnung</span>
@@ -118,7 +143,7 @@ export default function Navigation() {
         </button>
       </div>
 
-      {/* ---- Mobile: Drawer ---- */}
+      {/* ======== MOBILE: Drawer ======== */}
       {mobileOpen && (
         <div
           className="md:hidden fixed inset-0 z-50 flex"
@@ -131,7 +156,8 @@ export default function Navigation() {
             className="relative bg-white w-64 h-full flex flex-col shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+            {/* Drawer-Titel */}
+            <div className="p-4 border-b border-gray-200 flex items-center justify-between shrink-0">
               <div>
                 <h1 className="font-bold text-blue-700 text-sm leading-tight">Schlieper-Druck</h1>
                 <p className="text-xs text-gray-500">Mitarbeiterabrechnung</p>
@@ -143,11 +169,19 @@ export default function Navigation() {
                 ✕
               </button>
             </div>
-            {navContent}
+
+            {/* Rollenbalken im Drawer */}
+            {rolle && (
+              <div className={`${rolle.bg} px-4 py-1.5 shrink-0 flex items-center gap-2`}>
+                <span className="text-xs font-semibold text-white tracking-wide">{rolle.label}</span>
+              </div>
+            )}
+
+            {navLinks}
+            {logoutSection}
           </nav>
         </div>
       )}
-
     </>
   );
 }

@@ -11,16 +11,17 @@ import {
   formatierDauer,
   berechneNettoMinuten,
 } from '../lib/zeiterfassung';
-import type { Arbeitszeit, ArbeitszeitsTyp } from '../types';
+import { erstelleFahrt } from '../lib/db';
+import type { Arbeitszeit, ArbeitszeitsTyp, Rolle } from '../types';
+import { TYP_LABELS } from '../types';
 
-const TYP_LABELS: Partial<Record<ArbeitszeitsTyp, string>> = {
-  büro: 'Büro',
-  zusammentragen: 'Zusammentragen',
-  fahrer: 'Fahrer',
-  sonstiges: 'Sonstiges',
-};
-
-const AUSTRAEGER_TYPEN: ArbeitszeitsTyp[] = ['büro', 'zusammentragen', 'fahrer', 'sonstiges'];
+function tätigkeitenFuerRollen(rollen: Rolle[]): ArbeitszeitsTyp[] {
+  const result: ArbeitszeitsTyp[] = [];
+  if (rollen.includes('zusammenträger')) { result.push('zusammentragen', 'vorarbeit'); }
+  if (rollen.includes('austräger')) result.push('austragen');
+  if (rollen.includes('sonstige')) result.push('sonstige');
+  return result;
+}
 
 export default function NfcLandingScreen() {
   const [params] = useSearchParams();
@@ -33,7 +34,26 @@ export default function NfcLandingScreen() {
   const [session, setSession] = useState<Arbeitszeit | null | undefined>(undefined); // undefined = loading
   const [busy, setBusy] = useState(false);
   const [meldung, setMeldung] = useState('');
-  const [typ, setTyp] = useState<ArbeitszeitsTyp>('büro');
+  const [typ, setTyp] = useState<ArbeitszeitsTyp>('sonstige');
+
+  // Tätigkeiten nach Rollen
+  const typenOptionen = ma ? tätigkeitenFuerRollen(ma.rollen) : [];
+  // Default-Typ setzen wenn Typ nicht in den erlaubten Optionen
+  useEffect(() => {
+    if (typenOptionen.length > 0 && !typenOptionen.includes(typ)) {
+      setTyp(typenOptionen[0]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ma?.id]);
+
+  // Fahrtkosten-Formular
+  const [showFahrt, setShowFahrt] = useState(false);
+  const [fahrtDatum, setFahrtDatum] = useState(() => new Date().toISOString().slice(0, 10));
+  const [fahrtKm, setFahrtKm] = useState('');
+  const [fahrtZiel, setFahrtZiel] = useState('');
+  const [fahrtBemerkung, setFahrtBemerkung] = useState('');
+  const [fahrtBusy, setFahrtBusy] = useState(false);
+  const [fahrtMeldung, setFahrtMeldung] = useState('');
   // Laufzeit-Ticker (erzwingt Re-Render alle 30s für laufende Zeitanzeige)
   useEffect(() => {
     const id = setInterval(() => {}, 30_000);
@@ -121,6 +141,35 @@ export default function NfcLandingScreen() {
     }
   }
 
+  async function handleFahrtSpeichern() {
+    const km = parseFloat(fahrtKm.replace(',', '.'));
+    if (!fahrtZiel.trim() || isNaN(km) || km <= 0) {
+      setFahrtMeldung('Bitte Ziel und gültige km-Anzahl eingeben.');
+      return;
+    }
+    setFahrtBusy(true);
+    setFahrtMeldung('');
+    try {
+      await erstelleFahrt({
+        mitarbeiterId,
+        datum: fahrtDatum,
+        streckKm: km,
+        ziel: fahrtZiel.trim(),
+        bemerkung: fahrtBemerkung.trim() || undefined,
+      });
+      setFahrtMeldung('✓ Fahrt gespeichert');
+      setFahrtKm('');
+      setFahrtZiel('');
+      setFahrtBemerkung('');
+      setFahrtDatum(new Date().toISOString().slice(0, 10));
+      setTimeout(() => { setShowFahrt(false); setFahrtMeldung(''); }, 1200);
+    } catch (e: any) {
+      setFahrtMeldung('Fehler: ' + e.message);
+    } finally {
+      setFahrtBusy(false);
+    }
+  }
+
   const nettoMin = session ? berechneNettoMinuten(session) : 0;
   const isAktiv = session?.status === 'aktiv';
   const isPause = session?.status === 'pause';
@@ -167,7 +216,7 @@ export default function NfcLandingScreen() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Tätigkeitsart</label>
                 <div className="grid grid-cols-2 gap-2">
-                  {AUSTRAEGER_TYPEN.map((t) => (
+                  {typenOptionen.map((t) => (
                     <button
                       key={t}
                       type="button"
@@ -216,14 +265,102 @@ export default function NfcLandingScreen() {
             </>
           )}
 
-          {/* Fahrtkosten-Button */}
+          {/* Fahrtkosten-Button / Inline-Formular */}
           <div className="pt-2 border-t border-gray-100">
-            <button
-              onClick={() => navigate(`/fahrten?ma=${encodeURIComponent(mitarbeiterId)}`)}
-              className="w-full py-3 bg-gray-100 text-gray-700 rounded-xl font-medium text-sm hover:bg-gray-200 active:bg-gray-300 transition-colors"
-            >
-              🚗 Fahrtkosten erfassen
-            </button>
+            {!showFahrt ? (
+              <button
+                onClick={() => setShowFahrt(true)}
+                className="w-full py-3 bg-gray-100 text-gray-700 rounded-xl font-medium text-sm hover:bg-gray-200 active:bg-gray-300 transition-colors"
+              >
+                🚗 Fahrtkosten erfassen
+              </button>
+            ) : (
+              <div className="bg-gray-50 rounded-xl p-4 space-y-3 border border-gray-200">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-semibold text-gray-800">🚗 Fahrt erfassen</span>
+                  <button
+                    onClick={() => { setShowFahrt(false); setFahrtMeldung(''); }}
+                    className="text-gray-400 hover:text-gray-600 text-lg leading-none"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Mitarbeiter (gesperrt) */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Mitarbeiter</label>
+                  <div className="w-full px-3 py-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 font-medium">
+                    {ma.name}
+                  </div>
+                </div>
+
+                {/* Datum */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Datum</label>
+                  <input
+                    type="date"
+                    value={fahrtDatum}
+                    onChange={(e) => setFahrtDatum(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {/* Ziel */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Ziel / Route</label>
+                  <input
+                    type="text"
+                    value={fahrtZiel}
+                    onChange={(e) => setFahrtZiel(e.target.value)}
+                    placeholder="z.B. Göttingen – Lager"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {/* Kilometer */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Kilometer</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.1"
+                    value={fahrtKm}
+                    onChange={(e) => setFahrtKm(e.target.value)}
+                    placeholder="0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {/* Bemerkung */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Bemerkung (optional)</label>
+                  <input
+                    type="text"
+                    value={fahrtBemerkung}
+                    onChange={(e) => setFahrtBemerkung(e.target.value)}
+                    placeholder="optional"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {fahrtMeldung && (
+                  <div className={`text-center text-sm font-medium py-2 px-3 rounded-lg ${
+                    fahrtMeldung.startsWith('✓') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                  }`}>
+                    {fahrtMeldung}
+                  </div>
+                )}
+
+                <button
+                  onClick={handleFahrtSpeichern}
+                  disabled={fahrtBusy}
+                  className="w-full py-3 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 transition-colors"
+                >
+                  {fahrtBusy ? 'Speichern…' : '💾 Fahrt speichern'}
+                </button>
+              </div>
+            )}
           </div>
 
           <button
