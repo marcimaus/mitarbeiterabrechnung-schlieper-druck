@@ -685,7 +685,7 @@ function MitarbeiterForm({
                         <input
                           type="number"
                           min="0"
-                          step="0.1"
+                          step="any"
                           value={form.wochenstundenFestgehalt ?? ''}
                           onChange={(e) => setWoche(e.target.value)}
                           onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
@@ -698,7 +698,7 @@ function MitarbeiterForm({
                         <input
                           type="number"
                           min="0"
-                          step="0.1"
+                          step="any"
                           value={form.monatsstundenFestgehalt ?? ''}
                           onChange={(e) => setMonat(e.target.value)}
                           onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
