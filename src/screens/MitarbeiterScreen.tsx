@@ -242,7 +242,7 @@ function MitarbeiterInhalt() {
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     <span className="text-xs bg-gray-100 px-2 py-0.5 rounded">
-                      {m.hatFestgehalt ? `Festgehalt${m.festgehaltEur ? ` (${m.festgehaltEur.toFixed(2)} €)` : ''}` : 'Variabel'}
+                      {m.hatFestgehalt ? 'Festgehalt' : 'Variabel'}
                     </span>
                     {m.stundenlohnIndividuell !== undefined && (
                       <span className="ml-1 text-xs text-gray-400">
