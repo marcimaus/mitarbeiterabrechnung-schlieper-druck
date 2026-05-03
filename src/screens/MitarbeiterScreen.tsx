@@ -624,10 +624,13 @@ function MitarbeiterForm({
                 <input
                   type="number"
                   min="0"
-                  step="0.01"
+                  step="1"
                   value={form.festgehaltEur ?? ''}
                   onChange={(e) => setForm((f) => ({ ...f, festgehaltEur: e.target.value ? parseFloat(e.target.value) : undefined }))}
-                  placeholder="0.00"
+                  // Mausrad nicht für Wert-Änderung nutzen — verhindert versehentliche
+                  // Verschiebung um den step-Wert beim Scrollen durch das Formular.
+                  onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+                  placeholder="0"
                   className={inputClass}
                 />
               </FormField>
@@ -685,6 +688,7 @@ function MitarbeiterForm({
                           step="0.1"
                           value={form.wochenstundenFestgehalt ?? ''}
                           onChange={(e) => setWoche(e.target.value)}
+                          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                           placeholder="z. B. 40"
                           className={inputClass}
                         />
@@ -697,6 +701,7 @@ function MitarbeiterForm({
                           step="0.1"
                           value={form.monatsstundenFestgehalt ?? ''}
                           onChange={(e) => setMonat(e.target.value)}
+                          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                           placeholder="z. B. 173,33"
                           className={inputClass}
                         />
@@ -808,6 +813,7 @@ function MitarbeiterForm({
               ...f,
               stundenlohnIndividuell: e.target.value ? parseFloat(e.target.value) : undefined,
             }))}
+            onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
             placeholder="Leer = Standard"
             className={inputClass}
           />
@@ -839,6 +845,7 @@ function MitarbeiterForm({
             ...f,
             ausgabenBonusMinuten: e.target.value ? parseFloat(e.target.value) : undefined,
           }))}
+          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
           placeholder={isAdmin ? 'z. B. 60' : '—'}
           readOnly={!isAdmin}
           className={`${inputClass} ${!isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''}`}
@@ -871,6 +878,7 @@ function MitarbeiterForm({
             min="0"
             step="0.01"
             value={(form as any).fahrkostenEurProKm ?? ''}
+            onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
             onChange={(e) => setForm((f) => ({
               ...f,
               fahrkostenEurProKm: e.target.value ? parseFloat(e.target.value) : undefined,
@@ -1034,6 +1042,7 @@ function MitarbeiterForm({
                   step="0.01"
                   value={neuBonusBetrag}
                   onChange={(e) => setNeuBonusBetrag(e.target.value)}
+                  onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
                   placeholder="0.00"
                   className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
