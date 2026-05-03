@@ -334,6 +334,8 @@ function MitarbeiterForm({
         rollen: [...initial.rollen],
         hatFestgehalt: initial.hatFestgehalt ?? false,
         festgehaltEur: initial.festgehaltEur,
+        wochenstundenFestgehalt: initial.wochenstundenFestgehalt,
+        monatsstundenFestgehalt: initial.monatsstundenFestgehalt,
         fixesGehalt: initial.fixesGehalt,
         stundenlohnIndividuell: initial.stundenlohnIndividuell,
         istMinijob: initial.istMinijob ?? false,
@@ -399,6 +401,13 @@ function MitarbeiterForm({
     // Plausibilität Festgehalt
     if (form.hatFestgehalt && (!form.festgehaltEur || form.festgehaltEur <= 0)) {
       setError('Wenn "Festgehalt" aktiviert ist, muss ein Festgehalt > 0 € eingetragen werden.');
+      return;
+    }
+    if (
+      form.hatFestgehalt &&
+      (!form.monatsstundenFestgehalt || form.monatsstundenFestgehalt <= 0)
+    ) {
+      setError('Bei Festgehalt müssen die durchschnittlichen Stunden (Woche oder Monat) angegeben werden.');
       return;
     }
 
@@ -608,17 +617,119 @@ function MitarbeiterForm({
           </FormField>
 
           {form.hatFestgehalt && (
-            <FormField label="Festgehalt (EUR/Monat)">
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.festgehaltEur ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, festgehaltEur: e.target.value ? parseFloat(e.target.value) : undefined }))}
-                placeholder="0.00"
-                className={inputClass}
-              />
-            </FormField>
+            <>
+              <FormField label="Festgehalt (EUR/Monat)">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.festgehaltEur ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, festgehaltEur: e.target.value ? parseFloat(e.target.value) : undefined }))}
+                  placeholder="0.00"
+                  className={inputClass}
+                />
+              </FormField>
+
+              {/* Vertraglich vereinbarte Arbeitszeit (Woche/Monat synchron) */}
+              {(() => {
+                // Faktor: 52 Wochen / 12 Monate = ~4,3333
+                const FAKTOR = 52 / 12;
+                const setWoche = (val: string) => {
+                  const w = val ? parseFloat(val) : undefined;
+                  setForm((f) => ({
+                    ...f,
+                    wochenstundenFestgehalt: w,
+                    monatsstundenFestgehalt: w !== undefined ? Math.round(w * FAKTOR * 100) / 100 : undefined,
+                  }));
+                };
+                const setMonat = (val: string) => {
+                  const m = val ? parseFloat(val) : undefined;
+                  setForm((f) => ({
+                    ...f,
+                    monatsstundenFestgehalt: m,
+                    wochenstundenFestgehalt: m !== undefined ? Math.round((m / FAKTOR) * 100) / 100 : undefined,
+                  }));
+                };
+                return (
+                  <FormField
+                    label="Vertraglich vereinbarte Arbeitszeit *"
+                    hint="Eines von beiden eintragen — der andere Wert wird automatisch berechnet (Monat = 52/12 × Woche)."
+                  >
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Stunden / Woche</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={form.wochenstundenFestgehalt ?? ''}
+                          onChange={(e) => setWoche(e.target.value)}
+                          placeholder="z. B. 40"
+                          className={inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Stunden / Monat (Ø)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={form.monatsstundenFestgehalt ?? ''}
+                          onChange={(e) => setMonat(e.target.value)}
+                          placeholder="z. B. 173,33"
+                          className={inputClass}
+                        />
+                      </div>
+                    </div>
+                  </FormField>
+                );
+              })()}
+
+              {/* Mindestlohn-Prüfung — nur bei Volljährigen */}
+              {(() => {
+                const monatsStd = form.monatsstundenFestgehalt ?? 0;
+                const lohn = form.festgehaltEur ?? 0;
+                const mindestlohn = parameter?.mindeststundenlohn ?? 0;
+                if (monatsStd <= 0 || lohn <= 0 || mindestlohn <= 0) return null;
+                const istMinderj = minderjährig;
+                if (istMinderj) {
+                  return (
+                    <p className="text-xs text-gray-500 -mt-2">
+                      Mindestlohn-Prüfung wird bei Minderjährigen nicht angewendet.
+                    </p>
+                  );
+                }
+                const effektiv = lohn / monatsStd;
+                if (effektiv >= mindestlohn) {
+                  return (
+                    <p className="text-xs text-green-700 -mt-2">
+                      ✓ Effektiver Stundenlohn: {effektiv.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €/h —
+                      liegt über der Mindestlohn-Warnschwelle ({mindestlohn} €/h).
+                    </p>
+                  );
+                }
+                const noetigesGehalt = mindestlohn * monatsStd;
+                return (
+                  <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 -mt-2">
+                    <div className="font-semibold mb-0.5">⚠ Mindestlohn unterschritten</div>
+                    <div className="text-xs">
+                      Effektiver Stundenlohn:{' '}
+                      <span className="font-medium">
+                        {effektiv.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €/h
+                      </span>
+                      {' '}(unter Warnschwelle {mindestlohn} €/h).
+                    </div>
+                    <div className="text-xs mt-1">
+                      Nötiges Festgehalt für Mindestlohn-Konformität:{' '}
+                      <span className="font-semibold">
+                        {noetigesGehalt.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €/Monat
+                      </span>
+                      {' '}(= {mindestlohn} €/h × {monatsStd.toLocaleString('de-DE', { maximumFractionDigits: 2 })} h/Monat).
+                    </div>
+                  </div>
+                );
+              })()}
+            </>
           )}
         </>
       )}

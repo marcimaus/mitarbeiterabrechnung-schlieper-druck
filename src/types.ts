@@ -52,6 +52,14 @@ export interface Mitarbeiter {
   /** Wenn true: Mitarbeiter bekommt fixes Monatsgehalt statt variabler Abrechnung. */
   hatFestgehalt: boolean;
   festgehaltEur?: number;        // EUR pro Monat bei hatFestgehalt===true
+  /**
+   * Durchschnittliche Wochenarbeitszeit lt. Vertrag bei Festgehalt-Mitarbeitern.
+   * Eines von beiden (Wochen oder Monat) reicht — das andere wird automatisch
+   * berechnet (Monat = 52/12 * Woche). Wird für die Mindestlohn-Prüfung gebraucht.
+   */
+  wochenstundenFestgehalt?: number;
+  /** Durchschnittliche Monatsarbeitszeit lt. Vertrag bei Festgehalt-Mitarbeitern. */
+  monatsstundenFestgehalt?: number;
   /** Minijob-Kennzeichen: Warnung wenn Bruttolohn im Monat die Minijob-Grenze überschreitet. */
   istMinijob?: boolean;
   /**
