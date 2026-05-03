@@ -152,6 +152,18 @@ function MitarbeiterInhalt() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-semibold text-gray-900 truncate">{nameMitFestgehaltSymbol(m)}</span>
                     {minderjährig && <span className="text-orange-500 text-xs shrink-0">⚠ {alter} J.</span>}
+                    {m.googleDriveLink && (
+                      <a
+                        href={m.googleDriveLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        title="Unterlagen im Google Drive öffnen"
+                        className="text-blue-600 hover:text-blue-800 shrink-0 text-base leading-none"
+                      >
+                        🔗
+                      </a>
+                    )}
                   </div>
                   <div className="text-xs text-gray-400 font-mono mb-2">{m.nummer}</div>
                   <div className="flex flex-wrap gap-1">
@@ -210,6 +222,18 @@ function MitarbeiterInhalt() {
                   <td className="px-4 py-3 font-medium text-gray-900">
                     <span className="inline-flex items-center gap-1.5">
                       <span>{nameMitFestgehaltSymbol(m)}</span>
+                      {m.googleDriveLink && (
+                        <a
+                          href={m.googleDriveLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Unterlagen im Google Drive öffnen"
+                          className="text-blue-600 hover:text-blue-800 text-base leading-none"
+                        >
+                          🔗
+                        </a>
+                      )}
                       {isAdmin && (lohnkontoSaldoMap.get(m.id) ?? 0) !== 0 && (
                         <span
                           title={`Lohnkonto-Saldo: ${eur(lohnkontoSaldoMap.get(m.id) ?? 0)}`}
