@@ -337,6 +337,7 @@ function MitarbeiterForm({
         wochenstundenFestgehalt: initial.wochenstundenFestgehalt,
         monatsstundenFestgehalt: initial.monatsstundenFestgehalt,
         istGeschaeftsfuehrer: initial.istGeschaeftsfuehrer ?? false,
+        googleDriveLink: initial.googleDriveLink,
         fixesGehalt: initial.fixesGehalt,
         stundenlohnIndividuell: initial.stundenlohnIndividuell,
         istMinijob: initial.istMinijob ?? false,
@@ -582,6 +583,30 @@ function MitarbeiterForm({
           )}
         </FormField>
       </div>
+
+      {/* Google-Drive-Link — Admin + Abrechnung sichtbar/editierbar */}
+      <FormField
+        label="Google-Drive-Link (Unterlagen)"
+        hint="Optional. Ordner-/Dokument-Link aus Google Drive, in dem die Unterlagen dieses Mitarbeiters abgelegt sind."
+      >
+        <input
+          type="url"
+          value={form.googleDriveLink ?? ''}
+          onChange={(e) => setForm((f) => ({ ...f, googleDriveLink: e.target.value || undefined }))}
+          placeholder="https://drive.google.com/..."
+          className={inputClass}
+        />
+        {form.googleDriveLink && (
+          <a
+            href={form.googleDriveLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block mt-1 text-xs text-blue-600 hover:text-blue-800 underline break-all"
+          >
+            🔗 Im Drive öffnen
+          </a>
+        )}
+      </FormField>
 
       {/* Rollen */}
       <FormField label="Rollen *">

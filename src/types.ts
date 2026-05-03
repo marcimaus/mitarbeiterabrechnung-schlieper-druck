@@ -66,6 +66,12 @@ export interface Mitarbeiter {
    * Geschäftsführer fällt nicht unter MiLoG.
    */
   istGeschaeftsfuehrer?: boolean;
+  /**
+   * Optionaler Link auf den Google-Drive-Ordner mit den Unterlagen
+   * dieses Mitarbeiters (Vertrag, Bescheinigungen etc.).
+   * Sowohl Admin als auch Abrechnung dürfen sehen + bearbeiten.
+   */
+  googleDriveLink?: string;
   /** Minijob-Kennzeichen: Warnung wenn Bruttolohn im Monat die Minijob-Grenze überschreitet. */
   istMinijob?: boolean;
   /**
