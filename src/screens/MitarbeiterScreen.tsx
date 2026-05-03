@@ -7,6 +7,7 @@ import {
   erstelleMitarbeiter,
   aktualisiereMitarbeiter,
   deaktiviereMitarbeiter,
+  aktiviereMitarbeiter,
 } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
@@ -122,6 +123,11 @@ function MitarbeiterInhalt() {
             className="rounded"
           />
           Nur aktive
+          {nurAktive && mitarbeiter.filter((m) => !m.isActive).length > 0 && (
+            <span className="text-xs text-gray-400">
+              ({mitarbeiter.filter((m) => !m.isActive).length} inaktive ausgeblendet)
+            </span>
+          )}
         </label>
       </div>
 
@@ -417,6 +423,12 @@ function MitarbeiterForm({
   async function handleDeaktivieren() {
     if (!initial || !confirm(`Mitarbeiter "${initial.name}" wirklich deaktivieren?`)) return;
     await deaktiviereMitarbeiter(initial.id);
+    onSave();
+  }
+
+  async function handleAktivieren() {
+    if (!initial) return;
+    await aktiviereMitarbeiter(initial.id);
     onSave();
   }
 
@@ -912,14 +924,24 @@ function MitarbeiterForm({
       {error && <p className="text-red-600 text-sm mt-4">{error}</p>}
       <div className="flex items-center justify-between pt-5 mt-4 border-t border-gray-100">
         <div>
-          {initial && initial.isActive && tab === 'stammdaten' && (
-            <button
-              type="button"
-              onClick={handleDeaktivieren}
-              className="text-sm text-red-600 hover:text-red-700"
-            >
-              Mitarbeiter deaktivieren
-            </button>
+          {initial && tab === 'stammdaten' && (
+            initial.isActive ? (
+              <button
+                type="button"
+                onClick={handleDeaktivieren}
+                className="text-sm text-red-600 hover:text-red-700"
+              >
+                Mitarbeiter deaktivieren
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleAktivieren}
+                className="text-sm text-green-700 hover:text-green-800 font-medium"
+              >
+                ✓ Mitarbeiter aktivieren
+              </button>
+            )
           )}
         </div>
         <div className="flex gap-3">

@@ -159,6 +159,13 @@ export async function deaktiviereMitarbeiter(id: string): Promise<void> {
   });
 }
 
+export async function aktiviereMitarbeiter(id: string): Promise<void> {
+  await updateDoc(doc(db, 'mitarbeiter', id), {
+    isActive: true,
+    aktualisiertAm: now(),
+  });
+}
+
 // ---- Touren ------------------------------------------------
 
 export async function ladeTouren(): Promise<Tour[]> {
