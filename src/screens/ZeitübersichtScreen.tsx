@@ -14,6 +14,7 @@ import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten } fro
 import { MONATSNAMEN } from '../lib/kalender';
 import { ermittleStundenlohn } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
+import { istEinsatzbereit } from '../utils';
 import type { Arbeitszeit, Fahrt, ArbeitszeitsTyp, AuditEintrag, Rolle, Ausgabe } from '../types';
 import { TYP_LABELS, ROLLEN_LABELS } from '../types';
 
@@ -59,7 +60,7 @@ function ZeitübersichtInhalt() {
   const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
   const [filterTyp, setFilterTyp] = useState<ArbeitszeitsTyp | ''>('');
 
-  const aktiveMitarbeiter = mitarbeiter.filter((m) => m.isActive);
+  const aktiveMitarbeiter = mitarbeiter.filter((m) => istEinsatzbereit(m));
 
   // Kandidaten für die Suchliste — wird NUR angezeigt, wenn noch kein Mitarbeiter
   // ausgewählt ist. Rollen-Filter greift bereits hier.

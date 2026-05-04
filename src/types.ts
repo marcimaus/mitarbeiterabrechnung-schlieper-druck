@@ -120,6 +120,31 @@ export interface Mitarbeiter {
    */
   sozialversicherungsBefreit?: boolean;
   isActive: boolean;
+  // ---- Anmeldung / Abmeldung beim Lohnbüro ------------------
+  /** MA ist neu — noch nicht beim Lohnbüro angemeldet. Nicht in Auswahllisten. */
+  nochNichtAngemeldet?: boolean;
+  /** Bei Minderjährigen: Erlaubnis der Eltern eingeholt. */
+  erlaubnisElternEingeholt?: boolean;
+  /** Link zur FastDok-Bestätigungsmail des Lohnbüros. */
+  lohnbueroBestaetigungLink?: string;
+  /** Erste Abrechnungsperiode, in der der MA erscheinen soll. */
+  startAbrechnungsperiodeId?: string;
+  /** Alternativ: konkretes Startdatum (ISO YYYY-MM-DD). */
+  startDatum?: string;
+  /** Optional: ersetzt diesen anderen Mitarbeiter (z. B. Nachfolger). */
+  ersetztMitarbeiterId?: string;
+  /** Status der Anmelde-Erfassung. */
+  anmeldungStatus?: 'fragebogen-beim-ma' | 'fragebogen-zurueck-unvollstaendig' | 'vollstaendig';
+  /** Memo bei Status „unvollständig" zu fehlenden Infos. */
+  anmeldungUnvollstaendigMemo?: string;
+  /** Datum der Datenübermittlung an das Lohnbüro (ISO YYYY-MM-DD). */
+  anmeldungUebermittlungDatum?: string;
+  /** MA wurde beim Lohnbüro abgemeldet. */
+  abgemeldet?: boolean;
+  /** Datum der Abmelde-Übermittlung ans Lohnbüro. */
+  abmeldungUebermittlungDatum?: string;
+  /** Letzte Abrechnungsperiode des MA. */
+  letzteAbrechnungsperiodeId?: string;
   teilgebietFreigaben?: string[];      // IDs der Teilgebiete, die dieser MA austragen darf
   teilgebietBoni?: TeilgebietBonus[];  // Bonus je Teilgebiet und Ausgabe
   erstelltAm: number;     // Unix-Timestamp ms

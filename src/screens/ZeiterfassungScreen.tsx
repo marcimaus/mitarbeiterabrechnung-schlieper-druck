@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import Modal from '../components/Modal';
+import { istEinsatzbereit } from '../utils';
 import {
   aktiveSessions,
   verarbeiteNfcScan,
@@ -474,7 +475,7 @@ export default function ZeiterfassungScreen() {
       >
         <ManuellEinstempeln
           mitarbeiter={mitarbeiter
-            .filter((m) => m.isActive)
+            .filter((m) => istEinsatzbereit(m))
             .sort((a, b) => a.name.localeCompare(b.name))}
           aktiveSessions={aktiveSess}
           onScan={async (id) => {

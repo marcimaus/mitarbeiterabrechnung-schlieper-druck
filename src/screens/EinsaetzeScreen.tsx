@@ -576,6 +576,7 @@ function EinsaetzeInhalt() {
             <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
               {mitarbeiter
                 .filter((m) => {
+                  if (m.nochNichtAngemeldet || m.abgemeldet) return false;
                   if (!m.isActive || !m.rollen.includes('austräger')) return false;
                   // Strikte Gebietsfreigabe: nur Mitarbeiter, die für dieses Teilgebiet freigegeben sind.
                   if (!springerDialog) return false;

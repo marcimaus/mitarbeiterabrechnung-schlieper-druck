@@ -632,6 +632,8 @@ function TeilgebietForm({
   // Nur Mitarbeiter mit expliziter Freigabe für dieses Teilgebiet (aus der aktuellen Freigabeliste).
   // Strikt: auch bei neuem TG muss der MA in der Freigabeliste dieses Formulars stehen.
   const austraeger = mitarbeiter.filter((m) => {
+    // Noch nicht angemeldete oder abgemeldete MA niemals als Standardausträger anbieten
+    if (m.nochNichtAngemeldet || m.abgemeldet) return false;
     if (nurAktiveAustraeger && !m.isActive) return false;
     return freigegebeneMitarbeiterIds.includes(m.id);
   });
@@ -1406,6 +1408,7 @@ function TeilgebietForm({
             {(() => {
               const sichtbar = mitarbeiter
                 .filter((m) => m.rollen?.includes('austräger'))
+                .filter((m) => !m.nochNichtAngemeldet && !m.abgemeldet)
                 .filter((m) => !freigabeNurAktive || m.isActive)
                 .filter((m) => {
                   if (!freigabeFilter.trim()) return true;

@@ -18,6 +18,7 @@ import { kwLabel } from '../lib/kalender';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 import { pruefeZeitUeberlappung, formatiereUeberlappungsFehler } from '../lib/zeiterfassung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
+import { istEinsatzbereit } from '../utils';
 
 export default function ZusammentragenScreen() {
   return (
@@ -117,7 +118,7 @@ function ZusammentragenInhalt() {
   });
 
   const zusammentraeger = mitarbeiter.filter(
-    (m) => m.isActive && m.rollen.includes('zusammenträger')
+    (m) => istEinsatzbereit(m) && m.rollen.includes('zusammenträger')
   );
 
   // ---- Vorarbeit-Toggle (an/aus) ---

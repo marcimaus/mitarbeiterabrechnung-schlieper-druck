@@ -2,6 +2,7 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import { istEinsatzbereit } from '../utils';
 import {
   abonniereReklamationen,
   erstelleReklamation,
@@ -233,7 +234,7 @@ function ReklamationForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const austraeger = mitarbeiter.filter((m) => m.isActive && m.rollen.includes('austräger'));
+  const austraeger = mitarbeiter.filter((m) => istEinsatzbereit(m) && m.rollen.includes('austräger'));
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();

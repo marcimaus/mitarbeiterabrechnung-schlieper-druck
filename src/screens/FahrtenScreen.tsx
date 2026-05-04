@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import { istEinsatzbereit } from '../utils';
 import {
   ladeFahrten,
   erstelleFahrt,
@@ -151,7 +152,7 @@ function FahrtenInhalt() {
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="">Alle Mitarbeiter</option>
-            {mitarbeiter.filter((m) => m.isActive).map((m) => (
+            {mitarbeiter.filter((m) => istEinsatzbereit(m)).map((m) => (
               <option key={m.id} value={m.id}>{m.name}</option>
             ))}
           </select>
@@ -352,7 +353,7 @@ function FahrtenInhalt() {
       >
         <FahrtForm
           initial={editTarget}
-          mitarbeiter={mitarbeiter.filter((m) => m.isActive)}
+          mitarbeiter={mitarbeiter.filter((m) => istEinsatzbereit(m))}
           fixedMaId={isMitarbeiter ? (loggedInMaId ?? undefined) : (prefillMaId || undefined)}
           onSave={async () => { setShowForm(false); await reload(); }}
           onCancel={() => setShowForm(false)}

@@ -17,7 +17,7 @@ import { berechneAlter } from '../lib/berechnung';
 import { nameMitFestgehaltSymbol } from '../utils';
 import { eur } from '../lib/abrechnungslogik';
 
-type MaFormTab = 'stammdaten' | 'freigaben' | 'boni';
+type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'anmeldung';
 
 const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
@@ -52,6 +52,7 @@ function MitarbeiterInhalt() {
   // Tri-State-Filter: '' = egal, 'ja' = nur mit Kennzeichen, 'nein' = nur ohne
   const [filterMinijob, setFilterMinijob] = useState<'' | 'ja' | 'nein'>('');
   const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
+  const [filterAnmeldung, setFilterAnmeldung] = useState<'' | 'offen' | 'angemeldet' | 'abgemeldet'>('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
 
@@ -75,6 +76,9 @@ function MitarbeiterInhalt() {
     if (filterMinijob === 'nein' && m.istMinijob) return false;
     if (filterSvFrei === 'ja' && !m.sozialversicherungsBefreit) return false;
     if (filterSvFrei === 'nein' && m.sozialversicherungsBefreit) return false;
+    if (filterAnmeldung === 'offen' && !m.nochNichtAngemeldet) return false;
+    if (filterAnmeldung === 'angemeldet' && (m.nochNichtAngemeldet || m.abgemeldet)) return false;
+    if (filterAnmeldung === 'abgemeldet' && !m.abgemeldet) return false;
     return true;
   });
 
@@ -142,6 +146,17 @@ function MitarbeiterInhalt() {
           <option value="ja">nur SV-befreit</option>
           <option value="nein">nur nicht SV-befreit</option>
         </select>
+        <select
+          value={filterAnmeldung}
+          onChange={(e) => setFilterAnmeldung(e.target.value as '' | 'offen' | 'angemeldet' | 'abgemeldet')}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          title="Filter Anmeldung"
+        >
+          <option value="">Anmeldung: alle</option>
+          <option value="offen">⏳ noch nicht angemeldet</option>
+          <option value="angemeldet">✓ angemeldet</option>
+          <option value="abgemeldet">🚪 abgemeldet</option>
+        </select>
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
             type="checkbox"
@@ -178,6 +193,24 @@ function MitarbeiterInhalt() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-semibold text-gray-900 truncate">{nameMitFestgehaltSymbol(m)}</span>
+                    {m.nochNichtAngemeldet && (
+                      <span title="Noch nicht beim Lohnbüro angemeldet" className="text-amber-600 shrink-0">⏳</span>
+                    )}
+                    {m.nochNichtAngemeldet && m.lohnbueroBestaetigungLink && (
+                      <a
+                        href={m.lohnbueroBestaetigungLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        title="FastDok-Bestätigungsmail öffnen"
+                        className="text-amber-700 hover:text-amber-900 shrink-0"
+                      >
+                        ✉
+                      </a>
+                    )}
+                    {m.abgemeldet && (
+                      <span title="Abgemeldet" className="text-red-500 shrink-0">🚪</span>
+                    )}
                     {minderjährig && <span className="text-orange-500 text-xs shrink-0">⚠ {alter} J.</span>}
                     {m.googleDriveLink && (
                       <a
@@ -249,6 +282,34 @@ function MitarbeiterInhalt() {
                   <td className="px-4 py-3 font-medium text-gray-900">
                     <span className="inline-flex items-center gap-1.5">
                       <span>{nameMitFestgehaltSymbol(m)}</span>
+                      {m.nochNichtAngemeldet && (
+                        <span
+                          title="Noch nicht beim Lohnbüro angemeldet"
+                          className="text-amber-600 text-sm leading-none"
+                        >
+                          ⏳
+                        </span>
+                      )}
+                      {m.nochNichtAngemeldet && m.lohnbueroBestaetigungLink && (
+                        <a
+                          href={m.lohnbueroBestaetigungLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title="FastDok-Bestätigungsmail öffnen"
+                          className="text-amber-700 hover:text-amber-900 text-sm leading-none"
+                        >
+                          ✉
+                        </a>
+                      )}
+                      {m.abgemeldet && (
+                        <span
+                          title="Abgemeldet"
+                          className="text-red-500 text-sm leading-none"
+                        >
+                          🚪
+                        </span>
+                      )}
                       {m.googleDriveLink && (
                         <a
                           href={m.googleDriveLink}
@@ -371,7 +432,7 @@ function MitarbeiterForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const { parameter, teilgebiete, mitarbeiter, userRole } = useApp();
+  const { parameter, teilgebiete, mitarbeiter, userRole, abrechnungsperioden } = useApp();
   const isAdmin = userRole === 'admin';
   const [tab, setTab] = useState<MaFormTab>('stammdaten');
   const [form, setForm] = useState<typeof DEFAULT_FORM>(() => {
@@ -391,6 +452,18 @@ function MitarbeiterForm({
         elternEmail: initial.elternEmail,
         elternNutztWhatsApp: initial.elternNutztWhatsApp ?? false,
         elternNutztTelegram: initial.elternNutztTelegram ?? false,
+        nochNichtAngemeldet: initial.nochNichtAngemeldet ?? false,
+        erlaubnisElternEingeholt: initial.erlaubnisElternEingeholt ?? false,
+        lohnbueroBestaetigungLink: initial.lohnbueroBestaetigungLink,
+        startAbrechnungsperiodeId: initial.startAbrechnungsperiodeId,
+        startDatum: initial.startDatum,
+        ersetztMitarbeiterId: initial.ersetztMitarbeiterId,
+        anmeldungStatus: initial.anmeldungStatus,
+        anmeldungUnvollstaendigMemo: initial.anmeldungUnvollstaendigMemo,
+        anmeldungUebermittlungDatum: initial.anmeldungUebermittlungDatum,
+        abgemeldet: initial.abgemeldet ?? false,
+        abmeldungUebermittlungDatum: initial.abmeldungUebermittlungDatum,
+        letzteAbrechnungsperiodeId: initial.letzteAbrechnungsperiodeId,
         geburtsdatum: initial.geburtsdatum,
         rollen: [...initial.rollen],
         hatFestgehalt: initial.hatFestgehalt ?? false,
@@ -552,6 +625,7 @@ function MitarbeiterForm({
     { id: 'stammdaten', label: 'Stammdaten' },
     { id: 'freigaben', label: 'Gebiets-Freigaben', count: freigaben.length },
     { id: 'boni', label: 'Teilgebiet-Boni', count: boni.length },
+    { id: 'anmeldung', label: 'Anmeldung / Abmeldung' },
   ];
 
   return (
@@ -1347,6 +1421,212 @@ function MitarbeiterForm({
             </div>
           </div>
           )}
+        </div>
+      )}
+
+      {/* ---- Tab: Anmeldung / Abmeldung ---- */}
+      {tab === 'anmeldung' && (
+        <div className="space-y-5">
+          {/* Anmeldung-Block */}
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 space-y-4">
+            <div className="text-sm font-semibold text-blue-900">📝 Anmeldung beim Lohnbüro</div>
+
+            <FormField label="Status">
+              <label className="flex items-start gap-2 text-sm text-gray-700 mb-2">
+                <input
+                  type="checkbox"
+                  checked={form.nochNichtAngemeldet ?? false}
+                  onChange={(e) => setForm((f) => ({ ...f, nochNichtAngemeldet: e.target.checked }))}
+                  className="rounded mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">⏳ Noch nicht angemeldet</span>
+                  <span className="block text-xs text-gray-500">
+                    Solange aktiviert, ist der Mitarbeiter in keiner operativen Auswahl
+                    selektierbar (Standardausträger, Springer, Zusammentragen, Zeit-Erfassung).
+                  </span>
+                </span>
+              </label>
+            </FormField>
+
+            {minderjährig && (
+              <FormField label="Erlaubnis Eltern">
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={form.erlaubnisElternEingeholt ?? false}
+                    onChange={(e) => setForm((f) => ({ ...f, erlaubnisElternEingeholt: e.target.checked }))}
+                    className="rounded"
+                  />
+                  Erlaubnis der Eltern / Erziehungsberechtigten eingeholt
+                </label>
+              </FormField>
+            )}
+
+            <FormField
+              label="Link zur FastDok-Bestätigungsmail"
+              hint="Z. B. Gmail-Permalink zur Bestätigung des Lohnbüros."
+            >
+              <input
+                type="url"
+                value={form.lohnbueroBestaetigungLink ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, lohnbueroBestaetigungLink: e.target.value || undefined }))}
+                placeholder="https://mail.google.com/..."
+                className={inputClass}
+              />
+              {form.lohnbueroBestaetigungLink && (
+                <a
+                  href={form.lohnbueroBestaetigungLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block mt-1 text-xs text-blue-600 hover:text-blue-800 underline break-all"
+                >
+                  🔗 Mail öffnen
+                </a>
+              )}
+            </FormField>
+
+            <div className="grid grid-cols-2 gap-3">
+              <FormField label="Erste Abrechnungsperiode">
+                <select
+                  value={form.startAbrechnungsperiodeId ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, startAbrechnungsperiodeId: e.target.value || undefined }))}
+                  className={inputClass}
+                >
+                  <option value="">— keine —</option>
+                  {[...abrechnungsperioden]
+                    .sort((a, b) => (a.jahr !== b.jahr ? a.jahr - b.jahr : a.monat - b.monat))
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+                    ))}
+                </select>
+              </FormField>
+              <FormField label="oder Startdatum">
+                <input
+                  type="date"
+                  value={form.startDatum ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, startDatum: e.target.value || undefined }))}
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+
+            <FormField label="Ersetzt Mitarbeiter (optional)">
+              <select
+                value={form.ersetztMitarbeiterId ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, ersetztMitarbeiterId: e.target.value || undefined }))}
+                className={inputClass}
+              >
+                <option value="">— niemand —</option>
+                {[...mitarbeiter]
+                  .filter((m) => !initial || m.id !== initial.id)
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name} ({m.nummer})
+                    </option>
+                  ))}
+              </select>
+            </FormField>
+
+            <FormField label="Vollständigkeit der Erfassung">
+              <select
+                value={form.anmeldungStatus ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, anmeldungStatus: (e.target.value || undefined) as typeof form.anmeldungStatus }))}
+                className={inputClass}
+              >
+                <option value="">— bitte wählen —</option>
+                <option value="fragebogen-beim-ma">1. Fragebogen beim Mitarbeiter</option>
+                <option value="fragebogen-zurueck-unvollstaendig">2. Fragebogen zurück, unvollständig</option>
+                <option value="vollstaendig">3. Vollständig</option>
+              </select>
+            </FormField>
+
+            {form.anmeldungStatus === 'fragebogen-zurueck-unvollstaendig' && (
+              <FormField label="Fehlende Informationen (Memo)">
+                <textarea
+                  value={form.anmeldungUnvollstaendigMemo ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, anmeldungUnvollstaendigMemo: e.target.value || undefined }))}
+                  rows={3}
+                  placeholder="z. B. fehlende Steuer-ID, Bankverbindung unleserlich, …"
+                  className={inputClass}
+                />
+              </FormField>
+            )}
+
+            {form.anmeldungStatus === 'vollstaendig' && (
+              <FormField label="Datenübermittlung an Lohnbüro">
+                <input
+                  type="date"
+                  value={form.anmeldungUebermittlungDatum ?? ''}
+                  onChange={(e) => {
+                    const datum = e.target.value || undefined;
+                    setForm((f) => ({ ...f, anmeldungUebermittlungDatum: datum }));
+                    // Wenn Datum erstmals gesetzt + Kennzeichen "Noch nicht angemeldet" aktiv → Rückfrage
+                    if (datum && form.nochNichtAngemeldet) {
+                      // setTimeout damit React den State erst aktualisiert
+                      setTimeout(() => {
+                        if (confirm('Datenübermittlung erfolgt — Kennzeichen „Noch nicht angemeldet" jetzt entfernen?')) {
+                          setForm((f) => ({ ...f, nochNichtAngemeldet: false }));
+                        }
+                      }, 0);
+                    }
+                  }}
+                  className={inputClass}
+                />
+              </FormField>
+            )}
+          </div>
+
+          {/* Abmeldung-Block */}
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 space-y-4">
+            <div className="text-sm font-semibold text-red-900">🚪 Abmeldung beim Lohnbüro</div>
+
+            <FormField label="Status">
+              <label className="flex items-start gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={form.abgemeldet ?? false}
+                  onChange={(e) => setForm((f) => ({ ...f, abgemeldet: e.target.checked }))}
+                  className="rounded mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Mitarbeiter abgemeldet</span>
+                  <span className="block text-xs text-gray-500">
+                    MA verlässt das Unternehmen. Erscheint nicht mehr in operativen Auswahllisten.
+                  </span>
+                </span>
+              </label>
+            </FormField>
+
+            {form.abgemeldet && (
+              <>
+                <FormField label="Datum der Übermittlung an Lohnbüro">
+                  <input
+                    type="date"
+                    value={form.abmeldungUebermittlungDatum ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, abmeldungUebermittlungDatum: e.target.value || undefined }))}
+                    className={inputClass}
+                  />
+                </FormField>
+
+                <FormField label="Letzte Abrechnungsperiode">
+                  <select
+                    value={form.letzteAbrechnungsperiodeId ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, letzteAbrechnungsperiodeId: e.target.value || undefined }))}
+                    className={inputClass}
+                  >
+                    <option value="">— keine —</option>
+                    {[...abrechnungsperioden]
+                      .sort((a, b) => (b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat))
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+                      ))}
+                  </select>
+                </FormField>
+              </>
+            )}
+          </div>
         </div>
       )}
 
