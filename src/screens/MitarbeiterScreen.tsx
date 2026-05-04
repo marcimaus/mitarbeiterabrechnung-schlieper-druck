@@ -519,23 +519,39 @@ function MitarbeiterForm({
     );
     if (nummerBelegt) { setError(`Mitarbeiternummer ${form.nummer.trim()} ist bereits vergeben.`); return; }
     if (form.rollen.length === 0) { setError('Mindestens eine Rolle muss ausgewählt werden.'); return; }
-    if (!form.geburtsdatum) { setError('Geburtsdatum ist erforderlich.'); return; }
 
-    // Plausibilität Geburtsdatum
-    const geb = new Date(form.geburtsdatum);
-    const heute = new Date();
-    if (isNaN(geb.getTime())) { setError('Geburtsdatum ist ungültig.'); return; }
-    if (geb.getTime() > heute.getTime()) { setError('Geburtsdatum darf nicht in der Zukunft liegen.'); return; }
-    if (geb.getFullYear() < 1930) { setError('Geburtsdatum darf nicht vor 1930 liegen.'); return; }
-    const alterJahre = berechneAlter(form.geburtsdatum);
-    if (alterJahre < 13) {
-      if (!confirm(`Der Mitarbeiter ist laut Geburtsdatum erst ${alterJahre} Jahre alt. Trotzdem speichern?`)) {
+    // Solange „noch nicht angemeldet": Pflichtprüfungen für Geburtsdatum und
+    // Eltern-/Erziehungsberechtigten-Daten aussetzen — die Daten werden noch
+    // per Fragebogen erfasst.
+    const ueberspringePflicht = form.nochNichtAngemeldet === true;
+
+    if (!form.geburtsdatum) {
+      if (!ueberspringePflicht) {
+        setError('Geburtsdatum ist erforderlich.');
         return;
+      }
+      // Bei "noch nicht angemeldet": Geburtsdatum darf leer bleiben.
+    }
+
+    // Plausibilität Geburtsdatum — nur wenn überhaupt eingetragen
+    let alterJahre = Number.POSITIVE_INFINITY; // Default: volljährig (für Folge-Checks)
+    if (form.geburtsdatum) {
+      const geb = new Date(form.geburtsdatum);
+      const heute = new Date();
+      if (isNaN(geb.getTime())) { setError('Geburtsdatum ist ungültig.'); return; }
+      if (geb.getTime() > heute.getTime()) { setError('Geburtsdatum darf nicht in der Zukunft liegen.'); return; }
+      if (geb.getFullYear() < 1930) { setError('Geburtsdatum darf nicht vor 1930 liegen.'); return; }
+      alterJahre = berechneAlter(form.geburtsdatum);
+      if (alterJahre < 13) {
+        if (!confirm(`Der Mitarbeiter ist laut Geburtsdatum erst ${alterJahre} Jahre alt. Trotzdem speichern?`)) {
+          return;
+        }
       }
     }
 
     // Pflicht: Eltern-/Erziehungsberechtigten-Daten bei Minderjährigen
-    if (alterJahre < 18) {
+    // — entfällt bei „noch nicht angemeldet".
+    if (!ueberspringePflicht && alterJahre < 18) {
       if (!form.elternName || !form.elternName.trim()) {
         setError('Bei Minderjährigen ist der Name eines Erziehungsberechtigten Pflicht.');
         return;
@@ -773,7 +789,7 @@ function MitarbeiterForm({
         <FormField label="Geburtsdatum *">
           <input
             type="date"
-            required
+            required={!form.nochNichtAngemeldet}
             value={form.geburtsdatum}
             onChange={(e) => setForm((f) => ({ ...f, geburtsdatum: e.target.value }))}
             className={inputClass}
@@ -796,10 +812,10 @@ function MitarbeiterForm({
             </p>
           </div>
 
-          <FormField label="Name (Erziehungsberechtigte/r) *">
+          <FormField label={form.nochNichtAngemeldet ? 'Name (Erziehungsberechtigte/r)' : 'Name (Erziehungsberechtigte/r) *'}>
             <input
               type="text"
-              required
+              required={!form.nochNichtAngemeldet}
               value={form.elternName ?? ''}
               onChange={(e) => setForm((f) => ({ ...f, elternName: e.target.value || undefined }))}
               placeholder="z. B. Maria Mustermann"
