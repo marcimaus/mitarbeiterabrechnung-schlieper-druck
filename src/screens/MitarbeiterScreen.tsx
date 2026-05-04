@@ -381,6 +381,10 @@ function MitarbeiterForm({
         name: initial.name,
         adresse: { ...initial.adresse },
         telefon: initial.telefon,
+        mobilnummer: initial.mobilnummer,
+        email: initial.email,
+        nutztWhatsApp: initial.nutztWhatsApp ?? false,
+        nutztTelegram: initial.nutztTelegram ?? false,
         geburtsdatum: initial.geburtsdatum,
         rollen: [...initial.rollen],
         hatFestgehalt: initial.hatFestgehalt ?? false,
@@ -618,6 +622,50 @@ function MitarbeiterForm({
             value={form.telefon}
             onChange={(e) => setForm((f) => ({ ...f, telefon: e.target.value }))}
             placeholder="+49 5571 12345"
+            className={inputClass}
+          />
+        </FormField>
+        <FormField label="Mobilnummer">
+          <input
+            type="tel"
+            value={form.mobilnummer ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, mobilnummer: e.target.value || undefined }))}
+            placeholder="+49 151 1234567"
+            className={inputClass}
+          />
+        </FormField>
+      </div>
+
+      <FormField label="Messenger auf der Mobilnummer">
+        <div className="flex flex-wrap gap-4">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.nutztWhatsApp ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, nutztWhatsApp: e.target.checked }))}
+              className="rounded"
+            />
+            <span>💬 WhatsApp</span>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.nutztTelegram ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, nutztTelegram: e.target.checked }))}
+              className="rounded"
+            />
+            <span>✈ Telegram</span>
+          </label>
+        </div>
+      </FormField>
+
+      <div className="grid grid-cols-2 gap-4">
+        <FormField label="E-Mail">
+          <input
+            type="email"
+            value={form.email ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, email: e.target.value || undefined }))}
+            placeholder="name@example.de"
             className={inputClass}
           />
         </FormField>

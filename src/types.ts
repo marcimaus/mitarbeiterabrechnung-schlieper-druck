@@ -42,6 +42,14 @@ export interface Mitarbeiter {
     ort: string;
   };
   telefon: string;
+  /** Mobilnummer (zusätzlich zum Festnetz-Telefon, falls abweichend). */
+  mobilnummer?: string;
+  /** E-Mail-Adresse des Mitarbeiters. */
+  email?: string;
+  /** Mitarbeiter ist über WhatsApp erreichbar (auf der Mobilnummer). */
+  nutztWhatsApp?: boolean;
+  /** Mitarbeiter ist über Telegram erreichbar. */
+  nutztTelegram?: boolean;
   geburtsdatum: string;   // ISO-Date YYYY-MM-DD
   rollen: Rolle[];
   nfcUid?: string;
