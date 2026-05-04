@@ -133,12 +133,27 @@ export function berechneGewichtsbonus(
 
 // ---- Stundenlohn ermitteln ---------------------------------
 
+/**
+ * Soll der MA trotz Minderjährigkeit nach Erwachsenen-MiLoG abgerechnet werden?
+ * Nur dann true, wenn das Kennzeichen gesetzt ist UND der MA tatsächlich
+ * minderjährig ist (sonst irrelevant).
+ */
+function alsErwachsenerAbrechnen(mitarbeiter: Mitarbeiter): boolean {
+  return (
+    mitarbeiter.abrechnungAlsErwachseneMiLoG === true &&
+    istMinderjährig(mitarbeiter.geburtsdatum)
+  );
+}
+
 export function ermittleStundenlohn(
   mitarbeiter: Mitarbeiter,
   params: Parameter
 ): number {
   if (mitarbeiter.stundenlohnIndividuell !== undefined) {
     return mitarbeiter.stundenlohnIndividuell;
+  }
+  if (alsErwachsenerAbrechnen(mitarbeiter)) {
+    return params.stundenlohnErwachseneAustr;
   }
   return istMinderjährig(mitarbeiter.geburtsdatum)
     ? params.stundenlohnMinderjAustr
@@ -151,6 +166,9 @@ export function ermittleStundenlohnZusammen(
 ): number {
   if (mitarbeiter.stundenlohnIndividuell !== undefined) {
     return mitarbeiter.stundenlohnIndividuell;
+  }
+  if (alsErwachsenerAbrechnen(mitarbeiter)) {
+    return params.stundenlohnErwachseneZusammen;
   }
   return istMinderjährig(mitarbeiter.geburtsdatum)
     ? params.stundenlohnMinderjZusammen

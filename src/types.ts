@@ -62,6 +62,14 @@ export interface Mitarbeiter {
   nfcUid?: string;
   pinHash?: string;       // SHA-256 des optionalen Mitarbeiter-PINs (Selbstschutz)
   stundenlohnIndividuell?: number;
+  /**
+   * Ausnahme-Kennzeichen für minderjährige Mitarbeiter: wenn true, wird der
+   * MA wie ein Erwachsener nach MiLoG abgerechnet (Austragen + Zusammentragen),
+   * statt mit dem reduzierten Minderjährigen-Stundenlohn. Nur Admin darf setzen.
+   * Hat keinen Effekt, wenn der MA volljährig oder ein individueller
+   * Stundenlohn gesetzt ist.
+   */
+  abrechnungAlsErwachseneMiLoG?: boolean;
   fixesGehalt?: number;
   fahrkostenEurProKm?: number;   // Überschreibt den globalen Kilomtersatz
   /** Wenn true: Mitarbeiter bekommt fixes Monatsgehalt statt variabler Abrechnung. */

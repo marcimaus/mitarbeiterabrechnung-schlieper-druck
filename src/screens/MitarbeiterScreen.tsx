@@ -401,6 +401,7 @@ function MitarbeiterForm({
         googleDriveLink: initial.googleDriveLink,
         fixesGehalt: initial.fixesGehalt,
         stundenlohnIndividuell: initial.stundenlohnIndividuell,
+        abrechnungAlsErwachseneMiLoG: initial.abrechnungAlsErwachseneMiLoG ?? false,
         istMinijob: initial.istMinijob ?? false,
         lohngrenzeIndividuellEur: initial.lohngrenzeIndividuellEur,
         lohngrenzeIndividuellKommentar: initial.lohngrenzeIndividuellKommentar,
@@ -1059,11 +1060,35 @@ function MitarbeiterForm({
         </FormField>
       )}
 
+      {/* Ausnahme bei Minderjährigen: Abrechnung wie Erwachsener — nur Admin */}
+      {isAdmin && minderjährig && (
+        <FormField
+          label="Ausnahme: Abrechnung nach MiLoG (Erwachsene)"
+          hint={`Wenn aktiviert, wird dieser minderjährige Mitarbeiter mit den Erwachsenen-Stundenlöhnen abgerechnet (Austragen: ${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h, Zusammentragen: ${parameter?.stundenlohnErwachseneZusammen ?? 13.9} €/h).`}
+        >
+          <label className="flex items-start gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={form.abrechnungAlsErwachseneMiLoG ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, abrechnungAlsErwachseneMiLoG: e.target.checked }))}
+              className="rounded mt-0.5"
+            />
+            <span>
+              <span className="font-medium">Abrechnung nach MiLoG (Erwachsene)</span>
+              <span className="block text-xs text-gray-500">
+                Überschreibt die Stundenlöhne für Minderjährige zugunsten der Erwachsenen-Tarife.
+                Greift nicht, wenn ein individueller Stundenlohn gesetzt ist.
+              </span>
+            </span>
+          </label>
+        </FormField>
+      )}
+
       {isAdmin && (
         <FormField
           label="Individueller Stundenlohn (EUR/h)"
           hint={`Leer lassen für Standard (${
-            minderjährig
+            minderjährig && !form.abrechnungAlsErwachseneMiLoG
               ? `${parameter?.stundenlohnMinderjAustr ?? 10.0} €/h Minderjährige`
               : `${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h MiLoG`
           })`}
