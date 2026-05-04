@@ -434,7 +434,11 @@ function MitarbeiterForm({
 }) {
   const { parameter, teilgebiete, mitarbeiter, userRole, abrechnungsperioden } = useApp();
   const isAdmin = userRole === 'admin';
-  const [tab, setTab] = useState<MaFormTab>('stammdaten');
+  // Bei Mitarbeitern mit Status "noch nicht angemeldet" direkt den Anmelde-Tab öffnen,
+  // damit die offene Erfassung sofort sichtbar ist.
+  const [tab, setTab] = useState<MaFormTab>(
+    initial?.nochNichtAngemeldet ? 'anmeldung' : 'stammdaten'
+  );
   const [form, setForm] = useState<typeof DEFAULT_FORM>(() => {
     if (initial) {
       return {
