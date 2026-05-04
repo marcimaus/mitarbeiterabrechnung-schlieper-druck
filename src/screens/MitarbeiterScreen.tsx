@@ -897,7 +897,7 @@ function MitarbeiterForm({
       {(form.lohngrenzeIndividuellEur ?? 0) > 0 && (
         <FormField
           label="Grund / Vermerk zur Lohngrenze"
-          hint="Z. B. „weiterer Minijob bei XY", „Verabredung Höchstgrenze für beide Jobs"."
+          hint='Z. B. „weiterer Minijob bei XY", „Verabredung Höchstgrenze für beide Jobs".'
         >
           <input
             type="text"
