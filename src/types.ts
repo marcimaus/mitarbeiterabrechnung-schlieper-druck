@@ -50,6 +50,13 @@ export interface Mitarbeiter {
   nutztWhatsApp?: boolean;
   /** Mitarbeiter ist über Telegram erreichbar. */
   nutztTelegram?: boolean;
+  // ---- Kontaktdaten Eltern / Erziehungsberechtigte (nur bei Minderjährigen) --
+  elternName?: string;
+  elternTelefon?: string;
+  elternMobil?: string;
+  elternEmail?: string;
+  elternNutztWhatsApp?: boolean;
+  elternNutztTelegram?: boolean;
   geburtsdatum: string;   // ISO-Date YYYY-MM-DD
   rollen: Rolle[];
   nfcUid?: string;

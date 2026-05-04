@@ -385,6 +385,12 @@ function MitarbeiterForm({
         email: initial.email,
         nutztWhatsApp: initial.nutztWhatsApp ?? false,
         nutztTelegram: initial.nutztTelegram ?? false,
+        elternName: initial.elternName,
+        elternTelefon: initial.elternTelefon,
+        elternMobil: initial.elternMobil,
+        elternEmail: initial.elternEmail,
+        elternNutztWhatsApp: initial.elternNutztWhatsApp ?? false,
+        elternNutztTelegram: initial.elternNutztTelegram ?? false,
         geburtsdatum: initial.geburtsdatum,
         rollen: [...initial.rollen],
         hatFestgehalt: initial.hatFestgehalt ?? false,
@@ -446,6 +452,22 @@ function MitarbeiterForm({
     const alterJahre = berechneAlter(form.geburtsdatum);
     if (alterJahre < 13) {
       if (!confirm(`Der Mitarbeiter ist laut Geburtsdatum erst ${alterJahre} Jahre alt. Trotzdem speichern?`)) {
+        return;
+      }
+    }
+
+    // Pflicht: Eltern-/Erziehungsberechtigten-Daten bei Minderjährigen
+    if (alterJahre < 18) {
+      if (!form.elternName || !form.elternName.trim()) {
+        setError('Bei Minderjährigen ist der Name eines Erziehungsberechtigten Pflicht.');
+        return;
+      }
+      const hatKontakt =
+        (form.elternTelefon && form.elternTelefon.trim()) ||
+        (form.elternMobil && form.elternMobil.trim()) ||
+        (form.elternEmail && form.elternEmail.trim());
+      if (!hatKontakt) {
+        setError('Bei Minderjährigen ist mindestens ein Kontakt der Erziehungsberechtigten Pflicht (Telefon, Mobil oder E-Mail).');
         return;
       }
     }
@@ -684,6 +706,83 @@ function MitarbeiterForm({
           )}
         </FormField>
       </div>
+
+      {/* Erziehungsberechtigte — Pflicht bei Minderjährigen */}
+      {minderjährig && (
+        <div className="rounded-lg border-2 border-orange-300 bg-orange-50 p-4 space-y-3">
+          <div className="text-sm font-semibold text-orange-900">
+            👨‍👩‍👧 Erziehungsberechtigte (Pflicht bei Minderjährigen)
+            <p className="text-xs font-normal text-orange-800 mt-0.5">
+              Name ist Pflicht. Mindestens ein Kontakt (Telefon, Mobil oder E-Mail).
+            </p>
+          </div>
+
+          <FormField label="Name (Erziehungsberechtigte/r) *">
+            <input
+              type="text"
+              required
+              value={form.elternName ?? ''}
+              onChange={(e) => setForm((f) => ({ ...f, elternName: e.target.value || undefined }))}
+              placeholder="z. B. Maria Mustermann"
+              className={inputClass}
+            />
+          </FormField>
+
+          <div className="grid grid-cols-2 gap-3">
+            <FormField label="Telefon">
+              <input
+                type="tel"
+                value={form.elternTelefon ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, elternTelefon: e.target.value || undefined }))}
+                placeholder="+49 5571 12345"
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Mobilnummer">
+              <input
+                type="tel"
+                value={form.elternMobil ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, elternMobil: e.target.value || undefined }))}
+                placeholder="+49 151 1234567"
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+
+          <FormField label="E-Mail">
+            <input
+              type="email"
+              value={form.elternEmail ?? ''}
+              onChange={(e) => setForm((f) => ({ ...f, elternEmail: e.target.value || undefined }))}
+              placeholder="name@example.de"
+              className={inputClass}
+            />
+          </FormField>
+
+          <FormField label="Messenger (auf der Mobilnummer der Eltern)">
+            <div className="flex flex-wrap gap-4">
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={form.elternNutztWhatsApp ?? false}
+                  onChange={(e) => setForm((f) => ({ ...f, elternNutztWhatsApp: e.target.checked }))}
+                  className="rounded"
+                />
+                <span>💬 WhatsApp</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={form.elternNutztTelegram ?? false}
+                  onChange={(e) => setForm((f) => ({ ...f, elternNutztTelegram: e.target.checked }))}
+                  className="rounded"
+                />
+                <span>✈ Telegram</span>
+              </label>
+            </div>
+          </FormField>
+        </div>
+      )}
 
       {/* Google-Drive-Link — Admin + Abrechnung sichtbar/editierbar */}
       <FormField
