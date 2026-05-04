@@ -49,6 +49,9 @@ function MitarbeiterInhalt() {
   const [editTarget, setEditTarget] = useState<Mitarbeiter | null>(null);
   const [filterText, setFilterText] = useState('');
   const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
+  // Tri-State-Filter: '' = egal, 'ja' = nur mit Kennzeichen, 'nein' = nur ohne
+  const [filterMinijob, setFilterMinijob] = useState<'' | 'ja' | 'nein'>('');
+  const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
 
@@ -68,6 +71,10 @@ function MitarbeiterInhalt() {
     if (filterText && !m.name.toLowerCase().includes(filterText.toLowerCase()) &&
         !m.nummer.includes(filterText)) return false;
     if (filterRolle && !m.rollen.includes(filterRolle)) return false;
+    if (filterMinijob === 'ja' && !m.istMinijob) return false;
+    if (filterMinijob === 'nein' && m.istMinijob) return false;
+    if (filterSvFrei === 'ja' && !m.sozialversicherungsBefreit) return false;
+    if (filterSvFrei === 'nein' && m.sozialversicherungsBefreit) return false;
     return true;
   });
 
@@ -114,6 +121,26 @@ function MitarbeiterInhalt() {
           {ALLE_ROLLEN.map((r) => (
             <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
           ))}
+        </select>
+        <select
+          value={filterMinijob}
+          onChange={(e) => setFilterMinijob(e.target.value as '' | 'ja' | 'nein')}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          title="Filter Minijob"
+        >
+          <option value="">Minijob: alle</option>
+          <option value="ja">nur Minijob</option>
+          <option value="nein">nur kein Minijob</option>
+        </select>
+        <select
+          value={filterSvFrei}
+          onChange={(e) => setFilterSvFrei(e.target.value as '' | 'ja' | 'nein')}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          title="Filter Befreiung von Sozialversicherung"
+        >
+          <option value="">SV-Befreiung: alle</option>
+          <option value="ja">nur SV-befreit</option>
+          <option value="nein">nur nicht SV-befreit</option>
         </select>
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
