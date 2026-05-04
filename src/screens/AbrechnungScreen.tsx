@@ -166,6 +166,12 @@ function AbrechnungInhalt() {
   const minijobUeberschreiter = ergebnisse
     ?.filter((e) => e.mitarbeiter.istMinijob && e.bruttoLohnbuero > minijobGrenze) ?? [];
 
+  // Individuelle Lohngrenze (z. B. weitere Minijobs, vertragliche Höchstgrenze)
+  const individuelleLohngrenzeUeberschreiter = ergebnisse?.filter((e) => {
+    const grenze = e.mitarbeiter.lohngrenzeIndividuellEur ?? 0;
+    return grenze > 0 && e.bruttoLohnbuero > grenze;
+  }) ?? [];
+
   const suchbegriffNorm = suchbegriff.trim().toLowerCase();
   const gefilterteErgebnisse = ergebnisse
     ? ergebnisse.filter((er) => {
@@ -397,6 +403,36 @@ function AbrechnungInhalt() {
             </div>
           )}
 
+          {/* Individuelle Lohngrenze-Warnungen */}
+          {individuelleLohngrenzeUeberschreiter.length > 0 && (
+            <div className="mb-4 rounded-lg border border-orange-400 bg-orange-50 px-4 py-3 text-sm">
+              <div className="font-semibold text-orange-900 mb-1">
+                ⚠ Individuelle Lohngrenze überschritten
+              </div>
+              <ul className="list-disc list-inside space-y-0.5 text-orange-900">
+                {individuelleLohngrenzeUeberschreiter.map((e) => {
+                  const grenze = e.mitarbeiter.lohngrenzeIndividuellEur ?? 0;
+                  const kommentar = e.mitarbeiter.lohngrenzeIndividuellKommentar;
+                  return (
+                    <li key={e.mitarbeiter.id}>
+                      <span className="font-medium">{e.mitarbeiter.name}</span>
+                      {' '}({e.mitarbeiter.nummer}) — Grenze {eur(grenze)} · Lohnbüro-Brutto {eur(e.bruttoLohnbuero)}
+                      {' · '}
+                      <span className="text-red-700 font-medium">
+                        +{eur(e.bruttoLohnbuero - grenze)} über der Grenze
+                      </span>
+                      {kommentar && (
+                        <span className="block ml-5 text-xs text-orange-700 italic">
+                          Grund: {kommentar}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
           {/* Mitarbeiter-Suche */}
           <div className="mb-4">
             <input
@@ -470,6 +506,28 @@ function AbrechnungInhalt() {
                                   {er.bruttoLohnbuero > minijobGrenze ? '⚠ Minijob' : 'Minijob'}
                                 </span>
                               )}
+                              {(er.mitarbeiter.lohngrenzeIndividuellEur ?? 0) > 0 && (() => {
+                                const g = er.mitarbeiter.lohngrenzeIndividuellEur ?? 0;
+                                const ueber = er.bruttoLohnbuero > g;
+                                const titel = ueber
+                                  ? `Individuelle Lohngrenze ${eur(g)} überschritten`
+                                  : `Individuelle Lohngrenze: ${eur(g)}`;
+                                const titelMitGrund = er.mitarbeiter.lohngrenzeIndividuellKommentar
+                                  ? `${titel} — ${er.mitarbeiter.lohngrenzeIndividuellKommentar}`
+                                  : titel;
+                                return (
+                                  <span
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                      ueber
+                                        ? 'bg-red-100 text-red-700 border border-red-300'
+                                        : 'bg-orange-50 text-orange-700 border border-orange-200'
+                                    }`}
+                                    title={titelMitGrund}
+                                  >
+                                    {ueber ? '⚠ Lohngrenze' : 'Lohngrenze'}
+                                  </span>
+                                );
+                              })()}
                               {er.mitarbeiter.sozialversicherungsBefreit && (
                                 <span
                                   className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-300"

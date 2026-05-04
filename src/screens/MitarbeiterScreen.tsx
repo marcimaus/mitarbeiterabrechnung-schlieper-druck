@@ -392,6 +392,8 @@ function MitarbeiterForm({
         fixesGehalt: initial.fixesGehalt,
         stundenlohnIndividuell: initial.stundenlohnIndividuell,
         istMinijob: initial.istMinijob ?? false,
+        lohngrenzeIndividuellEur: initial.lohngrenzeIndividuellEur,
+        lohngrenzeIndividuellKommentar: initial.lohngrenzeIndividuellKommentar,
         sozialversicherungsBefreit: initial.sozialversicherungsBefreit ?? false,
         ausgabenBonusMinuten: initial.ausgabenBonusMinuten,
         ausgabenBonusKommentar: initial.ausgabenBonusKommentar,
@@ -870,6 +872,45 @@ function MitarbeiterForm({
           </label>
         </div>
       </FormField>
+
+      {/* Individuelle Lohngrenze — z. B. weitere Minijobs / Höchstgrenze.
+          Sichtbar/editierbar für Admin und Abrechnung (analog Minijob/SV-Befreiung). */}
+      <FormField
+        label="Individuelle Lohngrenze (EUR/Monat)"
+        hint="Optional. Wenn der Bruttolohn im Monat diesen Wert überschreitet, erscheint in der Abrechnung eine Warnung — z. B. wegen weiterer Minijobs bei anderen Arbeitgebern oder vertraglicher Höchstgrenze."
+      >
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={form.lohngrenzeIndividuellEur ?? ''}
+          onChange={(e) => setForm((f) => ({
+            ...f,
+            lohngrenzeIndividuellEur: e.target.value ? parseFloat(e.target.value) : undefined,
+          }))}
+          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+          placeholder="Leer = keine individuelle Grenze"
+          className={inputClass}
+        />
+      </FormField>
+
+      {(form.lohngrenzeIndividuellEur ?? 0) > 0 && (
+        <FormField
+          label="Grund / Vermerk zur Lohngrenze"
+          hint="Z. B. „weiterer Minijob bei XY", „Verabredung Höchstgrenze für beide Jobs"."
+        >
+          <input
+            type="text"
+            value={form.lohngrenzeIndividuellKommentar ?? ''}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              lohngrenzeIndividuellKommentar: e.target.value || undefined,
+            }))}
+            placeholder="z. B. weiterer Minijob bei …"
+            className={inputClass}
+          />
+        </FormField>
+      )}
 
       {isAdmin && (
         <FormField

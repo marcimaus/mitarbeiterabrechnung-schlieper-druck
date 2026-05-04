@@ -75,6 +75,15 @@ export interface Mitarbeiter {
   /** Minijob-Kennzeichen: Warnung wenn Bruttolohn im Monat die Minijob-Grenze überschreitet. */
   istMinijob?: boolean;
   /**
+   * Individuelle Lohngrenze (€/Monat) — z. B. wegen weiterer Minijobs bei
+   * anderen Arbeitgebern oder vertraglicher Höchstgrenze. Wenn der
+   * Bruttolohn im Monat diese Grenze überschreitet, erscheint in der
+   * Abrechnung eine Warnung. Optional zusätzlich zur Minijob-Grenze.
+   */
+  lohngrenzeIndividuellEur?: number;
+  /** Begründung / Vermerk zur individuellen Lohngrenze. */
+  lohngrenzeIndividuellKommentar?: string;
+  /**
    * Pauschaler Tätigkeitsbonus in Minuten — gilt PRO Ausgabe der Abrechnungsperiode.
    * Wird mit dem Stundensatz des MA vergütet. Beispiel: 60 Min und 4 Ausgaben in
    * der Periode → 4 h × Stundensatz.
