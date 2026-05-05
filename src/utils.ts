@@ -7,14 +7,15 @@ export function nameMitFestgehaltSymbol(m: { name: string; hatFestgehalt?: boole
 /**
  * Prüft, ob ein Mitarbeiter in operativen Auswahllisten (Standardausträger,
  * Springer, Zusammenträger, manuelle Zeit-Erfassung etc.) auswählbar ist.
- * Aktiv UND nicht „noch nicht angemeldet" UND nicht abgemeldet.
+ * Aktiv UND nicht abgemeldet. „Noch nicht angemeldet" schließt NICHT mehr
+ * aus — der MA soll bereits eingesetzt werden können; in der Abrechnung
+ * erscheint stattdessen ein Warnhinweis.
  */
 export function istEinsatzbereit(m: {
   isActive: boolean;
-  nochNichtAngemeldet?: boolean;
   abgemeldet?: boolean;
 }): boolean {
-  return m.isActive === true && m.nochNichtAngemeldet !== true && m.abgemeldet !== true;
+  return m.isActive === true && m.abgemeldet !== true;
 }
 
 /**

@@ -232,6 +232,9 @@ function AbrechnungInhalt() {
     return grenze > 0 && e.bruttoLohnbuero > grenze;
   }) ?? [];
 
+  // Noch nicht angemeldete MAs, die in dieser Abrechnung Beträge bekommen
+  const nichtAngemeldeteWarnung = ergebnisse?.filter((e) => e.mitarbeiter.nochNichtAngemeldet) ?? [];
+
   const suchbegriffNorm = suchbegriff.trim().toLowerCase();
   const gefilterteErgebnisse = ergebnisse
     ? ergebnisse.filter((er) => {
@@ -552,6 +555,30 @@ function AbrechnungInhalt() {
                     </li>
                   );
                 })}
+              </ul>
+            </div>
+          )}
+
+          {/* Warnung: Mitarbeiter in der Abrechnung, die noch nicht angemeldet sind */}
+          {nichtAngemeldeteWarnung.length > 0 && (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+              <div className="font-semibold text-amber-900 mb-1">
+                ⏳ Noch nicht angemeldete Mitarbeiter in dieser Abrechnung
+              </div>
+              <p className="text-xs text-amber-800 mb-1">
+                Diese Mitarbeiter haben Beträge in dieser Periode, sind aber
+                noch nicht beim Lohnbüro angemeldet. Vor dem Periodenabschluss
+                Anmeldung prüfen.
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 text-amber-900">
+                {nichtAngemeldeteWarnung.map((e) => (
+                  <li key={e.mitarbeiter.id}>
+                    <span className="font-medium">{e.mitarbeiter.name}</span>
+                    <span className="text-gray-500"> ({e.mitarbeiter.nummer})</span>
+                    {' — Brutto '}
+                    <span className="font-medium">{eur(e.gesamt)}</span>
+                  </li>
+                ))}
               </ul>
             </div>
           )}

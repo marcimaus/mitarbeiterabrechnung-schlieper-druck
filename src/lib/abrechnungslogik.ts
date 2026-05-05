@@ -743,9 +743,13 @@ export function berechneAbrechnung(
     }
   }
 
-  return ergebnisse.sort((a, b) =>
-    a.mitarbeiter.name.localeCompare(b.mitarbeiter.name)
-  );
+  // Sortierung: zuerst Mitarbeiter mit Festgehalt, danach nach MA-Nummer.
+  return ergebnisse.sort((a, b) => {
+    const aFest = a.mitarbeiter.hatFestgehalt ? 0 : 1;
+    const bFest = b.mitarbeiter.hatFestgehalt ? 0 : 1;
+    if (aFest !== bFest) return aFest - bFest;
+    return (a.mitarbeiter.nummer || '').localeCompare(b.mitarbeiter.nummer || '');
+  });
 }
 
 // ---- Helper: Periodenstatus für einen Zeitraum prüfen --------

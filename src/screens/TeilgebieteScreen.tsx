@@ -24,6 +24,7 @@ const DEFAULT_FORM: Omit<
   tourId: null,
   standardAustraegerId: null,
   isActive: true,
+  istAuslagestelle: false,
 };
 
 const inputClass =
@@ -86,7 +87,9 @@ function TeilgebieteInhalt() {
     }
     if (filterAustraegerId) {
       if (filterAustraegerId === '__keiner__') {
-        if (tg.standardAustraegerId) return false;
+        // „Ohne Austräger" zeigt nur echte unbesetzte Gebiete — Auslagestellen
+        // brauchen keinen Austräger und werden hier ausgeschlossen.
+        if (tg.standardAustraegerId || tg.istAuslagestelle) return false;
       } else if (tg.standardAustraegerId !== filterAustraegerId) {
         return false;
       }
@@ -258,7 +261,13 @@ function TeilgebieteInhalt() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-gray-600 text-sm">
-                  {getAustraeger(tg.standardAustraegerId)}
+                  {tg.istAuslagestelle ? (
+                    <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
+                      📦 Auslagestelle
+                    </span>
+                  ) : (
+                    getAustraeger(tg.standardAustraegerId)
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <button
@@ -575,6 +584,12 @@ function TeilgebietForm({
           tourId: initial.tourId,
           standardAustraegerId: initial.standardAustraegerId,
           isActive: initial.isActive,
+          istAuslagestelle: initial.istAuslagestelle ?? false,
+          auslagestelleAdresse: initial.auslagestelleAdresse,
+          auslagestelleKontaktName: initial.auslagestelleKontaktName,
+          auslagestelleKontaktTelefon: initial.auslagestelleKontaktTelefon,
+          auslagestelleKontaktEmail: initial.auslagestelleKontaktEmail,
+          auslagestelleMemo: initial.auslagestelleMemo,
         }
       : { ...DEFAULT_FORM }
   );
@@ -633,8 +648,9 @@ function TeilgebietForm({
   // Nur Mitarbeiter mit expliziter Freigabe für dieses Teilgebiet (aus der aktuellen Freigabeliste).
   // Strikt: auch bei neuem TG muss der MA in der Freigabeliste dieses Formulars stehen.
   const austraeger = mitarbeiter.filter((m) => {
-    // Noch nicht angemeldete oder abgemeldete MA niemals als Standardausträger anbieten
-    if (m.nochNichtAngemeldet || m.abgemeldet) return false;
+    // Abgemeldete MAs werden nie als Standardausträger angeboten.
+    // Noch-nicht-Angemeldete dürfen ausgewählt werden — die Abrechnung warnt.
+    if (m.abgemeldet) return false;
     if (nurAktiveAustraeger && !m.isActive) return false;
     return freigegebeneMitarbeiterIds.includes(m.id);
   });
@@ -668,6 +684,10 @@ function TeilgebietForm({
         strassen,
         sonderauslagen,
         nichtBeliefen,
+        // Auslagestelle: keine Wegstrecke, kein Austräger
+        ...(form.istAuslagestelle
+          ? { wegstreckeM: 0, standardAustraegerId: null }
+          : {}),
       };
       let tgId: string;
       if (initial) {
@@ -815,6 +835,23 @@ function TeilgebietForm({
             </div>
           </div>
 
+          {/* Auslagestelle-Schalter */}
+          <label className="flex items-start gap-2 text-sm text-gray-700 bg-purple-50 border border-purple-200 rounded-lg px-3 py-2">
+            <input
+              type="checkbox"
+              checked={form.istAuslagestelle ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, istAuslagestelle: e.target.checked }))}
+              disabled={!isAdmin}
+              className="rounded mt-0.5"
+            />
+            <span>
+              <span className="font-medium">📦 Auslagestelle (kein Austräger)</span>
+              <span className="block text-xs text-gray-600">
+                Reines Auslage-Gebiet: Fahrer legt an einer Adresse aus, Leser holen sich Exemplare. Kein Standardausträger, kein Springer, keine Wegstrecke.
+              </span>
+            </span>
+          </label>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -871,8 +908,12 @@ function TeilgebietForm({
                   setForm((f) => ({ ...f, wegstreckeM: parseInt(e.target.value) || 0 }))
                 }
                 placeholder="2500"
-                className={inputClass}
+                disabled={form.istAuslagestelle}
+                className={`${inputClass} ${form.istAuslagestelle ? 'bg-gray-50 text-gray-400' : ''}`}
               />
+              {form.istAuslagestelle && (
+                <p className="text-xs text-gray-400 mt-0.5">Bei Auslagestelle nicht relevant.</p>
+              )}
             </div>
           </div>
 
@@ -892,56 +933,118 @@ function TeilgebietForm({
             </select>
           </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-gray-700">
-                Standardausträger
-                {initial && (
-                  <span className="ml-1 text-xs font-normal text-gray-400">
-                    (nur mit Gebietsfreigabe)
-                  </span>
+          {!form.istAuslagestelle && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">
+                  Standardausträger
+                  {initial && (
+                    <span className="ml-1 text-xs font-normal text-gray-400">
+                      (nur mit Gebietsfreigabe)
+                    </span>
+                  )}
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={nurAktiveAustraeger}
+                    onChange={(e) => setNurAktiveAustraeger(e.target.checked)}
+                    className="rounded"
+                  />
+                  nur aktive
+                </label>
+              </div>
+              <select
+                value={form.standardAustraegerId ?? ''}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, standardAustraegerId: e.target.value || null }))
+                }
+                className={inputClass}
+              >
+                <option value="">Kein Standardausträger</option>
+                {austraeger.length === 0 && (
+                  <option disabled value="">— keine Freigaben für dieses Gebiet vergeben —</option>
                 )}
-              </label>
-              <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={nurAktiveAustraeger}
-                  onChange={(e) => setNurAktiveAustraeger(e.target.checked)}
-                  className="rounded"
-                />
-                nur aktive
-              </label>
+                {austraeger.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} ({m.nummer}){!m.isActive ? ' [inaktiv]' : ''}
+                  </option>
+                ))}
+                {/* Falls bereits ein Standardausträger gesetzt ist, der NICHT freigegeben ist:
+                    trotzdem anzeigen, damit der Wert nicht unsichtbar verloren geht. */}
+                {form.standardAustraegerId &&
+                  !austraeger.some((m) => m.id === form.standardAustraegerId) && (() => {
+                    const ma = mitarbeiter.find((m) => m.id === form.standardAustraegerId);
+                    if (!ma) return null;
+                    return (
+                      <option value={ma.id}>
+                        ⚠ {ma.name} ({ma.nummer}) — ohne Freigabe
+                      </option>
+                    );
+                  })()}
+              </select>
             </div>
-            <select
-              value={form.standardAustraegerId ?? ''}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, standardAustraegerId: e.target.value || null }))
-              }
-              className={inputClass}
-            >
-              <option value="">Kein Standardausträger</option>
-              {austraeger.length === 0 && (
-                <option disabled value="">— keine Freigaben für dieses Gebiet vergeben —</option>
-              )}
-              {austraeger.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name} ({m.nummer}){!m.isActive ? ' [inaktiv]' : ''}
-                </option>
-              ))}
-              {/* Falls bereits ein Standardausträger gesetzt ist, der NICHT freigegeben ist:
-                  trotzdem anzeigen, damit der Wert nicht unsichtbar verloren geht. */}
-              {form.standardAustraegerId &&
-                !austraeger.some((m) => m.id === form.standardAustraegerId) && (() => {
-                  const ma = mitarbeiter.find((m) => m.id === form.standardAustraegerId);
-                  if (!ma) return null;
-                  return (
-                    <option value={ma.id}>
-                      ⚠ {ma.name} ({ma.nummer}) — ohne Freigabe
-                    </option>
-                  );
-                })()}
-            </select>
-          </div>
+          )}
+
+          {/* Auslagestelle-Felder: nur sichtbar wenn istAuslagestelle */}
+          {form.istAuslagestelle && (
+            <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 space-y-3">
+              <div className="text-sm font-semibold text-purple-900">📦 Auslagestelle — Adresse &amp; Ansprechpartner</div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Anlieferungsadresse
+                </label>
+                <input
+                  type="text"
+                  value={form.auslagestelleAdresse ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, auslagestelleAdresse: e.target.value || undefined }))}
+                  placeholder="z. B. Bäckerei Müller, Hauptstr. 12, 37170 Uslar"
+                  className={inputClass}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Kontaktperson (Name)</label>
+                  <input
+                    type="text"
+                    value={form.auslagestelleKontaktName ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, auslagestelleKontaktName: e.target.value || undefined }))}
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Telefon</label>
+                  <input
+                    type="tel"
+                    value={form.auslagestelleKontaktTelefon ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, auslagestelleKontaktTelefon: e.target.value || undefined }))}
+                    className={inputClass}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">E-Mail</label>
+                <input
+                  type="email"
+                  value={form.auslagestelleKontaktEmail ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, auslagestelleKontaktEmail: e.target.value || undefined }))}
+                  className={inputClass}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Memo (Absprachen mit Kontaktperson)
+                </label>
+                <textarea
+                  value={form.auslagestelleMemo ?? ''}
+                  onChange={(e) => setForm((f) => ({ ...f, auslagestelleMemo: e.target.value || undefined }))}
+                  rows={3}
+                  placeholder="z. B. Schlüssel hinter Tonne, Anlieferung nur Mo/Mi …"
+                  className={inputClass}
+                />
+              </div>
+            </div>
+          )}
 
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
             <input
@@ -1417,7 +1520,7 @@ function TeilgebietForm({
             {(() => {
               const sichtbar = mitarbeiter
                 .filter((m) => m.rollen?.includes('austräger'))
-                .filter((m) => !m.nochNichtAngemeldet && !m.abgemeldet)
+                .filter((m) => !m.abgemeldet)
                 .filter((m) => !freigabeNurAktive || m.isActive)
                 .filter((m) => {
                   if (!freigabeFilter.trim()) return true;

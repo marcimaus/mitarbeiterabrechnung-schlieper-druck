@@ -203,6 +203,22 @@ export interface Teilgebiet {
   strassen: Strasse[];
   sonderauslagen: Sonderauslage[];
   nichtBeliefen: NichtBeliefen[];
+  // ---- Auslagestelle (Teilgebiet ohne Austräger, nur Auslage) -------
+  /**
+   * Wenn true: reines Auslage-Gebiet — Fahrer legt an einer Adresse aus,
+   * Leser holen sich Exemplare ab. Kein Standardausträger, kein Springer,
+   * keine Wegstrecke nötig. In der Teilgebiete-Übersicht NICHT als
+   * unbesetzt markieren.
+   */
+  istAuslagestelle?: boolean;
+  /** Anlieferungsadresse (Straße + Hausnummer + ggf. Hinweis). */
+  auslagestelleAdresse?: string;
+  /** Optionaler Ansprechpartner vor Ort. */
+  auslagestelleKontaktName?: string;
+  auslagestelleKontaktTelefon?: string;
+  auslagestelleKontaktEmail?: string;
+  /** Memo für Absprachen mit der Kontaktperson. */
+  auslagestelleMemo?: string;
   erstelltAm: number;
   aktualisiertAm: number;
 }

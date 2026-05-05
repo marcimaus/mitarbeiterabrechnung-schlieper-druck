@@ -18,6 +18,23 @@ interface EinsatzMap {
   [teilgebietId: string]: Einsatz;
 }
 
+/**
+ * Effektiver Einsatz-Status eines Teilgebiets:
+ *  - 'standard': hat Standardausträger UND kein expliziter Springer/Ausfall
+ *  - 'springer': expliziter Einsatz vom Typ 'springer'
+ *  - 'unbesetzt': weder Standardausträger noch Springer (auch bei 'ausfall'/'ungeklärt')
+ */
+function berechneStatus(
+  tg: { standardAustraegerId: string | null },
+  e: Einsatz | undefined
+): 'standard' | 'springer' | 'unbesetzt' {
+  if (e?.typ === 'springer') return 'springer';
+  // ausfall / ungeklärt → unbesetzt
+  if (e?.typ === 'ausfall' || e?.typ === 'ungeklärt') return 'unbesetzt';
+  // ohne expliziten Einsatz: hängt am Standardausträger
+  return tg.standardAustraegerId ? 'standard' : 'unbesetzt';
+}
+
 export default function EinsaetzeScreen() {
   return (
     <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
@@ -47,7 +64,7 @@ function EinsaetzeInhalt() {
   // ---- Such- und Filter-Zustand ----
   const [suche, setSuche] = useState('');
   const [filterTourId, setFilterTourId] = useState<string>('');
-  const [filterStatus, setFilterStatus] = useState<'' | 'standard' | 'springer' | 'ungeklärt'>('');
+  const [filterStatus, setFilterStatus] = useState<'' | 'standard' | 'springer' | 'unbesetzt'>('');
   const [filterMitarbeiterId, setFilterMitarbeiterId] = useState('');
 
   // Ausgaben laden
@@ -81,8 +98,11 @@ function EinsaetzeInhalt() {
 
   const selectedAusgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
 
+  // Auslagestellen sind keine austräger-relevanten Gebiete und werden in
+  // der Einsätze-Liste ausgeblendet — sie brauchen weder Standard- noch
+  // Springer-Einsatz.
   const aktiveTeilgebiete = teilgebiete
-    .filter((tg) => tg.isActive)
+    .filter((tg) => tg.isActive && !tg.istAuslagestelle)
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const getMitarbeiter = useCallback(
@@ -126,12 +146,12 @@ function EinsaetzeInhalt() {
   function oeffneSpringerDialog(tg: Teilgebiet) {
     const e = einsaetze[tg.id];
     setSpringerMitarbeiterId(e?.typ === 'springer' ? (e.mitarbeiterId ?? '') : '');
-    // Vorhandenen Wert übernehmen, sonst leer = Standard aus Parametern
+    // Default: 0 % (kein Zuschlag). Vorhandenen Wert übernehmen falls gesetzt.
     const vorhanden = e?.springerZuschlagProzent;
-    setSpringerZuschlag(vorhanden != null ? vorhanden.toString() : '');
+    setSpringerZuschlag(vorhanden != null ? vorhanden.toString() : '0');
     // „Individuell"-Modus nur öffnen, wenn bestehender Wert kein Listenwert ist
     const optionen = parameter?.springerZuschlagOptionen ?? [];
-    const istListenwert = vorhanden == null || optionen.includes(vorhanden);
+    const istListenwert = vorhanden != null && optionen.includes(vorhanden);
     setSpringerIndividuell(!istListenwert);
     setSpringerFilter('');
     setSpringerDialog(tg);
@@ -210,14 +230,7 @@ function EinsaetzeInhalt() {
     }
     // Status-Filter
     if (filterStatus) {
-      const e = einsaetze[tg.id];
-      const status: 'standard' | 'springer' | 'ungeklärt' =
-        !e ? 'standard'
-        : e.typ === 'springer' ? 'springer'
-        : e.typ === 'ungeklärt' ? 'ungeklärt'
-        // Altbestand: 'ausfall' wird wie 'ungeklärt' behandelt
-        : e.typ === 'ausfall' ? 'ungeklärt'
-        : 'standard';
+      const status = berechneStatus(tg, einsaetze[tg.id]);
       if (status !== filterStatus) return false;
     }
     return true;
@@ -226,14 +239,13 @@ function EinsaetzeInhalt() {
   // Statistiken (über alle aktiven Teilgebiete, nicht über gefilterte)
   const stats = aktiveTeilgebiete.reduce(
     (acc, tg) => {
-      const e = einsaetze[tg.id];
-      if (!e) acc.standard++;
-      else if (e.typ === 'springer') acc.springer++;
-      // Altbestand 'ausfall' → als ungeklärt zählen
-      else if (e.typ === 'ausfall' || e.typ === 'ungeklärt') acc.ungeklaert++;
+      const status = berechneStatus(tg, einsaetze[tg.id]);
+      if (status === 'standard') acc.standard++;
+      else if (status === 'springer') acc.springer++;
+      else if (status === 'unbesetzt') acc.unbesetzt++;
       return acc;
     },
-    { standard: 0, springer: 0, ungeklaert: 0 }
+    { standard: 0, springer: 0, unbesetzt: 0 }
   );
 
   return (
@@ -261,7 +273,7 @@ function EinsaetzeInhalt() {
             <div className="flex gap-2 flex-wrap ml-auto items-center">
               <StatBadge label="Standard" count={stats.standard} farbe="bg-gray-100 text-gray-700" />
               <StatBadge label="Springer" count={stats.springer} farbe="bg-blue-100 text-blue-700" />
-              <StatBadge label="Ungeklärt" count={stats.ungeklaert} farbe="bg-yellow-100 text-yellow-700" />
+              <StatBadge label="Unbesetzt" count={stats.unbesetzt} farbe="bg-yellow-100 text-yellow-700" />
               <button
                 type="button"
                 onClick={handleLieferscheineDrucken}
@@ -328,13 +340,13 @@ function EinsaetzeInhalt() {
           </select>
           <select
             value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value as '' | 'standard' | 'springer' | 'ungeklärt')}
+            onChange={(e) => setFilterStatus(e.target.value as '' | 'standard' | 'springer' | 'unbesetzt')}
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="">— alle Status —</option>
-            <option value="standard">Standard</option>
-            <option value="springer">Springer</option>
-            <option value="ungeklärt">Ungeklärt</option>
+            <option value="standard">Standard (mit Standardausträger)</option>
+            <option value="springer">Springer (Springer-Einsatz)</option>
+            <option value="unbesetzt">Unbesetzt (ohne Austräger)</option>
           </select>
           <select
             value={filterMitarbeiterId}
@@ -443,7 +455,7 @@ function EinsaetzeInhalt() {
 
                     {/* Status-Badge */}
                     <td className="px-4 py-3">
-                      <EinsatzBadge einsatz={einsatz} />
+                      <EinsatzBadge einsatz={einsatz} teilgebiet={tg} />
                     </td>
 
                     {/* Aktueller Austräger */}
@@ -576,7 +588,7 @@ function EinsaetzeInhalt() {
             <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
               {mitarbeiter
                 .filter((m) => {
-                  if (m.nochNichtAngemeldet || m.abgemeldet) return false;
+                  if (m.abgemeldet) return false;
                   if (!m.isActive || !m.rollen.includes('austräger')) return false;
                   // Strikte Gebietsfreigabe: nur Mitarbeiter, die für dieses Teilgebiet freigegeben sind.
                   if (!springerDialog) return false;
@@ -855,31 +867,31 @@ function BeilagenDetailModal({
   );
 }
 
-function EinsatzBadge({ einsatz }: { einsatz: Einsatz | undefined }) {
-  if (!einsatz || einsatz.typ === 'standard') {
-    return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
-        Standard
-      </span>
-    );
-  }
-  if (einsatz.typ === 'springer') {
+function EinsatzBadge({
+  einsatz,
+  teilgebiet,
+}: {
+  einsatz: Einsatz | undefined;
+  teilgebiet: { standardAustraegerId: string | null };
+}) {
+  const status = berechneStatus(teilgebiet, einsatz);
+  if (status === 'springer') {
     return (
       <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
         Springer
       </span>
     );
   }
-  if (einsatz.typ === 'ausfall') {
+  if (status === 'unbesetzt') {
     return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">
-        Ausfall
+      <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium">
+        Unbesetzt
       </span>
     );
   }
   return (
-    <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium">
-      Ungeklärt
+    <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+      Standard
     </span>
   );
 }
