@@ -248,19 +248,51 @@ export function berechneAbrechnung(
   alleAbrechnungsperioden: Abrechnungsperiode[] = [],
   alleLohnkontoBuchungen: LohnkontoBuchung[] = []
 ): MitarbeiterAbrechnung[] {
-  // Snapshots nur für ABGESCHLOSSENE Perioden anwenden — solange eine Periode
-  // offen ist, sollen Parameter- und Teilgebiet-Änderungen weiterhin in die
-  // Berechnung einfließen.
+  // Snapshot-Stufen:
+  //  - End-Snapshot (status='abgeschlossen'): paramSnapshot + periodeSnapshot
+  //    werden verwendet — die Periode ist eingefroren.
+  //  - Monatswechsel-Snapshot: fixiert nur Austragen/Zusammentragen + die
+  //    relevanten Stammdaten. Andere Werte werden weiter live berechnet.
   const istAbgeschlossen = periode?.status === 'abgeschlossen';
+  const istMonatswechsel = !istAbgeschlossen && !!periode?.monatswechselSnapshot;
 
   const effParams: Parameter = istAbgeschlossen && periode?.paramSnapshot
     ? { ...params, ...periode.paramSnapshot }
-    : params;
+    : istMonatswechsel && periode?.monatswechselSnapshot?.paramSnapshot
+      ? { ...params, ...periode.monatswechselSnapshot.paramSnapshot }
+      : params;
 
   const effTeilgebiete: (Teilgebiet | TeilgebietSnapshot)[] =
     istAbgeschlossen && periode?.periodeSnapshot?.teilgebietSnapshots?.length
       ? periode.periodeSnapshot.teilgebietSnapshots
-      : teilgebiete;
+      : istMonatswechsel && periode?.monatswechselSnapshot?.teilgebietSnapshots?.length
+        ? periode.monatswechselSnapshot.teilgebietSnapshots
+        : teilgebiete;
+
+  // Lookup für fixierte Werte aus dem Monatswechsel-Snapshot
+  const monatswechselFixierungProMa = new Map<
+    string,
+    {
+      austraegerEinsaetze: AustraegerEinsatzErgebnis[];
+      austraegerGesamt: number;
+      gewichtsbonusAnzeigenblatt: number;
+      gewichtsbonusBeilagen: number;
+      zusammentragenEinsaetze: ZusammentragenErgebnis[];
+      zusammentragenGesamt: number;
+    }
+  >();
+  if (istMonatswechsel && periode?.monatswechselSnapshot?.fixierungProMa) {
+    for (const f of periode.monatswechselSnapshot.fixierungProMa) {
+      monatswechselFixierungProMa.set(f.mitarbeiterId, {
+        austraegerEinsaetze: f.austraegerEinsaetze as AustraegerEinsatzErgebnis[],
+        austraegerGesamt: f.austraegerGesamt,
+        gewichtsbonusAnzeigenblatt: f.gewichtsbonusAnzeigenblatt,
+        gewichtsbonusBeilagen: f.gewichtsbonusBeilagen,
+        zusammentragenEinsaetze: f.zusammentragenEinsaetze as ZusammentragenErgebnis[],
+        zusammentragenGesamt: f.zusammentragenGesamt,
+      });
+    }
+  }
 
   const ergebnisse: MitarbeiterAbrechnung[] = [];
 
@@ -416,7 +448,9 @@ export function berechneAbrechnung(
     // =======================================================
 
     // --- Austragen: rechnerisch (Teilgebiete + Parameter) ---
-    const austraegerEinsaetze: AustraegerEinsatzErgebnis[] = [];
+    // Bei aktivem Monatswechsel-Snapshot werden die fixierten Werte
+    // anschließend übernommen (siehe weiter unten).
+    let austraegerEinsaetze: AustraegerEinsatzErgebnis[] = [];
 
     if (!effParams.austragenNachIstZeit) {
       // Explizite Springer-Einsätze
@@ -505,18 +539,18 @@ export function berechneAbrechnung(
       }
     }
 
-    const austraegerGesamt = austraegerEinsaetze.reduce(
+    let austraegerGesamt = austraegerEinsaetze.reduce(
       (s, e) => s + e.detail.gesamt, 0
     );
-    const gewichtsbonusAnzeigenblatt = austraegerEinsaetze.reduce(
+    let gewichtsbonusAnzeigenblatt = austraegerEinsaetze.reduce(
       (s, e) => s + (e.detail.gewichtsbonusAnzeigenblatt ?? 0), 0
     );
-    const gewichtsbonusBeilagen = austraegerEinsaetze.reduce(
+    let gewichtsbonusBeilagen = austraegerEinsaetze.reduce(
       (s, e) => s + (e.detail.gewichtsbonusBeilagen ?? 0), 0
     );
 
     // --- Zusammentragen: rechnerisch (Stapel × 0.25h × Stundenlohn) ---
-    const zusammentragenEinsaetze: ZusammentragenErgebnis[] = [];
+    let zusammentragenEinsaetze: ZusammentragenErgebnis[] = [];
 
     if (!effParams.zusammentragenNachIstZeit) {
       const maZusammen = data.zusammentragenEinsaetze.filter(
@@ -596,9 +630,22 @@ export function berechneAbrechnung(
         }
       }
     }
-    const zusammentragenGesamt = zusammentragenEinsaetze.reduce(
+    let zusammentragenGesamt = zusammentragenEinsaetze.reduce(
       (s, z) => s + z.lohn, 0
     );
+
+    // --- Monatswechsel-Snapshot: Austragen + Zusammentragen fixieren ---
+    // Stammdaten/Parameter wirken hier nicht mehr; die zum Zeitpunkt des
+    // Monatswechsels berechneten Werte werden 1:1 übernommen.
+    const fixierung = monatswechselFixierungProMa.get(ma.id);
+    if (fixierung) {
+      austraegerEinsaetze = fixierung.austraegerEinsaetze;
+      austraegerGesamt = fixierung.austraegerGesamt;
+      gewichtsbonusAnzeigenblatt = fixierung.gewichtsbonusAnzeigenblatt;
+      gewichtsbonusBeilagen = fixierung.gewichtsbonusBeilagen;
+      zusammentragenEinsaetze = fixierung.zusammentragenEinsaetze;
+      zusammentragenGesamt = fixierung.zusammentragenGesamt;
+    }
 
     // --- Zeiterfassung: Ist-Zeiten nach Typ filtern ---
     // austragen   → nur wenn austragenNachIstZeit === true

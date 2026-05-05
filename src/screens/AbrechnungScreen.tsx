@@ -16,6 +16,8 @@ import {
   erstelleLohnkontoBuchung,
   loescheLohnkontoBuchung,
   ladeLohnkontoBuchungen,
+  schreibeMonatswechselSnapshot,
+  verwerfeMonatswechselSnapshot,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
 import type { Abrechnungsperiode, Vorschuss } from '../types';
@@ -37,6 +39,7 @@ function AbrechnungInhalt() {
   const [exportierend, setExportierend] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [abschliessenBestaetigt, setAbschliessenBestaetigt] = useState(false);
+  const [monatswechselBestaetigt, setMonatswechselBestaetigt] = useState(false);
   const [suchbegriff, setSuchbegriff] = useState('');
 
   const sortedPerioden = [...abrechnungsperioden].sort((a, b) =>
@@ -143,6 +146,43 @@ function AbrechnungInhalt() {
     setAbschliessenBestaetigt(false);
   }
 
+  async function handleMonatswechsel() {
+    if (!selectedPeriode) return;
+    if (!ergebnisse) {
+      alert('Bitte zuerst auf „Berechnen" klicken — der Monatswechsel-Snapshot wird aus dem aktuellen Ergebnis gebildet.');
+      return;
+    }
+    try {
+      await schreibeMonatswechselSnapshot(
+        selectedPeriode.id,
+        teilgebiete,
+        params,
+        ergebnisse
+      );
+      setMonatswechselBestaetigt(false);
+      // Frisch laden, damit das Banner sofort sichtbar ist und die fixierten
+      // Werte zukünftige Berechnungen greifen.
+      await handleBerechnen();
+    } catch (e: any) {
+      alert('Fehler beim Monatswechsel: ' + (e.message ?? e));
+    }
+  }
+
+  async function handleMonatswechselVerwerfen() {
+    if (!selectedPeriode) return;
+    if (!confirm(
+      'Monatswechsel-Snapshot wirklich verwerfen?\n\n' +
+        'Die fixierten Werte für Austragen und Zusammentragen werden gelöscht; ' +
+        'beim nächsten Berechnen wird wieder live aus den aktuellen Stammdaten gerechnet.'
+    )) return;
+    try {
+      await verwerfeMonatswechselSnapshot(selectedPeriode.id);
+      await handleBerechnen();
+    } catch (e: any) {
+      alert('Fehler beim Verwerfen: ' + (e.message ?? e));
+    }
+  }
+
   async function handlePeriodeWiederOeffnen() {
     if (!selectedPeriode) return;
     if (!confirm(`Periode "${selectedPeriode.bezeichnung}" wieder öffnen? Alle Daten bleiben erhalten, Eingaben sind wieder möglich.`)) return;
@@ -244,33 +284,81 @@ function AbrechnungInhalt() {
               </button>
 
               {selectedPeriode?.status === 'offen' && (
-                !abschliessenBestaetigt ? (
-                  <button
-                    onClick={() => setAbschliessenBestaetigt(true)}
-                    className="ml-auto bg-gray-100 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
-                    title="Schließt die Periode ab und speichert das aktuelle Berechnungsergebnis als Snapshot"
-                  >
-                    🔒 Periode abschließen &amp; speichern
-                  </button>
-                ) : (
-                  <div className="ml-auto flex items-center gap-2">
-                    <span className="text-sm text-orange-700">
-                      Periode abschließen und das aktuelle Ergebnis speichern?
-                    </span>
+                <div className="ml-auto flex items-center gap-2 flex-wrap">
+                  {/* Monatswechsel-Status / -Button */}
+                  {selectedPeriode.monatswechselSnapshot ? (
+                    <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-1.5">
+                      <span className="text-sm text-emerald-800 font-medium">
+                        ✓ Monatswechsel durchgeführt am{' '}
+                        {new Date(selectedPeriode.monatswechselSnapshot.erstelltAm).toLocaleDateString('de-DE')}
+                      </span>
+                      {userRole === 'admin' && (
+                        <button
+                          onClick={handleMonatswechselVerwerfen}
+                          className="text-xs text-emerald-700 hover:text-red-600 underline"
+                          title="Snapshot verwerfen — beim nächsten Berechnen wird wieder live aus den aktuellen Stammdaten gerechnet"
+                        >
+                          verwerfen
+                        </button>
+                      )}
+                    </div>
+                  ) : !monatswechselBestaetigt ? (
                     <button
-                      onClick={handlePeriodeAbschliessen}
-                      className="bg-orange-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-orange-700 transition-colors"
+                      onClick={() => setMonatswechselBestaetigt(true)}
+                      className="bg-blue-50 text-blue-700 border border-blue-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors"
+                      title="Fixiert Austragen und Zusammentragen vor dem Wechsel der Standardausträger"
                     >
-                      Ja, abschließen &amp; speichern
+                      📌 Monatswechsel durchführen
                     </button>
+                  ) : (
+                    <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5">
+                      <span className="text-sm text-blue-800">
+                        Alle Tätigkeiten wurden erfasst (Zusammentragen und Austragen)?
+                      </span>
+                      <button
+                        onClick={handleMonatswechsel}
+                        className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-blue-700 transition-colors"
+                      >
+                        Ja, Snapshot erstellen
+                      </button>
+                      <button
+                        onClick={() => setMonatswechselBestaetigt(false)}
+                        className="text-sm text-gray-500 hover:text-gray-700"
+                      >
+                        Abbrechen
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Periode abschließen */}
+                  {!abschliessenBestaetigt ? (
                     <button
-                      onClick={() => setAbschliessenBestaetigt(false)}
-                      className="text-sm text-gray-500 hover:text-gray-700"
+                      onClick={() => setAbschliessenBestaetigt(true)}
+                      className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
+                      title="Schließt die Periode ab und speichert das aktuelle Berechnungsergebnis als Snapshot"
                     >
-                      Abbrechen
+                      🔒 Periode abschließen &amp; speichern
                     </button>
-                  </div>
-                )
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-orange-700">
+                        Periode abschließen und das aktuelle Ergebnis speichern?
+                      </span>
+                      <button
+                        onClick={handlePeriodeAbschliessen}
+                        className="bg-orange-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-orange-700 transition-colors"
+                      >
+                        Ja, abschließen &amp; speichern
+                      </button>
+                      <button
+                        onClick={() => setAbschliessenBestaetigt(false)}
+                        className="text-sm text-gray-500 hover:text-gray-700"
+                      >
+                        Abbrechen
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
               {selectedPeriode?.status === 'abgeschlossen' && (
                 <div className="ml-auto flex items-center gap-2">
@@ -315,6 +403,21 @@ function AbrechnungInhalt() {
                 gespeicherten Snapshot. Spätere Änderungen an Vorschüssen,
                 Boni, Lohnkonto-Buchungen etc. wirken sich nicht aus, solange
                 die Periode geschlossen bleibt.
+              </span>
+            </div>
+          )}
+
+          {/* Hinweis-Banner: Monatswechsel-Snapshot aktiv (Periode noch offen) */}
+          {selectedPeriode?.status === 'offen' && selectedPeriode.monatswechselSnapshot && (
+            <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-900 flex items-center gap-2">
+              <span>📌</span>
+              <span>
+                <span className="font-medium">Austragen &amp; Zusammentragen sind fixiert</span>
+                {' '}(Stand{' '}
+                {new Date(selectedPeriode.monatswechselSnapshot.erstelltAm).toLocaleString('de-DE')}
+                ). Stammdaten-Änderungen (Standardausträger, Stückzahlen) wirken sich
+                nicht mehr auf diese Periode aus. Vorschüsse, Boni, Lohnkonto,
+                Zeiten und Fahrtkosten sind weiter erfassbar.
               </span>
             </div>
           )}

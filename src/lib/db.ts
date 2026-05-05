@@ -757,15 +757,95 @@ export async function schliessePeriodeAb(
 // ---- Periode wieder öffnen (nur Admin) ---------------------
 
 export async function oeffnePeriodeWieder(periodeId: string): Promise<void> {
-  // Snapshots verwerfen — Periode soll nach Wieder-Öffnen erneut die aktuellen
-  // Parameter und Teilgebiet-Stammdaten verwenden. Beim nächsten Abschließen
-  // werden frische Snapshots geschrieben.
+  // Nur die End-Snapshots verwerfen. Der Monatswechsel-Snapshot bleibt
+  // erhalten, damit die fixierten Austragen/Zusammentragen-Werte nach dem
+  // Wieder-Öffnen weiterhin gelten — Vorschüsse, Boni & Lohnkonto sind dann
+  // wieder editierbar. Komplettes Reset der Periode geschieht über die
+  // separate Funktion `verwerfeMonatswechselSnapshot`.
   await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
     status: 'offen',
     gesperrtAm: null,
     paramSnapshot: deleteField(),
     periodeSnapshot: deleteField(),
     abrechnungSnapshot: deleteField(),
+  });
+}
+
+// ---- Monatswechsel-Snapshot --------------------------------
+//
+// Fixiert die stammdatenabhängigen Tätigkeiten (Austragen, Zusammentragen
+// inkl. Vorarbeit) sowie Parameter/Teilgebiete zu einem Zeitpunkt zwischen
+// Monatswechsel und endgültigem Abschluss. Andere Werte werden weiter live
+// berechnet. Beim späteren Abschluss kombiniert `schliessePeriodeAb` beide
+// Stände zum endgültigen `abrechnungSnapshot`.
+
+interface MonatswechselFixierung {
+  mitarbeiterId: string;
+  austraegerEinsaetze: unknown[];
+  austraegerGesamt: number;
+  gewichtsbonusAnzeigenblatt: number;
+  gewichtsbonusBeilagen: number;
+  zusammentragenEinsaetze: unknown[];
+  zusammentragenGesamt: number;
+}
+
+export async function schreibeMonatswechselSnapshot(
+  periodeId: string,
+  teilgebiete: Teilgebiet[],
+  currentParams: Parameter | null,
+  /** MitarbeiterAbrechnung[] vom Aufrufer — als unknown[] um Imports zu vermeiden. */
+  ergebnisseLiveBerechnet: unknown[]
+): Promise<void> {
+  const ts = now();
+
+  const teilgebietSnapshots: TeilgebietSnapshot[] = teilgebiete.map((tg) => ({
+    id: tg.id,
+    name: tg.name,
+    plz: tg.plz,
+    stueckzahl: tg.stueckzahl,
+    wegstreckeM: tg.wegstreckeM,
+    tourId: tg.tourId,
+    standardAustraegerId: tg.standardAustraegerId,
+  }));
+
+  // Aus jedem MA-Ergebnis nur die Austragen-/Zusammentragen-Felder herausziehen
+  const fixierungProMa: MonatswechselFixierung[] = (ergebnisseLiveBerechnet as Array<{
+    mitarbeiter: { id: string };
+    austraegerEinsaetze: unknown[];
+    austraegerGesamt: number;
+    gewichtsbonusAnzeigenblatt: number;
+    gewichtsbonusBeilagen: number;
+    zusammentragenEinsaetze: unknown[];
+    zusammentragenGesamt: number;
+  }>).map((er) => ({
+    mitarbeiterId: er.mitarbeiter.id,
+    austraegerEinsaetze: er.austraegerEinsaetze,
+    austraegerGesamt: er.austraegerGesamt,
+    gewichtsbonusAnzeigenblatt: er.gewichtsbonusAnzeigenblatt,
+    gewichtsbonusBeilagen: er.gewichtsbonusBeilagen,
+    zusammentragenEinsaetze: er.zusammentragenEinsaetze,
+    zusammentragenGesamt: er.zusammentragenGesamt,
+  }));
+
+  const params = currentParams ?? (await ladeParameter());
+
+  const monatswechselSnapshot = {
+    erstelltAm: ts,
+    paramSnapshot: params ?? {},
+    teilgebietSnapshots,
+    fixierungProMa: stripUndefDeep(fixierungProMa) as MonatswechselFixierung[],
+  };
+
+  await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
+    monatswechselSnapshot: stripUndefDeep(monatswechselSnapshot) as Record<string, unknown>,
+    monatswechselDurchgefuehrtAm: ts,
+  });
+}
+
+export async function verwerfeMonatswechselSnapshot(periodeId: string): Promise<void> {
+  await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
+    monatswechselSnapshot: deleteField(),
+    monatswechselDurchgefuehrtAm: deleteField(),
   });
 }
 

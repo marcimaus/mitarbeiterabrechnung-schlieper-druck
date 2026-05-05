@@ -278,6 +278,35 @@ export interface Abrechnungsperiode {
     ergebnisse: unknown[];
     erstelltAm: number;
   };
+  /**
+   * Zwischen-Snapshot vor Monatswechsel — fixiert nur Austragen/Zusammentragen
+   * (inkl. Vorarbeit) sowie Stammdaten-Snapshots (Teilgebiete, Parameter).
+   * Andere Werte (Zeiterfassung, Fahrtkosten, Vorschüsse, Boni, Lohnkonto)
+   * werden weiterhin live berechnet, bis die Periode endgültig abgeschlossen
+   * wird. Aufbau spiegelt Teile von `MitarbeiterAbrechnung` (siehe
+   * lib/abrechnungslogik.ts), als `unknown[]` typisiert um zirkuläre Imports
+   * zu vermeiden.
+   */
+  monatswechselSnapshot?: {
+    erstelltAm: number;
+    paramSnapshot: Partial<Parameter>;
+    teilgebietSnapshots: TeilgebietSnapshot[];
+    /**
+     * Pro MA: fixierte Austragen-/Zusammentragen-Werte. Cast an der
+     * Verwendungsstelle in `abrechnungslogik.ts`.
+     */
+    fixierungProMa: Array<{
+      mitarbeiterId: string;
+      austraegerEinsaetze: unknown[];
+      austraegerGesamt: number;
+      gewichtsbonusAnzeigenblatt: number;
+      gewichtsbonusBeilagen: number;
+      zusammentragenEinsaetze: unknown[];
+      zusammentragenGesamt: number;
+    }>;
+  };
+  /** Redundant zum Snapshot-Timestamp, vereinfacht UI-Checks. */
+  monatswechselDurchgefuehrtAm?: number;
   gesperrtAm?: number;                // Zeitstempel des Abschlusses
   erstelltAm: number;
 }

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import { bestaetigeMonatswechselEinmalProSession } from '../utils';
 import { erstelleTeilgebiet, aktualisiereTeilgebiet, aktualisiereMitarbeiter } from '../lib/db';
 import type { Teilgebiet, Strasse, Sonderauslage, NichtBeliefen } from '../types';
 
@@ -649,6 +650,14 @@ function TeilgebietForm({
     if (stueckzahlFinal <= 0 && form.stueckzahlManuell) {
       setError('Stückzahl muss größer als 0 sein.');
       return;
+    }
+    // Session-Confirm: Standardausträger geändert? Einmal pro Session
+    // nachfragen, ob der Monatswechsel durchgeführt wurde — sonst kann die
+    // laufende Periode rückwirkend verschoben werden.
+    if (initial && initial.standardAustraegerId !== form.standardAustraegerId) {
+      if (!bestaetigeMonatswechselEinmalProSession()) {
+        return;
+      }
     }
     setSaving(true);
     setError('');
