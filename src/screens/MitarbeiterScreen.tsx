@@ -31,6 +31,9 @@ const DEFAULT_FORM: Omit<Mitarbeiter, 'id' | 'erstelltAm' | 'aktualisiertAm' | '
   hatFestgehalt: false,
   istMinijob: false,
   sozialversicherungsBefreit: false,
+  // Bei Neuanlage default: noch nicht beim Lohnbüro angemeldet — der MA
+  // erscheint dann automatisch in der Anmelde-Liste der Abrechnung.
+  nochNichtAngemeldet: true,
   isActive: true,
 };
 

@@ -18,9 +18,10 @@ import {
   ladeLohnkontoBuchungen,
   schreibeMonatswechselSnapshot,
   verwerfeMonatswechselSnapshot,
+  aktualisiereMitarbeiter,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
-import type { Abrechnungsperiode, Vorschuss } from '../types';
+import type { Abrechnungsperiode, Vorschuss, Mitarbeiter } from '../types';
 
 export default function AbrechnungScreen() {
   return (
@@ -137,8 +138,27 @@ function AbrechnungInhalt() {
       return;
     }
     try {
-      // Berechnetes Ergebnis als Snapshot mitschreiben — danach lassen sich
-      // die historischen Werte ohne Neu-Berechnung jederzeit anzeigen.
+      // 1) Alle MA in der Abmelde-Liste dieser Periode auf abgemeldet=true
+      //    setzen (vor dem Snapshot, damit der MA-Status im Snapshot stimmt).
+      const ersetzteIds = new Set<string>();
+      for (const m of mitarbeiter) {
+        if (m.ersetztMitarbeiterId) ersetzteIds.add(m.ersetztMitarbeiterId);
+      }
+      const heuteIso = new Date().toISOString().slice(0, 10);
+      const abzumelden = mitarbeiter.filter(
+        (m) =>
+          !m.abgemeldet &&
+          (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === selectedPeriode.id)
+      );
+      for (const m of abzumelden) {
+        await aktualisiereMitarbeiter(m.id, {
+          abgemeldet: true,
+          abmeldungUebermittlungDatum: m.abmeldungUebermittlungDatum ?? heuteIso,
+          letzteAbrechnungsperiodeId: selectedPeriode.id,
+        });
+      }
+      // 2) Berechnetes Ergebnis als Snapshot mitschreiben — danach lassen sich
+      //    die historischen Werte ohne Neu-Berechnung jederzeit anzeigen.
       await schliessePeriodeAb(selectedPeriode.id, teilgebiete, params, ergebnisse);
     } catch (e: any) {
       alert('Fehler beim Abschließen: ' + (e.message ?? e));
@@ -791,6 +811,14 @@ function AbrechnungInhalt() {
               </tbody>
             </table>
           </div>
+
+          {/* An-/Abmeldungen ans Lohnbüro */}
+          {selectedPeriode && (
+            <AnAbmeldungenListe
+              periode={selectedPeriode}
+              istGesperrt={selectedPeriode.status === 'abgeschlossen'}
+            />
+          )}
         </>
       )}
 
@@ -1694,6 +1722,352 @@ function SummaryCard({
     <div className={`rounded-xl border p-4 ${farbe}`}>
       <div className="text-xs text-gray-500 mb-1">{label}</div>
       <div className={`font-bold ${textFarbe} ${gross ? 'text-xl' : 'text-base'}`}>{value}</div>
+    </div>
+  );
+}
+
+// ============================================================
+// AN- / ABMELDUNGEN ANS LOHNBÜRO
+// Listet alle MA, die in dieser Periode ans Lohnbüro gemeldet werden müssen:
+//  - Anmeldungen: alle MA mit nochNichtAngemeldet=true
+//  - Abmeldungen: alle MA, die durch einen anderen MA in dieser Periode
+//    ersetzt werden (ersetztMitarbeiterId-Verweis); plus alle MA, die der
+//    User manuell zur Abmeldung markiert hat (abgemeldet=true wird beim
+//    Periodenabschluss automatisch gesetzt).
+// Das Datum kann inline editiert werden — es wird direkt ins MA-Doc geschrieben.
+// ============================================================
+
+function AnAbmeldungenListe({
+  periode,
+  istGesperrt,
+}: {
+  periode: Abrechnungsperiode;
+  istGesperrt: boolean;
+}) {
+  const { mitarbeiter } = useApp();
+
+  // Periodenende: letzter Tag des Monats (ISO-Date YYYY-MM-DD).
+  const periodenEndeIso = (() => {
+    const last = new Date(periode.jahr, periode.monat, 0); // monat ist 1..12, day=0 → letzter Tag des Vormonats = letzter Tag von periode.monat
+    const yyyy = last.getFullYear();
+    const mm = (last.getMonth() + 1).toString().padStart(2, '0');
+    const dd = last.getDate().toString().padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  })();
+  const periodenStartIso = `${periode.jahr}-${periode.monat.toString().padStart(2, '0')}-01`;
+
+  function effektivesAnmeldedatum(m: Mitarbeiter): string {
+    if (m.startDatum && m.startDatum >= periodenStartIso && m.startDatum <= periodenEndeIso) {
+      return m.startDatum;
+    }
+    return periodenEndeIso;
+  }
+  function effektivesAbmeldedatum(m: Mitarbeiter): string {
+    return m.abmeldungUebermittlungDatum ?? periodenEndeIso;
+  }
+
+  // Anmeldungen: alle MA mit nochNichtAngemeldet=true (unabhängig von der
+  // Periode; der User trägt das Anmelde-Datum ggf. ein und filtert so selbst).
+  const anmeldungen = mitarbeiter
+    .filter((m) => m.nochNichtAngemeldet === true)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // Abmeldungen: ersetzte MAs (deren ID an einem anderen MA als
+  // ersetztMitarbeiterId steht). Plus ggf. bereits manuell abgemeldete in
+  // dieser Periode (letzteAbrechnungsperiodeId === periode.id).
+  const ersetzteIds = new Set<string>();
+  for (const m of mitarbeiter) {
+    if (m.ersetztMitarbeiterId) ersetzteIds.add(m.ersetztMitarbeiterId);
+  }
+  const abmeldungen = mitarbeiter
+    .filter(
+      (m) =>
+        !m.abgemeldet &&
+        (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === periode.id)
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // MA-Auswahl-Modal (manuell hinzufügen)
+  const [showAuswahlAn, setShowAuswahlAn] = useState(false);
+  const [showAuswahlAb, setShowAuswahlAb] = useState(false);
+
+  async function handleAnmeldedatumAendern(m: Mitarbeiter, datum: string) {
+    if (datum === m.startDatum) return;
+    await aktualisiereMitarbeiter(m.id, { startDatum: datum || undefined });
+  }
+  async function handleAbmeldedatumAendern(m: Mitarbeiter, datum: string) {
+    if (datum === m.abmeldungUebermittlungDatum) return;
+    await aktualisiereMitarbeiter(m.id, { abmeldungUebermittlungDatum: datum || undefined });
+  }
+
+  async function handleAuswahlAn(m: Mitarbeiter) {
+    await aktualisiereMitarbeiter(m.id, { nochNichtAngemeldet: true });
+    setShowAuswahlAn(false);
+  }
+  async function handleAuswahlAb(m: Mitarbeiter) {
+    await aktualisiereMitarbeiter(m.id, { letzteAbrechnungsperiodeId: periode.id });
+    setShowAuswahlAb(false);
+  }
+
+  async function handleVomAnEntfernen(m: Mitarbeiter) {
+    if (!confirm(`„${m.name}" aus der Anmelde-Liste entfernen? Das Kennzeichen „Noch nicht angemeldet" wird abgewählt.`)) return;
+    await aktualisiereMitarbeiter(m.id, { nochNichtAngemeldet: false });
+  }
+  async function handleVomAbEntfernen(m: Mitarbeiter) {
+    if (!confirm(`„${m.name}" aus der Abmelde-Liste entfernen?`)) return;
+    // Wenn er nur über letzteAbrechnungsperiodeId in der Liste war: Feld löschen.
+    // Wenn er über ersetztMitarbeiterId eines anderen MA dort steht, müssen wir
+    // das beim ersetzenden MA aufheben — sonst taucht er sofort wieder auf.
+    const ersetzendeMa = mitarbeiter.find((x) => x.ersetztMitarbeiterId === m.id);
+    if (ersetzendeMa) {
+      if (!confirm(
+        `„${m.name}" wurde von „${ersetzendeMa.name}" als ersetzt markiert. Soll diese Verknüpfung aufgehoben werden?`
+      )) return;
+      await aktualisiereMitarbeiter(ersetzendeMa.id, { ersetztMitarbeiterId: undefined });
+    }
+    await aktualisiereMitarbeiter(m.id, { letzteAbrechnungsperiodeId: undefined });
+  }
+
+  // Kandidaten für die manuelle Auswahl
+  const kandidatenAn = mitarbeiter
+    .filter((m) => !m.nochNichtAngemeldet && !m.abgemeldet)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const kandidatenAb = mitarbeiter
+    .filter(
+      (m) =>
+        !m.abgemeldet &&
+        !ersetzteIds.has(m.id) &&
+        m.letzteAbrechnungsperiodeId !== periode.id
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Anmeldungen */}
+      <div className="bg-white rounded-xl shadow-sm border border-blue-200 overflow-hidden">
+        <div className="bg-blue-50 px-4 py-2 border-b border-blue-200 flex items-center justify-between">
+          <h3 className="font-semibold text-blue-900 text-sm">
+            📝 Anmeldungen ans Lohnbüro
+            <span className="ml-2 font-normal text-xs text-blue-700">
+              ({anmeldungen.length})
+            </span>
+          </h3>
+          {!istGesperrt && (
+            <button
+              onClick={() => setShowAuswahlAn(true)}
+              className="text-xs text-blue-700 hover:text-blue-900 underline"
+            >
+              + MA hinzufügen
+            </button>
+          )}
+        </div>
+        {anmeldungen.length === 0 ? (
+          <div className="px-4 py-6 text-center text-gray-400 text-xs italic">
+            Keine offenen Anmeldungen.
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+              <tr>
+                <th className="px-3 py-1.5 text-left font-medium">Mitarbeiter</th>
+                <th className="px-3 py-1.5 text-left font-medium">Anmeldung zum</th>
+                <th className="px-3 py-1.5 w-8"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {anmeldungen.map((m) => (
+                <tr key={m.id} className="hover:bg-blue-50/40">
+                  <td className="px-3 py-1.5">
+                    <span className="font-medium text-gray-900">{m.name}</span>
+                    <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
+                  </td>
+                  <td className="px-3 py-1.5">
+                    <input
+                      type="date"
+                      defaultValue={effektivesAnmeldedatum(m)}
+                      disabled={istGesperrt}
+                      onBlur={(e) => handleAnmeldedatumAendern(m, e.target.value)}
+                      className="border border-gray-200 rounded px-1.5 py-0.5 text-xs disabled:bg-gray-50 disabled:text-gray-500"
+                    />
+                  </td>
+                  <td className="px-3 py-1.5 text-right">
+                    {!istGesperrt && (
+                      <button
+                        onClick={() => handleVomAnEntfernen(m)}
+                        className="text-gray-400 hover:text-red-600 text-[11px]"
+                        title="Aus der Liste entfernen"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Abmeldungen */}
+      <div className="bg-white rounded-xl shadow-sm border border-red-200 overflow-hidden">
+        <div className="bg-red-50 px-4 py-2 border-b border-red-200 flex items-center justify-between">
+          <h3 className="font-semibold text-red-900 text-sm">
+            🚪 Abmeldungen ans Lohnbüro
+            <span className="ml-2 font-normal text-xs text-red-700">
+              ({abmeldungen.length})
+            </span>
+          </h3>
+          {!istGesperrt && (
+            <button
+              onClick={() => setShowAuswahlAb(true)}
+              className="text-xs text-red-700 hover:text-red-900 underline"
+            >
+              + MA hinzufügen
+            </button>
+          )}
+        </div>
+        {abmeldungen.length === 0 ? (
+          <div className="px-4 py-6 text-center text-gray-400 text-xs italic">
+            Keine offenen Abmeldungen.
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+              <tr>
+                <th className="px-3 py-1.5 text-left font-medium">Mitarbeiter</th>
+                <th className="px-3 py-1.5 text-left font-medium">Abmeldung zum</th>
+                <th className="px-3 py-1.5 text-left font-medium">Ersetzt durch</th>
+                <th className="px-3 py-1.5 w-8"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {abmeldungen.map((m) => {
+                const ersetzendeMa = mitarbeiter.find((x) => x.ersetztMitarbeiterId === m.id);
+                return (
+                  <tr key={m.id} className="hover:bg-red-50/40">
+                    <td className="px-3 py-1.5">
+                      <span className="font-medium text-gray-900">{m.name}</span>
+                      <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <input
+                        type="date"
+                        defaultValue={effektivesAbmeldedatum(m)}
+                        disabled={istGesperrt}
+                        onBlur={(e) => handleAbmeldedatumAendern(m, e.target.value)}
+                        className="border border-gray-200 rounded px-1.5 py-0.5 text-xs disabled:bg-gray-50 disabled:text-gray-500"
+                      />
+                    </td>
+                    <td className="px-3 py-1.5 text-gray-700">
+                      {ersetzendeMa ? (
+                        <span>
+                          {ersetzendeMa.name}
+                          <span className="ml-1 text-gray-400 text-[10px]">({ersetzendeMa.nummer})</span>
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      {!istGesperrt && (
+                        <button
+                          onClick={() => handleVomAbEntfernen(m)}
+                          className="text-gray-400 hover:text-red-600 text-[11px]"
+                          title="Aus der Liste entfernen"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* MA-Auswahl-Modal: Anmeldung */}
+      {showAuswahlAn && (
+        <MaAuswahlModal
+          titel="Mitarbeiter zur Anmeldung hinzufügen"
+          mitarbeiter={kandidatenAn}
+          onClose={() => setShowAuswahlAn(false)}
+          onSelect={handleAuswahlAn}
+        />
+      )}
+      {showAuswahlAb && (
+        <MaAuswahlModal
+          titel="Mitarbeiter zur Abmeldung hinzufügen"
+          mitarbeiter={kandidatenAb}
+          onClose={() => setShowAuswahlAb(false)}
+          onSelect={handleAuswahlAb}
+        />
+      )}
+    </div>
+  );
+}
+
+function MaAuswahlModal({
+  titel,
+  mitarbeiter,
+  onClose,
+  onSelect,
+}: {
+  titel: string;
+  mitarbeiter: Mitarbeiter[];
+  onClose: () => void;
+  onSelect: (m: Mitarbeiter) => void;
+}) {
+  const [filter, setFilter] = useState('');
+  const gefiltert = mitarbeiter.filter((m) =>
+    !filter ||
+    m.name.toLowerCase().includes(filter.toLowerCase()) ||
+    m.nummer.includes(filter)
+  );
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md max-h-[80vh] flex flex-col">
+        <div className="px-4 py-3 border-b flex items-center justify-between">
+          <h3 className="font-semibold text-gray-900 text-sm">{titel}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg">×</button>
+        </div>
+        <div className="p-3 border-b">
+          <input
+            type="text"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Name oder Nummer suchen..."
+            autoFocus
+            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {gefiltert.length === 0 ? (
+            <div className="text-center py-6 text-gray-400 text-sm">Keine passenden Mitarbeiter.</div>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {gefiltert.map((m) => (
+                <li key={m.id}>
+                  <button
+                    onClick={() => onSelect(m)}
+                    className="w-full text-left px-4 py-2 hover:bg-blue-50 flex items-center justify-between"
+                  >
+                    <span>
+                      <span className="font-medium text-gray-900">{m.name}</span>
+                      <span className="ml-2 text-xs text-gray-400">({m.nummer})</span>
+                    </span>
+                    <span className="text-blue-600 text-xs">›</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
