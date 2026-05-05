@@ -217,7 +217,7 @@ export async function erstelleTeilgebiet(
 ): Promise<string> {
   const ts = now();
   const ref = await addDoc(collection(db, 'teilgebiete'), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
     erstelltAm: ts,
     aktualisiertAm: ts,
   });
@@ -229,7 +229,7 @@ export async function aktualisiereTeilgebiet(
   data: Partial<Teilgebiet>
 ): Promise<void> {
   await updateDoc(doc(db, 'teilgebiete', id), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
     aktualisiertAm: now(),
   });
 }
