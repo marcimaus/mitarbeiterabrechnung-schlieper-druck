@@ -44,6 +44,7 @@ function ZusammentragenInhalt() {
   const [suche, setSuche] = useState('');
   const [filterTourId, setFilterTourId] = useState<string>('');
   const [filterStatus, setFilterStatus] = useState<'' | 'zugewiesen' | 'offen'>('');
+  const [filterMaId, setFilterMaId] = useState<string>('');
 
   // ---- Mehrfachauswahl ----
   const [auswahlIds, setAuswahlIds] = useState<Set<string>>(new Set());
@@ -114,6 +115,12 @@ function ZusammentragenInhalt() {
       const zugewiesen = !!tgMap[tg.id];
       if (filterStatus === 'zugewiesen' && !zugewiesen) return false;
       if (filterStatus === 'offen' && zugewiesen) return false;
+    }
+    // Filter „Zusammenträger": nur Teilgebiete in dieser Ausgabe, die dem
+    // gewählten MA zugeordnet sind.
+    if (filterMaId) {
+      const e = tgMap[tg.id];
+      if (!e || e.mitarbeiterId !== filterMaId) return false;
     }
     return true;
   });
@@ -390,10 +397,23 @@ function ZusammentragenInhalt() {
                 <option value="zugewiesen">Zugewiesen</option>
                 <option value="offen">Offen</option>
               </select>
-              {(suche || filterTourId || filterStatus) && (
+              <select
+                value={filterMaId}
+                onChange={(e) => setFilterMaId(e.target.value)}
+                className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                title="Nur Teilgebiete anzeigen, die dem gewählten Zusammenträger in dieser Ausgabe zugeordnet sind"
+              >
+                <option value="">— alle Zusammenträger —</option>
+                {[...zusammentraeger]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+              </select>
+              {(suche || filterTourId || filterStatus || filterMaId) && (
                 <button
                   type="button"
-                  onClick={() => { setSuche(''); setFilterTourId(''); setFilterStatus(''); }}
+                  onClick={() => { setSuche(''); setFilterTourId(''); setFilterStatus(''); setFilterMaId(''); }}
                   className="text-xs text-gray-500 hover:text-gray-700 underline"
                 >
                   Filter zurücksetzen
