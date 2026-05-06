@@ -95,7 +95,8 @@ function ZusammentragenInhalt() {
 
   const aktiveTeilgebiete = teilgebiete
     .filter((tg) => tg.isActive)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    // Natural Sort: Uslar1 < Uslar2 < … < Uslar10
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
 
   // ---- Filterung ----
   const sucheNorm = suche.trim().toLowerCase();

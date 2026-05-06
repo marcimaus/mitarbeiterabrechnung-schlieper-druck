@@ -708,10 +708,10 @@ function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
     });
   }
 
-  // Teilgebiete nach Tour gruppieren, alphabetisch sortiert
+  // Teilgebiete nach Tour gruppieren, natürlich sortiert (Uslar1 < Uslar2 < … < Uslar10)
   const aktiveTeilgebiete = teilgebiete
     .filter((tg) => tg.isActive)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
 
   // Gruppen aufbauen: zuerst bekannte Touren (alphabetisch), dann "Ohne Tour"
   const tourGruppen = touren
@@ -1575,11 +1575,11 @@ function TeilgebietBeilagenUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
   const aktiveTeilgebiete = teilgebiete
     .filter((tg) => tg.isActive)
     .sort((a, b) => {
-      // Erst nach Tour, dann Name
+      // Erst nach Tour, dann TG-Name (Natural Sort: Uslar1 < Uslar2 < … < Uslar10)
       const ta = touren.find((t) => t.id === a.tourId)?.name ?? 'zzz';
       const tb = touren.find((t) => t.id === b.tourId)?.name ?? 'zzz';
-      if (ta !== tb) return ta.localeCompare(tb);
-      return a.name.localeCompare(b.name);
+      if (ta !== tb) return ta.localeCompare(tb, 'de', { numeric: true });
+      return a.name.localeCompare(b.name, 'de', { numeric: true });
     });
 
   const tourFarbe = (tourId: string | null): string => {
