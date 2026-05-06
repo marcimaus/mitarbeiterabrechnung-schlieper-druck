@@ -1039,19 +1039,27 @@ function BeilageForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [tourFilterIds, setTourFilterIds] = useState<Set<string>>(new Set());
-  const [plzFilter, setPlzFilter] = useState('');
+  const [plzFilterSet, setPlzFilterSet] = useState<Set<string>>(new Set());
 
   const aktiveTeilgebiete = teilgebiete.filter((t) => t.isActive);
-  const plzFilterNorm = plzFilter.trim();
+  // Verfügbare PLZ aus aktiven TG, eindeutig + sortiert
+  const verfuegbarePlz = Array.from(
+    new Set(aktiveTeilgebiete.map((t) => t.plz).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, 'de', { numeric: true }));
   const gefilterteTG = aktiveTeilgebiete.filter((t) => {
     if (tourFilterIds.size > 0 && (!t.tourId || !tourFilterIds.has(t.tourId))) return false;
-    if (plzFilterNorm) {
-      // Mehrere PLZ-Präfixe durch Komma/Leerzeichen erlaubt: "37170, 372"
-      const parts = plzFilterNorm.split(/[\s,;]+/).filter(Boolean);
-      if (!parts.some((p) => t.plz.startsWith(p))) return false;
-    }
+    if (plzFilterSet.size > 0 && !plzFilterSet.has(t.plz)) return false;
     return true;
   });
+
+  function togglePlzFilter(plz: string) {
+    setPlzFilterSet((prev) => {
+      const n = new Set(prev);
+      if (n.has(plz)) n.delete(plz);
+      else n.add(plz);
+      return n;
+    });
+  }
 
   function toggleTourFilter(tourId: string) {
     setTourFilterIds((prev) => {
@@ -1237,25 +1245,42 @@ function BeilageForm({
             </span>
           )}
         </div>
-        {/* PLZ-Filter (Präfix-Suche, Mehrfach durch Komma) */}
-        <div className="flex items-center gap-2 mb-2">
-          <label className="text-xs text-gray-500 shrink-0">Nach PLZ filtern:</label>
-          <input
-            type="text"
-            value={plzFilter}
-            onChange={(e) => setPlzFilter(e.target.value)}
-            placeholder="z. B. 37170 oder 372, 373"
-            className="text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 w-48"
-            title="Präfix-Suche; mehrere durch Komma"
-          />
-          {plzFilter && (
-            <button
-              type="button"
-              onClick={() => setPlzFilter('')}
-              className="text-xs text-gray-400 hover:text-gray-600 underline"
-            >
-              zurücksetzen
-            </button>
+        {/* PLZ-Filter: Mehrfachauswahl der verfügbaren PLZ als Chips */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <span className="text-xs text-gray-500 mr-1">Nach PLZ filtern:</span>
+          <button
+            type="button"
+            onClick={() => setPlzFilterSet(new Set())}
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              plzFilterSet.size === 0
+                ? 'bg-gray-800 text-white border-gray-800'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+            }`}
+          >
+            Alle
+          </button>
+          {verfuegbarePlz.map((plz) => {
+            const active = plzFilterSet.has(plz);
+            return (
+              <button
+                key={plz}
+                type="button"
+                onClick={() => togglePlzFilter(plz)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                }`}
+                title={active ? 'PLZ entfernen' : 'PLZ hinzufügen'}
+              >
+                {active && '✓ '}{plz}
+              </button>
+            );
+          })}
+          {plzFilterSet.size > 0 && (
+            <span className="text-xs text-gray-400 ml-1">
+              ({plzFilterSet.size} PLZ · {gefilterteTG.length} TG)
+            </span>
           )}
         </div>
         <div className="border border-gray-200 rounded-lg p-3 max-h-48 overflow-y-auto grid grid-cols-3 gap-1">
