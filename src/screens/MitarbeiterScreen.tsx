@@ -11,6 +11,9 @@ import {
   ladeEinsaetzeFuerMitarbeiter,
   ladeArbeitszeiten,
   ladeFahrten,
+  erstelleLohnkontoBuchung,
+  aktualisiereLohnkontoBuchung,
+  loescheLohnkontoBuchung,
 } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
@@ -20,7 +23,7 @@ import { berechneAlter } from '../lib/berechnung';
 import { nameMitFestgehaltSymbol } from '../utils';
 import { eur } from '../lib/abrechnungslogik';
 
-type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'anmeldung';
+type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'anmeldung' | 'lohnkonto';
 
 const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
@@ -731,6 +734,7 @@ function MitarbeiterForm({
     { id: 'freigaben', label: 'Gebiets-Freigaben', count: freigaben.length },
     { id: 'boni', label: 'Teilgebiet-Boni', count: boni.length },
     { id: 'anmeldung', label: 'Anmeldung / Abmeldung' },
+    ...(isAdmin && initial ? [{ id: 'lohnkonto' as const, label: 'Lohnkonto' }] : []),
   ];
 
   return (
@@ -1735,6 +1739,11 @@ function MitarbeiterForm({
         </div>
       )}
 
+      {/* ---- Tab: Lohnkonto (Admin-only) ---- */}
+      {tab === 'lohnkonto' && isAdmin && initial && (
+        <LohnkontoTab mitarbeiter={initial} />
+      )}
+
       {/* Aktionen — immer sichtbar */}
       {error && <p className="text-red-600 text-sm mt-4">{error}</p>}
       <div className="flex items-center justify-between pt-5 mt-4 border-t border-gray-100">
@@ -2112,6 +2121,255 @@ function AustraegerMeldungsLink({
           <p className="text-xs text-gray-400 mt-3 text-center">
             QR-Code auf Lieferschein drucken — Austräger scannt und erfasst seine Zeiten direkt.
           </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Lohnkonto-Tab (Admin-only) — Verlauf + freie Korrektur-Buchungen
+// ============================================================
+
+function LohnkontoTab({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
+  const { lohnkontoBuchungen, abrechnungsperioden } = useApp();
+  const [neuArt, setNeuArt] = useState<'verschiebung' | 'verrechnung'>('verschiebung');
+  const [neuBetrag, setNeuBetrag] = useState('');
+  const [neuKommentar, setNeuKommentar] = useState('');
+  const [neuPeriodeId, setNeuPeriodeId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const periodenSorted = [...abrechnungsperioden].sort((a, b) =>
+    a.jahr !== b.jahr ? b.jahr - a.jahr : b.monat - a.monat
+  );
+  const offene = periodenSorted.filter((p) => p.status === 'offen');
+  const defaultPeriodeId =
+    offene[offene.length - 1]?.id ?? periodenSorted[0]?.id ?? '';
+
+  const buchungenMa = lohnkontoBuchungen.filter((b) => b.mitarbeiterId === mitarbeiter.id);
+  const periodeMap = new Map(abrechnungsperioden.map((p) => [p.id, p]));
+  const sortiert = [...buchungenMa].sort((a, b) => {
+    const pa = periodeMap.get(a.abrechnungsperiodeId);
+    const pb = periodeMap.get(b.abrechnungsperiodeId);
+    if (pa && pb) {
+      if (pa.jahr !== pb.jahr) return pa.jahr - pb.jahr;
+      if (pa.monat !== pb.monat) return pa.monat - pb.monat;
+    }
+    return a.erstelltAm - b.erstelltAm;
+  });
+  let saldo = 0;
+  const zeilen = sortiert.map((b) => {
+    saldo += b.art === 'verschiebung' ? b.betragEur : -b.betragEur;
+    return { buchung: b, periode: periodeMap.get(b.abrechnungsperiodeId), saldoNach: saldo };
+  });
+  const aktuellerSaldo = zeilen.length > 0 ? zeilen[zeilen.length - 1].saldoNach : 0;
+
+  async function handleNeu() {
+    setError('');
+    const betrag = parseFloat(neuBetrag.replace(',', '.'));
+    if (!Number.isFinite(betrag) || betrag <= 0) {
+      setError('Betrag muss > 0 sein.');
+      return;
+    }
+    const periodeId = neuPeriodeId || defaultPeriodeId;
+    if (!periodeId) {
+      setError('Keine Abrechnungsperiode vorhanden. Bitte zuerst anlegen.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await erstelleLohnkontoBuchung({
+        mitarbeiterId: mitarbeiter.id,
+        abrechnungsperiodeId: periodeId,
+        art: neuArt,
+        betragEur: betrag,
+        kommentar: neuKommentar.trim() || undefined,
+      });
+      setNeuBetrag('');
+      setNeuKommentar('');
+    } catch (e) {
+      console.error(e);
+      setError('Fehler beim Speichern.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleLoeschen(id: string) {
+    if (!confirm('Diese Buchung wirklich endgültig löschen?')) return;
+    await loescheLohnkontoBuchung(id);
+  }
+
+  async function handleKommentarBearbeiten(id: string, alt: string | undefined) {
+    const neu = prompt('Kommentar bearbeiten:', alt ?? '');
+    if (neu === null) return;
+    await aktualisiereLohnkontoBuchung(id, { kommentar: neu.trim() || undefined });
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <div className="rounded-lg border border-blue-100 bg-blue-50 p-3">
+          <div className="text-xs text-blue-700 mb-0.5">Buchungen</div>
+          <div className="text-base font-bold text-blue-900">{zeilen.length}</div>
+        </div>
+        <div
+          className={`rounded-lg border p-3 ${
+            aktuellerSaldo > 0
+              ? 'bg-amber-100 border-amber-300 text-amber-900'
+              : aktuellerSaldo < 0
+                ? 'bg-red-100 border-red-300 text-red-900'
+                : 'bg-gray-50 border-gray-200 text-gray-700'
+          }`}
+        >
+          <div className="text-xs opacity-70 mb-0.5">Aktueller Saldo</div>
+          <div className="text-lg font-bold">{eur(aktuellerSaldo)}</div>
+        </div>
+      </div>
+
+      <div className="text-xs text-gray-500 italic">
+        Lohnkonto-Buchungen werden nicht an das Lohnbüro übermittelt. Positiver Saldo
+        = Guthaben des Mitarbeiters, das in Folgemonaten verrechnet werden kann.
+      </div>
+
+      {/* Neuanlage */}
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+        <h4 className="text-sm font-semibold text-gray-800">Neue Buchung erfassen</h4>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Art</label>
+            <select
+              value={neuArt}
+              onChange={(e) => setNeuArt(e.target.value as 'verschiebung' | 'verrechnung')}
+              className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+            >
+              <option value="verschiebung">→ Lohnkonto (zurücklegen)</option>
+              <option value="verrechnung">← Lohnkonto (gutschreiben)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Betrag (€) *</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={neuBetrag}
+              onChange={(e) => setNeuBetrag(e.target.value)}
+              placeholder="0,00"
+              className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Wirksam in Periode</label>
+            <select
+              value={neuPeriodeId || defaultPeriodeId}
+              onChange={(e) => setNeuPeriodeId(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+            >
+              {periodenSorted.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.bezeichnung} {p.status === 'abgeschlossen' ? '🔒' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Kommentar (optional)</label>
+            <input
+              type="text"
+              value={neuKommentar}
+              onChange={(e) => setNeuKommentar(e.target.value)}
+              placeholder="z. B. Korrektur Vormonat"
+              className="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+            />
+          </div>
+        </div>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleNeu}
+            disabled={saving}
+            className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? '…' : 'Buchung speichern'}
+          </button>
+        </div>
+      </div>
+
+      {/* Verlauf */}
+      {zeilen.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 py-10 text-center text-sm text-gray-500">
+          Keine Lohnkonto-Buchungen für diesen Mitarbeiter vorhanden.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Periode</th>
+                <th className="px-3 py-2 text-left font-medium">Art</th>
+                <th className="px-3 py-2 text-right font-medium">Betrag</th>
+                <th className="px-3 py-2 text-right font-medium">Saldo</th>
+                <th className="px-3 py-2 text-left font-medium">Kommentar</th>
+                <th className="px-3 py-2 text-right font-medium">Datum</th>
+                <th className="px-3 py-2 text-right font-medium">Aktion</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {zeilen.map(({ buchung, periode, saldoNach }) => (
+                <tr key={buchung.id} className="hover:bg-gray-50">
+                  <td className="px-3 py-2 font-medium text-gray-800">
+                    {periode?.bezeichnung ?? <span className="text-gray-400 italic">—</span>}
+                  </td>
+                  <td className="px-3 py-2">
+                    {buchung.art === 'verschiebung' ? (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-amber-100 text-amber-800 border border-amber-200">
+                        → Lohnkonto
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-green-100 text-green-800 border border-green-200">
+                        ← gutschreiben
+                      </span>
+                    )}
+                  </td>
+                  <td className={`px-3 py-2 text-right font-semibold ${
+                    buchung.art === 'verschiebung' ? 'text-amber-700' : 'text-green-700'
+                  }`}>
+                    {buchung.art === 'verschiebung' ? '−' : '+'}{eur(buchung.betragEur)}
+                  </td>
+                  <td className={`px-3 py-2 text-right font-medium ${
+                    saldoNach > 0 ? 'text-amber-800' : saldoNach < 0 ? 'text-red-700' : 'text-gray-600'
+                  }`}>{eur(saldoNach)}</td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {buchung.kommentar ?? <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="px-3 py-2 text-right text-xs text-gray-500">
+                    {new Date(buchung.erstelltAm).toLocaleDateString('de-DE')}
+                  </td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={() => handleKommentarBearbeiten(buchung.id, buchung.kommentar)}
+                      className="text-xs text-blue-600 hover:text-blue-800 mr-2"
+                      title="Kommentar bearbeiten"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleLoeschen(buchung.id)}
+                      className="text-xs text-red-500 hover:text-red-700"
+                      title="Buchung löschen"
+                    >
+                      ✕
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>
