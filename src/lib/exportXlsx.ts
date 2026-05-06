@@ -357,29 +357,36 @@ export async function exportiereLohnuebermittlung(
     .map((e) => e.mitarbeiter)
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
 
-  // Mitarbeiter, die in dieser Periode ABgemeldet wurden (oder mit
-  // Abmelde-Datum in dieser Periode).
-  const inPeriodeKws = new Set(periode.kalenderwochen);
+  // Abzumeldende MA — analog zum Abschluss-Screen:
+  //   * MAs, die durch ersetztMitarbeiterId von einem anderen MA abgelöst sind
+  //   * MAs mit letzteAbrechnungsperiodeId === periode.id (manuell zur
+  //     Abmelde-Liste hinzugefügt)
+  //   * Plus bereits abgemeldete mit Datum in dieser Periode (z. B. nach
+  //     erneutem Export einer abgeschlossenen Periode).
+  const ersetzteIds = new Set<string>();
+  for (const m of alleMitarbeiter) {
+    if (m.ersetztMitarbeiterId) ersetzteIds.add(m.ersetztMitarbeiterId);
+  }
+  const periodenEndeIso = (() => {
+    const last = new Date(periode.jahr, periode.monat, 0);
+    const yyyy = last.getFullYear();
+    const mm = (last.getMonth() + 1).toString().padStart(2, '0');
+    const dd = last.getDate().toString().padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  })();
   const istInPeriode = (datumIso?: string) => {
     if (!datumIso) return false;
     const d = new Date(datumIso);
     if (isNaN(d.getTime())) return false;
-    if (d.getFullYear() !== periode.jahr) return false;
-    // Monat: 0-indexed → +1
-    return d.getMonth() + 1 === periode.monat;
+    return d.getFullYear() === periode.jahr && d.getMonth() + 1 === periode.monat;
   };
+  const effAbmeldedatum = (m: Mitarbeiter) => m.abmeldungUebermittlungDatum ?? periodenEndeIso;
   const abzumelden = alleMitarbeiter
-    .filter((m) => m.abgemeldet && istInPeriode(m.abmeldungUebermittlungDatum))
+    .filter((m) => {
+      if (m.abgemeldet) return istInPeriode(m.abmeldungUebermittlungDatum);
+      return ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === periode.id;
+    })
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
-  // Fallback: wenn abmeldungUebermittlungDatum nicht gesetzt aber MA nicht
-  // mehr aktiv und in dieser Periode noch Bewegung hatte → trotzdem listen.
-  const ergebnisIds = new Set(ergebnisse.map((e) => e.mitarbeiter.id));
-  for (const m of alleMitarbeiter) {
-    if (m.abgemeldet && !abzumelden.includes(m) && ergebnisIds.has(m.id) && !m.abmeldungUebermittlungDatum) {
-      abzumelden.push(m);
-    }
-  }
-  void inPeriodeKws;
 
   let blockRow = sumRow + 3;
   if (anzumelden.length > 0) {
@@ -420,12 +427,11 @@ export async function exportiereLohnuebermittlung(
     };
     blockRow++;
     for (const m of abzumelden) {
+      const datumIso = effAbmeldedatum(m);
       ws.getRow(blockRow).values = [
         m.nummer,
         m.name,
-        m.abmeldungUebermittlungDatum
-          ? formatierDatum(new Date(m.abmeldungUebermittlungDatum).getTime())
-          : '— (Datum unbekannt)',
+        formatierDatum(new Date(datumIso).getTime()),
       ];
       blockRow++;
     }
