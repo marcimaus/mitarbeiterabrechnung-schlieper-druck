@@ -55,6 +55,20 @@ function stripUndef(obj: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * Wie `stripUndef`, aber `undefined`-Werte werden in `deleteField()`-Sentinels
+ * übersetzt. Verwenden, wenn der Aufrufer ausdrücklich Felder löschen können
+ * soll (z. B. Formulare, in denen ein Eingabefeld geleert wurde — vorher
+ * gespeicherter Wert muss verschwinden, nicht stehen bleiben).
+ */
+function undefAsDelete(obj: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = v === undefined ? deleteField() : v;
+  }
+  return out;
+}
+
+/**
  * Rekursive Variante: entfernt undefined an beliebiger Tiefe (in Objekten und
  * innerhalb von Array-Elementen). Wird benötigt für komplexe Snapshots wie
  * `abrechnungSnapshot.ergebnisse`, in denen viele optionale Felder eingebettet
@@ -146,8 +160,11 @@ export async function aktualisiereMitarbeiter(
   id: string,
   data: Partial<Mitarbeiter>
 ): Promise<void> {
+  // undefined → deleteField(), damit geleerte Eingabefelder ihren persistierten
+  // Wert in Firestore tatsächlich verlieren (sonst bliebe z. B. ein leerer
+  // Tätigkeitsbonus stehen, weil stripUndef den Schlüssel still ignoriert).
   await updateDoc(doc(db, 'mitarbeiter', id), {
-    ...stripUndef(data as Record<string, unknown>),
+    ...undefAsDelete(data as Record<string, unknown>),
     aktualisiertAm: now(),
   });
 }
@@ -519,23 +536,67 @@ export async function ladeZusammentragenEinsaetze(ausgabeId: string): Promise<Zu
   const snap = await getDocs(
     query(collection(db, 'zusammentragezeiten'), where('ausgabeId', '==', ausgabeId))
   );
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as ZusammentragenEinsatz));
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as ZusammentragenEinsatz));
+
+  // Self-Healing: Bei regulärem Zusammentragen darf nur EIN MA pro TG existieren.
+  // Frühere Versionen haben beim MA-Wechsel den alten Eintrag stehen lassen, wodurch
+  // sich Doppel-Einträge ansammeln und in der Abrechnung doppelt verrechnet würden.
+  // Pro (Ausgabe, TG): jüngsten Eintrag behalten, alte löschen.
+  const buckets = new Map<string, ZusammentragenEinsatz[]>();
+  for (const e of list) {
+    if (e.istVorarbeit) continue;
+    const key = e.teilgebietId;
+    const arr = buckets.get(key) ?? [];
+    arr.push(e);
+    buckets.set(key, arr);
+  }
+  const verwaiste: string[] = [];
+  for (const arr of buckets.values()) {
+    if (arr.length <= 1) continue;
+    arr.sort((a, b) => (b.aktualisiertAm ?? b.erstelltAm ?? 0) - (a.aktualisiertAm ?? a.erstelltAm ?? 0));
+    for (const e of arr.slice(1)) verwaiste.push(e.id);
+  }
+  if (verwaiste.length > 0) {
+    await Promise.all(verwaiste.map((id) => deleteDoc(doc(db, 'zusammentragezeiten', id))));
+    return list.filter((e) => !verwaiste.includes(e.id));
+  }
+  return list;
 }
 
 export async function setzeZusammentragenEinsatz(
   data: Omit<ZusammentragenEinsatz, 'id' | 'erstelltAm' | 'aktualisiertAm'>
 ): Promise<string> {
-  // Upsert per ausgabeId + teilgebietId + mitarbeiterId
-  // (Vorarbeit: mehrere Mitarbeiter möglich pro teilgebietId='__vorarbeit__')
-  const q = query(
+  // Reguläres Zusammentragen: nur EIN MA pro (ausgabe, TG). Beim MA-Wechsel
+  // alle bestehenden Einsätze für dasselbe TG aufräumen.
+  // Vorarbeit (teilgebietId='__vorarbeit__'): mehrere MA erlaubt — nur Eintrag
+  // desselben MA aktualisieren.
+  const ts = now();
+  const payload = { ...stripUndef(data as Record<string, unknown>), aktualisiertAm: ts };
+
+  if (!data.istVorarbeit) {
+    const allTg = await getDocs(query(
+      collection(db, 'zusammentragezeiten'),
+      where('ausgabeId', '==', data.ausgabeId),
+      where('teilgebietId', '==', data.teilgebietId)
+    ));
+    const fremdeMa = allTg.docs.filter((d) => (d.data() as ZusammentragenEinsatz).mitarbeiterId !== data.mitarbeiterId);
+    await Promise.all(fremdeMa.map((d) => deleteDoc(doc(db, 'zusammentragezeiten', d.id))));
+
+    const eigene = allTg.docs.find((d) => (d.data() as ZusammentragenEinsatz).mitarbeiterId === data.mitarbeiterId);
+    if (eigene) {
+      await updateDoc(doc(db, 'zusammentragezeiten', eigene.id), payload);
+      return eigene.id;
+    }
+    const ref = await addDoc(collection(db, 'zusammentragezeiten'), { ...payload, erstelltAm: ts });
+    return ref.id;
+  }
+
+  const snap = await getDocs(query(
     collection(db, 'zusammentragezeiten'),
     where('ausgabeId', '==', data.ausgabeId),
     where('teilgebietId', '==', data.teilgebietId),
     where('mitarbeiterId', '==', data.mitarbeiterId)
-  );
-  const snap = await getDocs(q);
-  const ts = now();
-  const payload = { ...stripUndef(data as Record<string, unknown>), aktualisiertAm: ts };
+  ));
   if (!snap.empty) {
     const existingId = snap.docs[0].id;
     await updateDoc(doc(db, 'zusammentragezeiten', existingId), payload);
@@ -579,8 +640,10 @@ export async function aktualisiereArbeitszeit(
   id: string,
   data: Partial<Arbeitszeit>
 ): Promise<void> {
+  // undefined → deleteField(), damit z. B. ein zurückgenommenes
+  // „nichtBeruecksichtigen"-Flag tatsächlich aus dem Dokument verschwindet.
   await updateDoc(doc(db, 'arbeitszeiten', id), {
-    ...stripUndef(data as Record<string, unknown>),
+    ...undefAsDelete(data as Record<string, unknown>),
     aktualisiertAm: now(),
   });
 }
