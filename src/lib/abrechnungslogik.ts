@@ -685,7 +685,18 @@ export function berechneAbrechnung(
       (s, a) => s + berechneNettoMinuten(a), 0
     );
     const zeitStunden = zeitMinuten / 60;
-    const zeitLohn = zeitStunden * stundenlohn;
+    // Stundenlohn je Arbeitszeit-Typ:
+    //  - vorarbeit / zusammentragen → Zusammentragen-Tarif
+    //  - austragen / sonstige      → Austragen-Tarif (= „normaler" Stundenlohn)
+    const stundenlohnZusammen = ermittleStundenlohnZusammen(ma, effParams);
+    const zeitLohn = maArbeitszeiten.reduce((s, a) => {
+      const stdH = berechneNettoMinuten(a) / 60;
+      const lohnsatz =
+        a.typ === 'vorarbeit' || a.typ === 'zusammentragen'
+          ? stundenlohnZusammen
+          : stundenlohn;
+      return s + stdH * lohnsatz;
+    }, 0);
 
     // --- Gesamt ---
     const gesamt =
