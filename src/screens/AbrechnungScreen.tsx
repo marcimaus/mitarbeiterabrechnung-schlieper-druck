@@ -1,9 +1,9 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent, type ReactElement } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
 import { ladePeriodeData, berechneAbrechnung, eur, stdMin } from '../lib/abrechnungslogik';
-import { exportiereAbrechnung } from '../lib/exportXlsx';
+import { exportiereAbrechnung, exportiereLohnuebermittlung } from '../lib/exportXlsx';
 import {
   schliessePeriodeAb,
   oeffnePeriodeWieder,
@@ -124,6 +124,18 @@ function AbrechnungInhalt() {
     setExportierend(true);
     try {
       await exportiereAbrechnung(selectedPeriode, ergebnisse);
+    } catch (e: any) {
+      alert('Export fehlgeschlagen: ' + (e.message ?? e));
+    } finally {
+      setExportierend(false);
+    }
+  }
+
+  async function handleExportLohnuebermittlung() {
+    if (!selectedPeriode || !ergebnisse) return;
+    setExportierend(true);
+    try {
+      await exportiereLohnuebermittlung(selectedPeriode, ergebnisse, mitarbeiter);
     } catch (e: any) {
       alert('Export fehlgeschlagen: ' + (e.message ?? e));
     } finally {
@@ -259,15 +271,19 @@ function AbrechnungInhalt() {
     ?.filter((e) => e.mitarbeiter.sozialversicherungsBefreit)
     .reduce((s, e) => s + (e.bruttoLohnbuero - e.vorschussSumme), 0) ?? 0;
 
-  // Minijob-Grenze-Überschreitungen — auf Basis dessen, was an Lohnbüro geht.
+  // Minijob-Grenze-Überschreitungen — auf Basis des sozialversicherungspflichtigen
+  // Lohns OHNE Fahrtkosten (Aufwandsersatz, steuerfrei). Warnung erst bei echtem
+  // Überschreiten (gleicher Betrag = ok).
   const minijobGrenze = params?.minijobGrenzeEurProMonat ?? 556;
+  const lohnOhneFaKo = (e: MitarbeiterAbrechnung) => e.bruttoLohnbuero - (e.fahrtkostenGesamt ?? 0);
   const minijobUeberschreiter = ergebnisse
-    ?.filter((e) => e.mitarbeiter.istMinijob && e.bruttoLohnbuero > minijobGrenze) ?? [];
+    ?.filter((e) => e.mitarbeiter.istMinijob && lohnOhneFaKo(e) > minijobGrenze) ?? [];
 
   // Individuelle Lohngrenze (z. B. weitere Minijobs, vertragliche Höchstgrenze)
+  // — ebenfalls ohne Fahrtkosten.
   const individuelleLohngrenzeUeberschreiter = ergebnisse?.filter((e) => {
     const grenze = e.mitarbeiter.lohngrenzeIndividuellEur ?? 0;
-    return grenze > 0 && e.bruttoLohnbuero > grenze;
+    return grenze > 0 && lohnOhneFaKo(e) > grenze;
   }) ?? [];
 
   // Noch nicht angemeldete MAs, die in dieser Abrechnung Beträge bekommen
@@ -342,6 +358,14 @@ function AbrechnungInhalt() {
                 className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
               >
                 {exportierend ? 'Exportiere...' : '↓ Excel-Export'}
+              </button>
+              <button
+                onClick={handleExportLohnuebermittlung}
+                disabled={exportierend}
+                className="bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-800 transition-colors disabled:opacity-50"
+                title="Schlanker Excel-Export für das Lohnbüro: nur Vorschuss, Bruttolohn, Fahrtkosten + An-/Abmeldungen"
+              >
+                {exportierend ? 'Exportiere...' : '✉ Lohnübermittlung'}
               </button>
 
               {selectedPeriode?.status === 'offen' && (
@@ -558,20 +582,23 @@ function AbrechnungInhalt() {
                 ⚠ Minijob-Grenze ({eur(minijobGrenze)} / Monat) überschritten
               </div>
               <ul className="list-disc list-inside space-y-0.5 text-amber-800">
-                {minijobUeberschreiter.map((e) => (
-                  <li key={e.mitarbeiter.id}>
-                    <span className="font-medium">{e.mitarbeiter.name}</span>
-                    {' '}({e.mitarbeiter.nummer}) — Lohnbüro-Brutto {eur(e.bruttoLohnbuero)}
-                    {' · '}
-                    <span className="text-red-700 font-medium">
-                      +{eur(e.bruttoLohnbuero - minijobGrenze)} über der Grenze
-                    </span>
-                    {' — '}
-                    <span className="text-amber-700 italic">
-                      Tipp: Differenz auf Lohnkonto verschieben (Detailansicht)
-                    </span>
-                  </li>
-                ))}
+                {minijobUeberschreiter.map((e) => {
+                  const lohn = lohnOhneFaKo(e);
+                  return (
+                    <li key={e.mitarbeiter.id}>
+                      <span className="font-medium">{e.mitarbeiter.name}</span>
+                      {' '}({e.mitarbeiter.nummer}) — Lohn ohne FaKo {eur(lohn)}
+                      {' · '}
+                      <span className="text-red-700 font-medium">
+                        +{eur(lohn - minijobGrenze)} über der Grenze
+                      </span>
+                      {' — '}
+                      <span className="text-amber-700 italic">
+                        Tipp: Differenz auf Lohnkonto verschieben (Detailansicht)
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
@@ -586,13 +613,14 @@ function AbrechnungInhalt() {
                 {individuelleLohngrenzeUeberschreiter.map((e) => {
                   const grenze = e.mitarbeiter.lohngrenzeIndividuellEur ?? 0;
                   const kommentar = e.mitarbeiter.lohngrenzeIndividuellKommentar;
+                  const lohn = lohnOhneFaKo(e);
                   return (
                     <li key={e.mitarbeiter.id}>
                       <span className="font-medium">{e.mitarbeiter.name}</span>
-                      {' '}({e.mitarbeiter.nummer}) — Grenze {eur(grenze)} · Lohnbüro-Brutto {eur(e.bruttoLohnbuero)}
+                      {' '}({e.mitarbeiter.nummer}) — Grenze {eur(grenze)} · Lohn ohne FaKo {eur(lohn)}
                       {' · '}
                       <span className="text-red-700 font-medium">
-                        +{eur(e.bruttoLohnbuero - grenze)} über der Grenze
+                        +{eur(lohn - grenze)} über der Grenze
                       </span>
                       {kommentar && (
                         <span className="block ml-5 text-xs text-orange-700 italic">
@@ -687,25 +715,29 @@ function AbrechnungInhalt() {
                           <div>
                             <div className="font-medium text-gray-900 flex items-center gap-1.5 flex-wrap">
                               {er.mitarbeiter.name}
-                              {er.mitarbeiter.istMinijob && (
-                                <span
-                                  className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                                    er.bruttoLohnbuero > minijobGrenze
-                                      ? 'bg-red-100 text-red-700 border border-red-300'
-                                      : 'bg-gray-100 text-gray-600 border border-gray-300'
-                                  }`}
-                                  title={
-                                    er.bruttoLohnbuero > minijobGrenze
-                                      ? `Minijob-Grenze ${eur(minijobGrenze)} überschritten!`
-                                      : 'Minijob'
-                                  }
-                                >
-                                  {er.bruttoLohnbuero > minijobGrenze ? '⚠ Minijob' : 'Minijob'}
-                                </span>
-                              )}
+                              {er.mitarbeiter.istMinijob && (() => {
+                                const lohn = lohnOhneFaKo(er);
+                                const ueber = lohn > minijobGrenze;
+                                return (
+                                  <span
+                                    className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                      ueber
+                                        ? 'bg-red-100 text-red-700 border border-red-300'
+                                        : 'bg-gray-100 text-gray-600 border border-gray-300'
+                                    }`}
+                                    title={
+                                      ueber
+                                        ? `Minijob-Grenze ${eur(minijobGrenze)} überschritten (Lohn ohne FaKo: ${eur(lohn)})`
+                                        : `Minijob (Lohn ohne FaKo: ${eur(lohn)})`
+                                    }
+                                  >
+                                    {ueber ? '⚠ Minijob' : 'Minijob'}
+                                  </span>
+                                );
+                              })()}
                               {(er.mitarbeiter.lohngrenzeIndividuellEur ?? 0) > 0 && (() => {
                                 const g = er.mitarbeiter.lohngrenzeIndividuellEur ?? 0;
-                                const ueber = er.bruttoLohnbuero > g;
+                                const ueber = lohnOhneFaKo(er) > g;
                                 const titel = ueber
                                   ? `Individuelle Lohngrenze ${eur(g)} überschritten`
                                   : `Individuelle Lohngrenze: ${eur(g)}`;
@@ -1095,29 +1127,60 @@ function DetailAnsicht({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {er.zusammentragenEinsaetze.map((z, i) => (
-                  <tr key={i}>
-                    <td className="px-2 py-1.5 text-gray-500">{z.kw}</td>
-                    <td className="px-2 py-1.5 text-gray-700">{z.teilgebietName ?? '—'}</td>
-                    <td className="px-2 py-1.5">
-                      {z.istVorarbeit ? (
-                        <span className="bg-pink-100 text-pink-700 px-1.5 py-0.5 rounded">Vorarbeit</span>
-                      ) : (
-                        <span className="text-gray-600">Zusammentragen</span>
-                      )}
-                    </td>
-                    <td className="px-2 py-1.5 text-right text-gray-600">{z.stueckzahl != null ? z.stueckzahl.toLocaleString('de-DE') : '—'}</td>
-                    <td className="px-2 py-1.5 text-right text-gray-600">{z.istVorarbeit ? '—' : z.stapelBearbeitet}</td>
-                    <td className="px-2 py-1.5 text-right text-gray-600">{z.istVorarbeit ? '—' : (z.intBeilagenAnzahl ?? 0)}</td>
-                    <td className="px-2 py-1.5 text-right text-gray-600">{z.istVorarbeit ? '—' : (z.extBeilagenAnzahl ?? 0)}</td>
-                    <td className="px-2 py-1.5 text-right text-gray-500">
-                      {z.stunden != null ? stdMin(z.stunden) : '—'}
-                    </td>
-                    <td className="px-2 py-1.5 text-right font-semibold text-gray-900">{eur(z.lohn)}</td>
-                  </tr>
-                ))}
-                <tr className="bg-gray-50 border-t border-gray-200 font-semibold">
-                  <td className="px-2 py-1.5 text-gray-700" colSpan={7}>∑</td>
+                {(() => {
+                  const sortiert = [...er.zusammentragenEinsaetze].sort((a, b) => {
+                    if (a.kw !== b.kw) return a.kw - b.kw;
+                    return (a.teilgebietName ?? '').localeCompare(b.teilgebietName ?? '', 'de', { numeric: true });
+                  });
+                  const out: ReactElement[] = [];
+                  let kwBuffer: typeof sortiert = [];
+                  let aktuelleKw: number | null = null;
+                  const flushSubtotal = () => {
+                    if (kwBuffer.length === 0 || aktuelleKw === null) return;
+                    const sumStd = kwBuffer.reduce((s, z) => s + (z.stunden ?? 0), 0);
+                    const sumLohn = kwBuffer.reduce((s, z) => s + (z.lohn ?? 0), 0);
+                    out.push(
+                      <tr key={`sub-${aktuelleKw}`} className="bg-blue-50 border-t border-blue-200">
+                        <td className="px-2 py-1.5 text-blue-900 font-medium" colSpan={7}>Σ KW {aktuelleKw}</td>
+                        <td className="px-2 py-1.5 text-right text-blue-900 font-medium">{stdMin(sumStd)}</td>
+                        <td className="px-2 py-1.5 text-right text-blue-900 font-semibold">{eur(sumLohn)}</td>
+                      </tr>
+                    );
+                  };
+                  sortiert.forEach((z, i) => {
+                    if (aktuelleKw !== null && z.kw !== aktuelleKw) {
+                      flushSubtotal();
+                      kwBuffer = [];
+                    }
+                    aktuelleKw = z.kw;
+                    kwBuffer.push(z);
+                    out.push(
+                      <tr key={i}>
+                        <td className="px-2 py-1.5 text-gray-500">{z.kw}</td>
+                        <td className="px-2 py-1.5 text-gray-700">{z.teilgebietName ?? '—'}</td>
+                        <td className="px-2 py-1.5">
+                          {z.istVorarbeit ? (
+                            <span className="bg-pink-100 text-pink-700 px-1.5 py-0.5 rounded">Vorarbeit</span>
+                          ) : (
+                            <span className="text-gray-600">Zusammentragen</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-gray-600">{z.stueckzahl != null ? z.stueckzahl.toLocaleString('de-DE') : '—'}</td>
+                        <td className="px-2 py-1.5 text-right text-gray-600">{z.istVorarbeit ? '—' : z.stapelBearbeitet}</td>
+                        <td className="px-2 py-1.5 text-right text-gray-600">{z.istVorarbeit ? '—' : (z.intBeilagenAnzahl ?? 0)}</td>
+                        <td className="px-2 py-1.5 text-right text-gray-600">{z.istVorarbeit ? '—' : (z.extBeilagenAnzahl ?? 0)}</td>
+                        <td className="px-2 py-1.5 text-right text-gray-500">
+                          {z.stunden != null ? stdMin(z.stunden) : '—'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-semibold text-gray-900">{eur(z.lohn)}</td>
+                      </tr>
+                    );
+                  });
+                  flushSubtotal();
+                  return out;
+                })()}
+                <tr className="bg-gray-50 border-t-2 border-gray-300 font-semibold">
+                  <td className="px-2 py-1.5 text-gray-700" colSpan={7}>∑ Gesamt</td>
                   <td className="px-2 py-1.5 text-right text-gray-600">
                     {stdMin(er.zusammentragenEinsaetze.reduce((s, z) => s + (z.stunden ?? 0), 0))}
                   </td>

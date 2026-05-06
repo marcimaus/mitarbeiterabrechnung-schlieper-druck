@@ -1,7 +1,7 @@
 // Excel-Export der Monatsabrechnung mit ExcelJS
 
 import ExcelJS from 'exceljs';
-import type { Abrechnungsperiode } from '../types';
+import type { Abrechnungsperiode, Mitarbeiter } from '../types';
 import type { MitarbeiterAbrechnung } from './abrechnungslogik';
 import { formatierDatum } from './zeiterfassung';
 
@@ -238,6 +238,208 @@ export async function exportiereAbrechnung(
   const a = document.createElement('a');
   a.href = url;
   a.download = `Abrechnung_${periode.bezeichnung.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ============================================================
+// Lohnübermittlung — schlanker Export für das Lohnbüro
+// ============================================================
+//
+// Inhalt (laut Vorgabe):
+//   - Periode (Header)
+//   - je MA: Name, Nummer, Vorschuss, Bruttolohn (= bruttoLohnbuero, also nach
+//     Verrechnung Lohnkonto, ohne Lohnkonto explizit zu erwähnen), Fahrtkosten
+//   - Schluss: Liste an-/abzumeldender Mitarbeiter
+//
+export async function exportiereLohnuebermittlung(
+  periode: Abrechnungsperiode,
+  ergebnisse: MitarbeiterAbrechnung[],
+  alleMitarbeiter: Mitarbeiter[]
+): Promise<void> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Schlieper-Druck Mitarbeiterabrechnung';
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet('Lohnübermittlung');
+
+  // Header-Block
+  ws.getCell('A1').value = `Lohnübermittlung — ${periode.bezeichnung}`;
+  ws.getCell('A1').font = { bold: true, size: 14 };
+  ws.mergeCells('A1:F1');
+  ws.getCell('A2').value = `Erstellt: ${new Date().toLocaleDateString('de-DE')}`;
+  ws.getCell('A2').font = { italic: true, size: 9, color: { argb: 'FF888888' } };
+  ws.mergeCells('A2:F2');
+
+  // Spaltenüberschriften — ab Zeile 4
+  const headerRow = 4;
+  ws.getRow(headerRow).values = [
+    'Mitarbeiter-Nr.',
+    'Name',
+    'Vorschuss (€)',
+    'Bruttolohn (€)',
+    'Fahrtkosten (€)',
+    'Auszahlung (€)',
+  ];
+  ws.getRow(headerRow).font = { bold: true };
+  ws.getRow(headerRow).fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFE8EEF7' },
+  };
+  ws.columns = [
+    { width: 14 },
+    { width: 32 },
+    { width: 14 },
+    { width: 16 },
+    { width: 16 },
+    { width: 16 },
+  ];
+
+  // Sortierung: nach Name
+  const sortiert = [...ergebnisse].sort((a, b) => a.mitarbeiter.name.localeCompare(b.mitarbeiter.name, 'de'));
+
+  let r = headerRow + 1;
+  let sumVorschuss = 0;
+  let sumBrutto = 0;
+  let sumFaKo = 0;
+  let sumAuszahlung = 0;
+  for (const e of sortiert) {
+    const auszahlung = e.bruttoLohnbuero - e.vorschussSumme;
+    ws.getRow(r).values = [
+      e.mitarbeiter.nummer,
+      e.mitarbeiter.name,
+      Number((e.vorschussSumme ?? 0).toFixed(2)),
+      Number((e.bruttoLohnbuero ?? 0).toFixed(2)),
+      Number((e.fahrtkostenGesamt ?? 0).toFixed(2)),
+      Number(auszahlung.toFixed(2)),
+    ];
+    for (let c = 3; c <= 6; c++) {
+      ws.getRow(r).getCell(c).numFmt = '#,##0.00 "€"';
+      ws.getRow(r).getCell(c).alignment = { horizontal: 'right' };
+    }
+    sumVorschuss += e.vorschussSumme ?? 0;
+    sumBrutto += e.bruttoLohnbuero ?? 0;
+    sumFaKo += e.fahrtkostenGesamt ?? 0;
+    sumAuszahlung += auszahlung;
+    r++;
+  }
+
+  // Summenzeile
+  const sumRow = r;
+  ws.getRow(sumRow).values = [
+    '',
+    'Σ Gesamt',
+    Number(sumVorschuss.toFixed(2)),
+    Number(sumBrutto.toFixed(2)),
+    Number(sumFaKo.toFixed(2)),
+    Number(sumAuszahlung.toFixed(2)),
+  ];
+  ws.getRow(sumRow).font = { bold: true };
+  ws.getRow(sumRow).border = {
+    top: { style: 'thin' },
+    bottom: { style: 'double' },
+  };
+  for (let c = 3; c <= 6; c++) {
+    ws.getRow(sumRow).getCell(c).numFmt = '#,##0.00 "€"';
+    ws.getRow(sumRow).getCell(c).alignment = { horizontal: 'right' };
+  }
+
+  ws.views = [{ state: 'frozen', ySplit: headerRow }];
+
+  // ====================================================
+  // An-/Abmeldungen
+  // ====================================================
+  // Mitarbeiter, die noch ANgemeldet werden müssen — und Beträge in dieser
+  // Periode haben (nur dann ist die Anmeldung relevant).
+  const anzumelden = ergebnisse
+    .filter((e) => e.mitarbeiter.nochNichtAngemeldet)
+    .map((e) => e.mitarbeiter)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
+  // Mitarbeiter, die in dieser Periode ABgemeldet wurden (oder mit
+  // Abmelde-Datum in dieser Periode).
+  const inPeriodeKws = new Set(periode.kalenderwochen);
+  const istInPeriode = (datumIso?: string) => {
+    if (!datumIso) return false;
+    const d = new Date(datumIso);
+    if (isNaN(d.getTime())) return false;
+    if (d.getFullYear() !== periode.jahr) return false;
+    // Monat: 0-indexed → +1
+    return d.getMonth() + 1 === periode.monat;
+  };
+  const abzumelden = alleMitarbeiter
+    .filter((m) => m.abgemeldet && istInPeriode(m.abmeldungUebermittlungDatum))
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  // Fallback: wenn abmeldungUebermittlungDatum nicht gesetzt aber MA nicht
+  // mehr aktiv und in dieser Periode noch Bewegung hatte → trotzdem listen.
+  const ergebnisIds = new Set(ergebnisse.map((e) => e.mitarbeiter.id));
+  for (const m of alleMitarbeiter) {
+    if (m.abgemeldet && !abzumelden.includes(m) && ergebnisIds.has(m.id) && !m.abmeldungUebermittlungDatum) {
+      abzumelden.push(m);
+    }
+  }
+  void inPeriodeKws;
+
+  let blockRow = sumRow + 3;
+  if (anzumelden.length > 0) {
+    ws.getCell(`A${blockRow}`).value = 'Anzumeldende Mitarbeiter';
+    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    blockRow++;
+    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Anmeldedatum (ggf.)'];
+    ws.getRow(blockRow).font = { bold: true };
+    ws.getRow(blockRow).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE8F5E9' },
+    };
+    blockRow++;
+    for (const m of anzumelden) {
+      ws.getRow(blockRow).values = [
+        m.nummer,
+        m.name,
+        m.anmeldungUebermittlungDatum ? formatierDatum(new Date(m.anmeldungUebermittlungDatum).getTime()) : '',
+      ];
+      blockRow++;
+    }
+    blockRow += 2;
+  }
+
+  if (abzumelden.length > 0) {
+    ws.getCell(`A${blockRow}`).value = 'Abzumeldende Mitarbeiter';
+    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    blockRow++;
+    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Datum der Abmeldung'];
+    ws.getRow(blockRow).font = { bold: true };
+    ws.getRow(blockRow).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFFFE9E0' },
+    };
+    blockRow++;
+    for (const m of abzumelden) {
+      ws.getRow(blockRow).values = [
+        m.nummer,
+        m.name,
+        m.abmeldungUebermittlungDatum
+          ? formatierDatum(new Date(m.abmeldungUebermittlungDatum).getTime())
+          : '— (Datum unbekannt)',
+      ];
+      blockRow++;
+    }
+  }
+
+  // Download
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Lohnuebermittlung_${periode.bezeichnung.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
 }
