@@ -137,9 +137,18 @@ function AbrechnungInhalt() {
       alert('Bitte zuerst auf „Berechnen" klicken — das Ergebnis wird mit der Periode gespeichert.');
       return;
     }
+    if (!selectedPeriode.monatswechselSnapshot) {
+      alert(
+        'Vor dem Abschluss muss der Monatswechsel durchgeführt werden.\n\n' +
+          'Klicke zuerst auf „📌 Monatswechsel durchführen", um Austragen und Zusammentragen zu fixieren.'
+      );
+      setAbschliessenBestaetigt(false);
+      return;
+    }
     try {
       // 1) Alle MA in der Abmelde-Liste dieser Periode auf abgemeldet=true
-      //    setzen (vor dem Snapshot, damit der MA-Status im Snapshot stimmt).
+      //    + isActive=false (deaktiviert) setzen. Vor dem Snapshot, damit
+      //    der MA-Status im Snapshot stimmt.
       const ersetzteIds = new Set<string>();
       for (const m of mitarbeiter) {
         if (m.ersetztMitarbeiterId) ersetzteIds.add(m.ersetztMitarbeiterId);
@@ -150,11 +159,40 @@ function AbrechnungInhalt() {
           !m.abgemeldet &&
           (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === selectedPeriode.id)
       );
+
+      // Hinweis: MAs, die noch Standardausträger eines Teilgebiets sind
+      const tgsMitOffenemAustraeger = abzumelden
+        .map((m) => ({
+          ma: m,
+          tgs: teilgebiete.filter((tg) => tg.standardAustraegerId === m.id && tg.isActive),
+        }))
+        .filter((x) => x.tgs.length > 0);
+
+      if (tgsMitOffenemAustraeger.length > 0) {
+        const lines = tgsMitOffenemAustraeger
+          .map((x) =>
+            `• ${x.ma.name} (${x.ma.nummer}) — Teilgebiete: ${x.tgs.map((t) => t.name).join(', ')}`
+          )
+          .join('\n');
+        if (
+          !confirm(
+            'Folgende Mitarbeiter werden abgemeldet und deaktiviert, sind aber noch Standardausträger:\n\n' +
+              lines +
+              '\n\nNach dem Abschluss muss für diese Teilgebiete ein neuer Austräger zugeordnet werden.\n\n' +
+              'Trotzdem fortfahren?'
+          )
+        ) {
+          setAbschliessenBestaetigt(false);
+          return;
+        }
+      }
+
       for (const m of abzumelden) {
         await aktualisiereMitarbeiter(m.id, {
           abgemeldet: true,
           abmeldungUebermittlungDatum: m.abmeldungUebermittlungDatum ?? heuteIso,
           letzteAbrechnungsperiodeId: selectedPeriode.id,
+          isActive: false,
         });
       }
       // 2) Berechnetes Ergebnis als Snapshot mitschreiben — danach lassen sich
@@ -353,12 +391,21 @@ function AbrechnungInhalt() {
                     </div>
                   )}
 
-                  {/* Periode abschließen */}
+                  {/* Periode abschließen — nur möglich nach Monatswechsel */}
                   {!abschliessenBestaetigt ? (
                     <button
                       onClick={() => setAbschliessenBestaetigt(true)}
-                      className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-200 transition-colors"
-                      title="Schließt die Periode ab und speichert das aktuelle Berechnungsergebnis als Snapshot"
+                      disabled={!selectedPeriode?.monatswechselSnapshot}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        selectedPeriode?.monatswechselSnapshot
+                          ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          : 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                      }`}
+                      title={
+                        selectedPeriode?.monatswechselSnapshot
+                          ? 'Schließt die Periode ab und speichert das aktuelle Berechnungsergebnis als Snapshot'
+                          : 'Erst Monatswechsel durchführen, dann kann abgeschlossen werden'
+                      }
                     >
                       🔒 Periode abschließen &amp; speichern
                     </button>
@@ -844,6 +891,7 @@ function AbrechnungInhalt() {
             <AnAbmeldungenListe
               periode={selectedPeriode}
               istGesperrt={selectedPeriode.status === 'abgeschlossen'}
+              ergebnisse={ergebnisse ?? []}
             />
           )}
         </>
@@ -1767,11 +1815,19 @@ function SummaryCard({
 function AnAbmeldungenListe({
   periode,
   istGesperrt,
+  ergebnisse,
 }: {
   periode: Abrechnungsperiode;
   istGesperrt: boolean;
+  ergebnisse: MitarbeiterAbrechnung[];
 }) {
   const { mitarbeiter } = useApp();
+
+  // IDs der MA, die in der aktuellen Berechnung mit Beträgen vorkommen
+  const idsMitBetrag = new Set<string>();
+  for (const e of ergebnisse) {
+    if (e.gesamt > 0 || e.bruttoLohnbuero > 0) idsMitBetrag.add(e.mitarbeiter.id);
+  }
 
   // Periodenende: letzter Tag des Monats (ISO-Date YYYY-MM-DD).
   const periodenEndeIso = (() => {
@@ -1811,6 +1867,23 @@ function AnAbmeldungenListe({
       (m) =>
         !m.abgemeldet &&
         (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === periode.id)
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  // Vorschläge: aktive MA ohne Betrag in dieser Abrechnung — Kandidaten für
+  // Abmeldung. Ausschluss: Festgehalt-MA, Geschäftsführer, bereits in der
+  // Abmeldungs-Liste, bereits abgemeldet, noch nicht angemeldet.
+  const abmeldungVorschlaege = mitarbeiter
+    .filter(
+      (m) =>
+        m.isActive &&
+        !m.abgemeldet &&
+        !m.nochNichtAngemeldet &&
+        !m.hatFestgehalt &&
+        !m.istGeschaeftsfuehrer &&
+        !idsMitBetrag.has(m.id) &&
+        !ersetzteIds.has(m.id) &&
+        m.letzteAbrechnungsperiodeId !== periode.id
     )
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -2011,6 +2084,37 @@ function AnAbmeldungenListe({
               })}
             </tbody>
           </table>
+        )}
+
+        {/* Vorschläge: aktive MA ohne Betrag — Kandidaten für Abmeldung */}
+        {!istGesperrt && abmeldungVorschlaege.length > 0 && (
+          <div className="border-t border-red-200 bg-red-50/50 px-4 py-2">
+            <details className="text-xs">
+              <summary className="cursor-pointer text-red-800 hover:text-red-900 font-medium">
+                💡 {abmeldungVorschlaege.length} Vorschlag{abmeldungVorschlaege.length === 1 ? '' : 'e'} (aktive MA ohne Betrag in dieser Periode)
+              </summary>
+              <p className="mt-1 mb-2 text-[11px] text-red-700">
+                Diese Mitarbeiter haben in der aktuellen Abrechnung keinen Betrag — Klick auf „+", um sie zur Abmelde-Liste hinzuzufügen.
+              </p>
+              <ul className="space-y-1 max-h-48 overflow-y-auto">
+                {abmeldungVorschlaege.map((m) => (
+                  <li key={m.id} className="flex items-center justify-between bg-white rounded border border-red-100 px-2 py-1">
+                    <span>
+                      <span className="font-medium text-gray-900">{m.name}</span>
+                      <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
+                    </span>
+                    <button
+                      onClick={() => handleAuswahlAb(m)}
+                      className="text-xs text-red-700 hover:text-red-900 font-medium px-1.5"
+                      title="Zur Abmeldungs-Liste hinzufügen"
+                    >
+                      + abmelden
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          </div>
         )}
       </div>
 

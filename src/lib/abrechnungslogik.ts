@@ -743,12 +743,34 @@ export function berechneAbrechnung(
     }
   }
 
-  // Sortierung: zuerst Mitarbeiter mit Festgehalt, danach nach MA-Nummer.
+  // Sortierung in vier Stufen:
+  //  1) Festgehalt (sortiert nach MA-Nummer)
+  //  2) Stundenabrechnung — alle MA mit Zeit-Lohn aber KEIN Austragen/Zusammentragen
+  //     (also "Büro/Sonstige" — sortiert nach MA-Nummer)
+  //  3) MA mit Saldo auf Lohnkonto, die nicht in 1/2 sind (sortiert nach MA-Nummer)
+  //  4) Austräger & Zusammenträger nach Betragshöhe absteigend (Brutto-Lohnbüro)
+  function gruppe(e: MitarbeiterAbrechnung): number {
+    if (e.mitarbeiter.hatFestgehalt) return 1;
+    const austragenZusammen = e.austraegerGesamt + e.zusammentragenGesamt;
+    const hatStundenarbeit = e.zeitLohn > 0 && austragenZusammen === 0;
+    if (hatStundenarbeit) return 2;
+    if (e.lohnkontoSaldoNachPeriode !== 0 && austragenZusammen === 0) return 3;
+    return 4;
+  }
   return ergebnisse.sort((a, b) => {
-    const aFest = a.mitarbeiter.hatFestgehalt ? 0 : 1;
-    const bFest = b.mitarbeiter.hatFestgehalt ? 0 : 1;
-    if (aFest !== bFest) return aFest - bFest;
-    return (a.mitarbeiter.nummer || '').localeCompare(b.mitarbeiter.nummer || '');
+    const ga = gruppe(a);
+    const gb = gruppe(b);
+    if (ga !== gb) return ga - gb;
+    if (ga === 4) {
+      // Austräger/Zusammenträger: nach Brutto absteigend
+      return b.bruttoLohnbuero - a.bruttoLohnbuero;
+    }
+    // Sonst nach Mitarbeiter-Nummer
+    return (a.mitarbeiter.nummer || '').localeCompare(
+      b.mitarbeiter.nummer || '',
+      'de',
+      { numeric: true }
+    );
   });
 }
 

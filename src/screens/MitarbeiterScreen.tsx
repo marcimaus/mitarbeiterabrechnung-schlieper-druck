@@ -8,6 +8,9 @@ import {
   aktualisiereMitarbeiter,
   deaktiviereMitarbeiter,
   aktiviereMitarbeiter,
+  ladeEinsaetzeFuerMitarbeiter,
+  ladeArbeitszeiten,
+  ladeFahrten,
 } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
@@ -435,7 +438,7 @@ function MitarbeiterForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const { parameter, teilgebiete, mitarbeiter, userRole, abrechnungsperioden } = useApp();
+  const { parameter, teilgebiete, mitarbeiter, userRole, abrechnungsperioden, lohnkontoBuchungen } = useApp();
   const isAdmin = userRole === 'admin';
   // Bei Mitarbeitern mit Status "noch nicht angemeldet" direkt den Anmelde-Tab öffnen,
   // damit die offene Erfassung sofort sichtbar ist.
@@ -609,7 +612,86 @@ function MitarbeiterForm({
   }
 
   async function handleDeaktivieren() {
-    if (!initial || !confirm(`Mitarbeiter "${initial.name}" wirklich deaktivieren?`)) return;
+    if (!initial) return;
+
+    // Umfangreiche Prüfung — verhindert versehentliches Deaktivieren wenn
+    // der MA noch operative Verbindungen oder offene Beträge hat.
+    const probleme: string[] = [];
+
+    // 1) Steht der MA noch als Standardausträger eines aktiven Teilgebiets?
+    const tgsAlsStandard = teilgebiete.filter(
+      (tg) => tg.isActive && tg.standardAustraegerId === initial.id
+    );
+    if (tgsAlsStandard.length > 0) {
+      probleme.push(
+        `Standardausträger in ${tgsAlsStandard.length} Teilgebiet${tgsAlsStandard.length === 1 ? '' : 'en'}: ${tgsAlsStandard.map((t) => t.name).join(', ')}`
+      );
+    }
+
+    // 2) Lohnkonto-Saldo
+    const saldo = lohnkontoBuchungen
+      .filter((b) => b.mitarbeiterId === initial.id)
+      .reduce((s, b) => s + (b.art === 'verschiebung' ? b.betragEur : -b.betragEur), 0);
+    if (Math.abs(saldo) > 0.005) {
+      probleme.push(`Lohnkonto-Saldo nicht ausgeglichen: ${eur(saldo)}`);
+    }
+
+    // 3) Springer-Einsätze in offenen Folge-Perioden + 4) Arbeitszeiten + 5) Fahrtkosten
+    let springerInOffenen = 0;
+    let arbeitszeitenOffen = 0;
+    let fahrtenOffen = 0;
+    try {
+      const [einsaetzeMa, arbeitszeiten, fahrten] = await Promise.all([
+        ladeEinsaetzeFuerMitarbeiter(initial.id),
+        ladeArbeitszeiten(initial.id),
+        ladeFahrten({ mitarbeiterId: initial.id }),
+      ]);
+      // Offene Perioden (status='offen')
+      const offenePeriodenKWs = new Set<string>();
+      for (const p of abrechnungsperioden) {
+        if (p.status === 'offen') {
+          for (const kw of p.kalenderwochen) {
+            offenePeriodenKWs.add(`${p.jahr}-${kw}`);
+          }
+        }
+      }
+      // Springer-Einsätze in offenen Perioden
+      for (const e of einsaetzeMa) {
+        if (e.typ === 'springer' && offenePeriodenKWs.has(`${e.jahr}-${e.kw}`)) {
+          springerInOffenen++;
+        }
+      }
+      // Arbeitszeiten ohne Periode-Zuordnung oder in offenen Perioden
+      // (vereinfacht: jede vorhandene zählt — der Admin entscheidet)
+      arbeitszeitenOffen = arbeitszeiten.filter(
+        (a) => a.status === 'abgeschlossen'
+      ).length;
+      // Fahrten ohne Abrechnungsperiode-ID (= noch nicht fakturiert)
+      fahrtenOffen = fahrten.filter((f) => !f.abrechnungsperiodeId).length;
+    } catch {
+      probleme.push('Prüfung der Einsätze/Zeiten/Fahrten fehlgeschlagen — bitte manuell prüfen');
+    }
+
+    if (springerInOffenen > 0) {
+      probleme.push(`Als Springer in ${springerInOffenen} Einsatz${springerInOffenen === 1 ? '' : 'en'} offener Perioden eingeplant`);
+    }
+    if (arbeitszeitenOffen > 0) {
+      probleme.push(`${arbeitszeitenOffen} abgeschlossene Arbeitszeit${arbeitszeitenOffen === 1 ? '' : 'en'} vorhanden (Kontrolle ob abgerechnet)`);
+    }
+    if (fahrtenOffen > 0) {
+      probleme.push(`${fahrtenOffen} Fahrt${fahrtenOffen === 1 ? '' : 'en'} ohne Periodenzuordnung (noch nicht abgerechnet)`);
+    }
+
+    let bestaetigung = `Mitarbeiter "${initial.name}" wirklich deaktivieren?`;
+    if (probleme.length > 0) {
+      bestaetigung =
+        `Mitarbeiter "${initial.name}" deaktivieren?\n\n` +
+        `Folgende Punkte sollten vorher geprüft werden:\n\n` +
+        probleme.map((p) => `• ${p}`).join('\n') +
+        `\n\nTrotzdem deaktivieren?`;
+    }
+    if (!confirm(bestaetigung)) return;
+
     await deaktiviereMitarbeiter(initial.id);
     onSave();
   }

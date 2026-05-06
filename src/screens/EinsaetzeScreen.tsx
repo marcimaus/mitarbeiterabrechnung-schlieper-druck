@@ -103,7 +103,8 @@ function EinsaetzeInhalt() {
   // Springer-Einsatz.
   const aktiveTeilgebiete = teilgebiete
     .filter((tg) => tg.isActive && !tg.istAuslagestelle)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    // Natural Sort: Uslar1 < Uslar2 < … < Uslar10 (statt lexikographisch)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
 
   const getMitarbeiter = useCallback(
     (id: string | null) => (id ? mitarbeiter.find((m) => m.id === id) : undefined),
@@ -199,10 +200,24 @@ function EinsaetzeInhalt() {
 
   // ---- Filter auf Teilgebiete anwenden ----
   const gefilterte = aktiveTeilgebiete.filter((tg) => {
-    // Namens-Suche (Teilgebiet-Name oder PLZ)
+    // Namens-Suche (Teilgebiet-Name, PLZ ODER Name des effektiven Austrägers).
+    // Effektiver Austräger = Springer wenn gesetzt, sonst Standardausträger.
     if (suche.trim()) {
       const s = suche.toLowerCase();
-      if (!tg.name.toLowerCase().includes(s) && !tg.plz.toLowerCase().includes(s)) return false;
+      const e = einsaetze[tg.id];
+      const effId =
+        e?.typ === 'springer'
+          ? (e.mitarbeiterId ?? null)
+          : tg.standardAustraegerId;
+      const ma = effId ? mitarbeiter.find((m) => m.id === effId) : null;
+      const austraegerName = ma ? `${ma.name} ${ma.nummer}`.toLowerCase() : '';
+      if (
+        !tg.name.toLowerCase().includes(s) &&
+        !tg.plz.toLowerCase().includes(s) &&
+        !austraegerName.includes(s)
+      ) {
+        return false;
+      }
     }
     // Tour-Filter
     if (filterTourId) {
@@ -320,7 +335,7 @@ function EinsaetzeInhalt() {
         <div className="flex items-center gap-3 flex-wrap">
           <input
             type="text"
-            placeholder="Suche nach Teilgebiet-Name oder PLZ..."
+            placeholder="Teilgebiet, PLZ oder Austräger-Name..."
             value={suche}
             onChange={(e) => setSuche(e.target.value)}
             className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -557,6 +572,45 @@ function EinsaetzeInhalt() {
                   </tr>
                 );
               })}
+              {/* Summenzeile über die GEFILTERTEN Teilgebiete */}
+              {gefilterte.length > 0 && (() => {
+                const summeGewicht = gefilterte.reduce((s, tg) => {
+                  if (!selectedAusgabe) return s;
+                  return (
+                    s +
+                    berechneGewichtAnzeigenblattKg(tg, selectedAusgabe) +
+                    berechneGewichtBeilagenKg(tg, beilagen)
+                  );
+                }, 0);
+                const summeSollH = gefilterte.reduce((s, tg) => {
+                  if (!parameter) return s;
+                  const beilagenExternTg = beilagen.filter(
+                    (b) => b.kennzeichen === 'ext' && b.teilgebietIds.includes(tg.id)
+                  ).length;
+                  return s + berechneAustraegezeit(tg, parameter, beilagenExternTg);
+                }, 0);
+                return (
+                  <tr className="bg-blue-50 border-t-2 border-blue-200 font-semibold">
+                    <td className="px-4 py-3 text-gray-900" colSpan={6}>
+                      Σ {gefilterte.length} Teilgebiet{gefilterte.length === 1 ? '' : 'e'}
+                      {gefilterte.length !== aktiveTeilgebiete.length && (
+                        <span className="ml-2 font-normal text-xs text-gray-500">
+                          (gefiltert von {aktiveTeilgebiete.length})
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-900 font-mono text-xs">
+                      {summeGewicht > 0
+                        ? `${summeGewicht.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} kg`
+                        : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-900 font-mono text-xs">
+                      {summeSollH > 0 ? formatierStunden(summeSollH) : '—'}
+                    </td>
+                    <td></td>
+                  </tr>
+                );
+              })()}
             </tbody>
           </table>
         </div>

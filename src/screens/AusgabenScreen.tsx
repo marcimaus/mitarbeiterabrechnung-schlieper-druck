@@ -233,7 +233,12 @@ function AusgabeDetail({
   const zugehoerigerPeriode = abrechnungsperioden.find(
     (p) => p.jahr === ausgabe.jahr && p.kalenderwochen.includes(ausgabe.kw)
   );
-  const istGesperrt = zugehoerigerPeriode?.status === 'abgeschlossen';
+  // Sperre: Periode abgeschlossen ODER Monatswechsel-Snapshot existiert.
+  // Nach dem Monatswechsel sind die Mengen der Teilgebiete fixiert — eine
+  // Änderung an Beilagen/Zusammentragen würde das Ergebnis verschieben.
+  const istAbgeschlossen = zugehoerigerPeriode?.status === 'abgeschlossen';
+  const istMonatswechsel = !!zugehoerigerPeriode?.monatswechselSnapshot;
+  const istGesperrt = istAbgeschlossen || istMonatswechsel;
   const kannGeloeschtWerden = !zugehoerigerPeriode;
 
   async function handleLoeschen() {
@@ -260,9 +265,15 @@ function AusgabeDetail({
           </div>
         </div>
 
-        {istGesperrt && (
+        {istAbgeschlossen && (
           <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 flex items-center gap-1">
             🔒 Abrechnungsperiode abgeschlossen — keine Änderungen möglich
+          </div>
+        )}
+        {!istAbgeschlossen && istMonatswechsel && (
+          <div className="mt-3 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-900 flex items-center gap-1">
+            📌 Monatswechsel durchgeführt — Beilagen und Zusammentragen sind
+            fixiert (Mengen der Teilgebiete würden Berechnung verschieben).
           </div>
         )}
 

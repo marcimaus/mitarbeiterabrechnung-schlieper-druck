@@ -233,7 +233,11 @@ function ZusammentragenInhalt() {
   const zugehoerigerPeriode = selectedAusgabe
     ? abrechnungsperioden.find((p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen.includes(selectedAusgabe.kw))
     : undefined;
-  const istGesperrt = zugehoerigerPeriode?.status === 'abgeschlossen';
+  // Sperre: Periode abgeschlossen ODER Monatswechsel durchgeführt
+  // (nach Monatswechsel würden Mengenänderungen die fixierten Werte verschieben).
+  const istAbgeschlossen = zugehoerigerPeriode?.status === 'abgeschlossen';
+  const istMonatswechsel = !!zugehoerigerPeriode?.monatswechselSnapshot;
+  const istGesperrt = istAbgeschlossen || istMonatswechsel;
   const zugewiesen = normalEinsaetze.length;
   const gesamt = aktiveTeilgebiete.length;
 
@@ -277,9 +281,14 @@ function ZusammentragenInhalt() {
 
       {loading && <div className="text-center py-8 text-gray-400">Lade Daten...</div>}
 
-      {istGesperrt && (
+      {istAbgeschlossen && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 flex items-center gap-2">
           🔒 Diese Ausgabe gehört zu einer <strong>abgeschlossenen Abrechnungsperiode</strong> — keine Änderungen mehr möglich.
+        </div>
+      )}
+      {!istAbgeschlossen && istMonatswechsel && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-900 flex items-center gap-2">
+          📌 Für diese Periode wurde der <strong>Monatswechsel durchgeführt</strong> — Zusammentragen ist fixiert; Änderungen würden die fixierten Werte verschieben.
         </div>
       )}
 
@@ -526,6 +535,50 @@ function ZusammentragenInhalt() {
                     </tr>
                   );
                 })}
+                {/* Summenzeile über die GEFILTERTEN Teilgebiete */}
+                {gefilterteTeilgebiete.length > 0 && (() => {
+                  const summeStueck = gefilterteTeilgebiete.reduce((s, tg) => s + tg.stueckzahl, 0);
+                  const summeIntBeil = gefilterteTeilgebiete.reduce((s, tg) =>
+                    s + beilagen.filter(
+                      (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id)
+                    ).length, 0);
+                  const summeSollZeit = gefilterteTeilgebiete.reduce((s, tg) => {
+                    if (!selectedAusgabe || !parameter) return s;
+                    const intBeilTg = beilagen.filter(
+                      (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id)
+                    ).length;
+                    return s + berechneZusammentragZeit(
+                      tg.stueckzahl,
+                      selectedAusgabe.stapelAnzahl,
+                      intBeilTg,
+                      parameter
+                    );
+                  }, 0);
+                  return (
+                    <tr className="bg-blue-50 border-t-2 border-blue-200 font-semibold">
+                      <td className="px-3 py-2.5"></td>
+                      <td className="px-4 py-2.5 text-gray-900">
+                        Σ {gefilterteTeilgebiete.length} TG
+                        {gefilterteTeilgebiete.length !== aktiveTeilgebiete.length && (
+                          <span className="ml-1 font-normal text-xs text-gray-500">
+                            (von {aktiveTeilgebiete.length})
+                          </span>
+                        )}
+                        <div className="text-xs text-gray-500 font-normal">
+                          {summeStueck.toLocaleString('de-DE')} Stk
+                        </div>
+                      </td>
+                      <td></td>
+                      <td className="px-4 py-2.5 text-right text-xs text-gray-700">
+                        {summeIntBeil > 0 ? summeIntBeil : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-right text-xs font-mono text-gray-900">
+                        {summeSollZeit > 0 ? formatierStunden(summeSollZeit) : '—'}
+                      </td>
+                      <td></td>
+                    </tr>
+                  );
+                })()}
               </tbody>
             </table>
           </div>
