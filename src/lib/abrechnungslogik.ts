@@ -654,7 +654,7 @@ export function berechneAbrechnung(
     //               (Zuordnung: Datum der Arbeitszeit fällt in KW einer freigegebenen Ausgabe)
     // sonstige    → IMMER
     const maArbeitszeitenAll = data.arbeitszeiten.filter(
-      (a) => a.mitarbeiterId === ma.id && a.status === 'abgeschlossen'
+      (a) => a.mitarbeiterId === ma.id && a.status === 'abgeschlossen' && !a.nichtBeruecksichtigen
     );
 
     // Vorarbeit wird nur dann abgerechnet, wenn die konkrete zugeordnete Ausgabe

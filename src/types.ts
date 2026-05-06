@@ -407,6 +407,11 @@ export interface Arbeitszeit {
   erstelltAm: number;
   aktualisiertAm: number;
   autoGeschlossenUm24?: boolean;
+  /** Wenn `true`, fließt der Eintrag NICHT in die Abrechnung ein. Nicht-Admins
+   *  können falsch erfasste Einträge nicht löschen, aber so markieren. */
+  nichtBeruecksichtigen?: boolean;
+  /** Begründung, warum der Eintrag ignoriert werden soll (optional). */
+  nichtBeruecksichtigenGrund?: string;
 }
 
 // ---- Zusammentragen ----------------------------------------

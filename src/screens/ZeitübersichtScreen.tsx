@@ -10,7 +10,7 @@ import {
   formatierDauer,
   korrigiereSession,
 } from '../lib/zeiterfassung';
-import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten } from '../lib/db';
+import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit } from '../lib/db';
 import { MONATSNAMEN } from '../lib/kalender';
 import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
@@ -30,7 +30,8 @@ export default function ZeitübersichtScreen() {
 }
 
 function ZeitübersichtInhalt() {
-  const { mitarbeiter, parameter, adminName } = useApp();
+  const { mitarbeiter, parameter, adminName, userRole } = useApp();
+  const isAdmin = userRole === 'admin';
   const heute = new Date();
   const [selectedMaId, setSelectedMaId] = useState<string>('');
   const [monat, setMonat] = useState(heute.getMonth() + 1);
@@ -385,12 +386,65 @@ function ZeitübersichtInhalt() {
                         {s.korrekturLog.length > 0 && (
                           <span className="text-xs text-amber-600 mr-2" title="Korrigiert">✏</span>
                         )}
+                        {s.nichtBeruecksichtigen && (
+                          <span
+                            className="text-[10px] bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded mr-1"
+                            title={s.nichtBeruecksichtigenGrund || 'Wird in der Abrechnung ignoriert'}
+                          >
+                            🚫 ignoriert
+                          </span>
+                        )}
                         <button
                           onClick={() => setEditSession(s)}
-                          className="text-xs text-blue-600 hover:text-blue-800"
+                          className="text-xs text-blue-600 hover:text-blue-800 mr-2"
                         >
                           Bearbeiten
                         </button>
+                        {!isAdmin && (
+                          <button
+                            onClick={async () => {
+                              if (s.nichtBeruecksichtigen) {
+                                if (!confirm('Markierung „nicht berücksichtigen" entfernen?\nDer Eintrag fließt dann wieder in die Abrechnung ein.')) return;
+                                await aktualisiereArbeitszeit(s.id, {
+                                  nichtBeruecksichtigen: undefined,
+                                  nichtBeruecksichtigenGrund: undefined,
+                                  korrekturLog: [
+                                    ...s.korrekturLog,
+                                    { zeitstempel: Date.now(), adminName, aktion: '„nicht berücksichtigen" entfernt' },
+                                  ],
+                                });
+                              } else {
+                                const grund = prompt('Grund (optional, z. B. „Datum falsch erfasst"):') ?? undefined;
+                                await aktualisiereArbeitszeit(s.id, {
+                                  nichtBeruecksichtigen: true,
+                                  nichtBeruecksichtigenGrund: grund && grund.trim() ? grund.trim() : undefined,
+                                  korrekturLog: [
+                                    ...s.korrekturLog,
+                                    { zeitstempel: Date.now(), adminName, aktion: `als „nicht berücksichtigen" markiert${grund ? ` — ${grund}` : ''}` },
+                                  ],
+                                });
+                              }
+                              setReloadKey((k) => k + 1);
+                            }}
+                            className="text-xs text-amber-600 hover:text-amber-800"
+                            title="Eintrag als ungültig markieren — fließt nicht in die Abrechnung ein"
+                          >
+                            {s.nichtBeruecksichtigen ? '✓ wieder zählen' : 'ignorieren'}
+                          </button>
+                        )}
+                        {isAdmin && (
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Diesen Eintrag (${formatierDauer(berechneNettoMinuten(s))}, ${s.typ}) wirklich endgültig löschen?\nDer Eintrag wird aus der Datenbank entfernt.`)) return;
+                              await loescheArbeitszeit(s.id);
+                              setReloadKey((k) => k + 1);
+                            }}
+                            className="text-xs text-red-500 hover:text-red-700"
+                            title="Eintrag endgültig löschen (Admin)"
+                          >
+                            ✕ Löschen
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
