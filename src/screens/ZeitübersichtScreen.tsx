@@ -12,7 +12,7 @@ import {
 } from '../lib/zeiterfassung';
 import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten } from '../lib/db';
 import { MONATSNAMEN } from '../lib/kalender';
-import { ermittleStundenlohn } from '../lib/berechnung';
+import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
 import { istEinsatzbereit } from '../utils';
 import type { Arbeitszeit, Fahrt, ArbeitszeitsTyp, AuditEintrag, Rolle, Ausgabe } from '../types';
@@ -121,10 +121,6 @@ function ZeitübersichtInhalt() {
     }
   };
 
-  const lohnrelevanteMinuten = abgeschlSessions
-    .filter(fliessesInLohn)
-    .reduce((sum, s) => sum + berechneNettoMinuten(s), 0);
-
   // Aufschlüsselung für Info-Anzeige (nicht in Lohn einfliessend)
   const minutenNichtAbgerechnet: Record<ArbeitszeitsTyp, number> = {
     austragen: 0, zusammentragen: 0, vorarbeit: 0, sonstige: 0,
@@ -135,10 +131,27 @@ function ZeitübersichtInhalt() {
       minutenNichtAbgerechnet[s.typ as ArbeitszeitsTyp] += berechneNettoMinuten(s);
     });
 
-  const stundenlohn = ma && parameter ? ermittleStundenlohn(ma, parameter) : null;
-  const lohnGesamt = stundenlohn && !ma?.hatFestgehalt
-    ? (lohnrelevanteMinuten / 60) * stundenlohn
-    : null;
+  // Stundenlöhne je Tarif:
+  //  - Austragen/Sonstige → ermittleStundenlohn (= MiLoG / Minderjährige Austr.)
+  //  - Zusammentragen/Vorarbeit → ermittleStundenlohnZusammen
+  const stundenlohnAustragen = ma && parameter ? ermittleStundenlohn(ma, parameter) : null;
+  const stundenlohnZusammen = ma && parameter ? ermittleStundenlohnZusammen(ma, parameter) : null;
+  // Für die Karten-Sub-Anzeige bevorzugen wir den Austragen-Tarif, ergänzen
+  // aber den Zusammentragen-Tarif wenn er sich unterscheidet.
+  const stundenlohn = stundenlohnAustragen;
+  const lohnGesamt =
+    stundenlohnAustragen != null && stundenlohnZusammen != null && !ma?.hatFestgehalt
+      ? abgeschlSessions
+          .filter(fliessesInLohn)
+          .reduce((s, sess) => {
+            const stdH = berechneNettoMinuten(sess) / 60;
+            const lohnsatz =
+              sess.typ === 'vorarbeit' || sess.typ === 'zusammentragen'
+                ? stundenlohnZusammen
+                : stundenlohnAustragen;
+            return s + stdH * lohnsatz;
+          }, 0)
+      : null;
   const fahrtSatz = (ma?.fahrkostenEurProKm ?? parameter?.fahrkostenEurProKm ?? 0.30);
   const fahrtkostenGesamt = fahrten.reduce((s, f) => s + f.streckKm * fahrtSatz, 0);
 
@@ -262,7 +275,13 @@ function ZeitübersichtInhalt() {
               <SummaryCard
                 label="Lohn (Zeiterfassung)"
                 value={lohnGesamt.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
-                sub={`${stundenlohn?.toFixed(2)} €/h`}
+                sub={
+                  stundenlohnAustragen != null &&
+                  stundenlohnZusammen != null &&
+                  Math.abs(stundenlohnAustragen - stundenlohnZusammen) > 0.005
+                    ? `Austragen ${stundenlohnAustragen.toFixed(2)} €/h · Zus./Vorarbeit ${stundenlohnZusammen.toFixed(2)} €/h`
+                    : `${stundenlohn?.toFixed(2)} €/h`
+                }
               />
             )}
             {ma?.hatFestgehalt && (
