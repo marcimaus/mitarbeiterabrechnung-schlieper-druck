@@ -1039,11 +1039,19 @@ function BeilageForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [tourFilterIds, setTourFilterIds] = useState<Set<string>>(new Set());
+  const [plzFilter, setPlzFilter] = useState('');
 
   const aktiveTeilgebiete = teilgebiete.filter((t) => t.isActive);
-  const gefilterteTG = tourFilterIds.size > 0
-    ? aktiveTeilgebiete.filter((t) => t.tourId && tourFilterIds.has(t.tourId))
-    : aktiveTeilgebiete;
+  const plzFilterNorm = plzFilter.trim();
+  const gefilterteTG = aktiveTeilgebiete.filter((t) => {
+    if (tourFilterIds.size > 0 && (!t.tourId || !tourFilterIds.has(t.tourId))) return false;
+    if (plzFilterNorm) {
+      // Mehrere PLZ-Präfixe durch Komma/Leerzeichen erlaubt: "37170, 372"
+      const parts = plzFilterNorm.split(/[\s,;]+/).filter(Boolean);
+      if (!parts.some((p) => t.plz.startsWith(p))) return false;
+    }
+    return true;
+  });
 
   function toggleTourFilter(tourId: string) {
     setTourFilterIds((prev) => {
@@ -1227,6 +1235,27 @@ function BeilageForm({
             <span className="text-xs text-gray-400 ml-1">
               ({tourFilterIds.size} Tour{tourFilterIds.size === 1 ? '' : 'en'} · {gefilterteTG.length} TG)
             </span>
+          )}
+        </div>
+        {/* PLZ-Filter (Präfix-Suche, Mehrfach durch Komma) */}
+        <div className="flex items-center gap-2 mb-2">
+          <label className="text-xs text-gray-500 shrink-0">Nach PLZ filtern:</label>
+          <input
+            type="text"
+            value={plzFilter}
+            onChange={(e) => setPlzFilter(e.target.value)}
+            placeholder="z. B. 37170 oder 372, 373"
+            className="text-xs px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 w-48"
+            title="Präfix-Suche; mehrere durch Komma"
+          />
+          {plzFilter && (
+            <button
+              type="button"
+              onClick={() => setPlzFilter('')}
+              className="text-xs text-gray-400 hover:text-gray-600 underline"
+            >
+              zurücksetzen
+            </button>
           )}
         </div>
         <div className="border border-gray-200 rounded-lg p-3 max-h-48 overflow-y-auto grid grid-cols-3 gap-1">
