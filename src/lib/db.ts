@@ -37,7 +37,6 @@ import type {
   VariablerPeriodenZusatz,
   AuslieferungsMemo,
   LohnkontoBuchung,
-  VerteilplanVorschlag,
 } from '../types';
 import { berechneStapel } from './berechnung';
 import { normalisiereRollen } from '../types';
@@ -1057,49 +1056,6 @@ export async function aktualisiereLohnkontoBuchung(
 
 export async function loescheLohnkontoBuchung(id: string): Promise<void> {
   await deleteDoc(doc(db, 'lohnkontoBuchungen', id));
-}
-
-// ---- Verteilplan-Vorschläge --------------------------------
-
-export async function ladeVerteilplanVorschlaege(): Promise<VerteilplanVorschlag[]> {
-  const snap = await getDocs(collection(db, 'verteilplanVorschlaege'));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as VerteilplanVorschlag));
-}
-
-export function verteilplanVorschlaegeListener(
-  cb: (list: VerteilplanVorschlag[]) => void
-): Unsubscribe {
-  return onSnapshot(collection(db, 'verteilplanVorschlaege'), (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as VerteilplanVorschlag)));
-  });
-}
-
-export async function erstelleVerteilplanVorschlag(
-  data: Omit<VerteilplanVorschlag, 'id' | 'erstelltAm' | 'aktualisiertAm'>
-): Promise<string> {
-  const ts = now();
-  const ref = await addDoc(collection(db, 'verteilplanVorschlaege'), {
-    ...stripUndef(data as Record<string, unknown>),
-    erstelltAm: ts,
-    aktualisiertAm: ts,
-  });
-  return ref.id;
-}
-
-export async function aktualisiereVerteilplanVorschlag(
-  id: string,
-  data: Partial<VerteilplanVorschlag>
-): Promise<void> {
-  // undefined → deleteField(), damit zurückgenommene optionale Felder
-  // (z. B. Notiz, Stückzahl) tatsächlich verschwinden.
-  await updateDoc(doc(db, 'verteilplanVorschlaege', id), {
-    ...undefAsDelete(data as Record<string, unknown>),
-    aktualisiertAm: now(),
-  });
-}
-
-export async function loescheVerteilplanVorschlag(id: string): Promise<void> {
-  await deleteDoc(doc(db, 'verteilplanVorschlaege', id));
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

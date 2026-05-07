@@ -14,7 +14,6 @@ import type {
   Abrechnungsperiode,
   VariablerPeriodenZusatz,
   LohnkontoBuchung,
-  VerteilplanVorschlag,
 } from '../types';
 import {
   mitarbeiterListener,
@@ -24,7 +23,6 @@ import {
   abrechnungsperiodenListener,
   variablePeriodenZusaetzeListener,
   lohnkontoBuchungenListener,
-  verteilplanVorschlaegeListener,
 } from '../lib/db';
 
 // ---- State -------------------------------------------------
@@ -43,7 +41,6 @@ interface AppState {
   abrechnungsperioden: Abrechnungsperiode[];
   variablePeriodenZusaetze: VariablerPeriodenZusatz[];
   lohnkontoBuchungen: LohnkontoBuchung[];
-  verteilplanVorschlaege: VerteilplanVorschlag[];
   aktivePeriodeId: string | null;
   isOnline: boolean;
   isLoading: boolean;
@@ -60,7 +57,6 @@ const initialState: AppState = {
   abrechnungsperioden: [],
   variablePeriodenZusaetze: [],
   lohnkontoBuchungen: [],
-  verteilplanVorschlaege: [],
   aktivePeriodeId: null,
   isOnline: navigator.onLine,
   isLoading: true,
@@ -77,7 +73,6 @@ type Action =
   | { type: 'SET_ABRECHNUNGSPERIODEN'; payload: Abrechnungsperiode[] }
   | { type: 'SET_VARIABLE_PERIODEN_ZUSAETZE'; payload: VariablerPeriodenZusatz[] }
   | { type: 'SET_LOHNKONTO_BUCHUNGEN'; payload: LohnkontoBuchung[] }
-  | { type: 'SET_VERTEILPLAN_VORSCHLAEGE'; payload: VerteilplanVorschlag[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_LOADING'; payload: boolean };
@@ -107,8 +102,6 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, variablePeriodenZusaetze: action.payload };
     case 'SET_LOHNKONTO_BUCHUNGEN':
       return { ...state, lohnkontoBuchungen: action.payload };
-    case 'SET_VERTEILPLAN_VORSCHLAEGE':
-      return { ...state, verteilplanVorschlaege: action.payload };
     case 'SET_AKTIVE_PERIODE':
       return { ...state, aktivePeriodeId: action.payload };
     case 'SET_ONLINE':
@@ -194,9 +187,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubLohnkonto = lohnkontoBuchungenListener((list) => {
       dispatch({ type: 'SET_LOHNKONTO_BUCHUNGEN', payload: list });
     });
-    const unsubVorschlaege = verteilplanVorschlaegeListener((list) => {
-      dispatch({ type: 'SET_VERTEILPLAN_VORSCHLAEGE', payload: list });
-    });
 
     return () => {
       unsubMitarbeiter();
@@ -206,7 +196,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubPerioden();
       unsubZusaetze();
       unsubLohnkonto();
-      unsubVorschlaege();
     };
   }, []);
 
