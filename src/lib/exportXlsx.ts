@@ -297,11 +297,7 @@ export async function exportiereLohnuebermittlung(
   ];
 
   // Sortierung: nach Name
-  // Reihenfolge identisch zur Abrechnungs-UI: `ergebnisse` kommt bereits
-  // 4-stufig sortiert (Festgehalt → Stundenarbeit → Lohnkonto-Saldo →
-  // Austräger nach Brutto desc) aus berechneAbrechnung() — keine eigene
-  // Sortierung hier.
-  const sortiert = ergebnisse;
+  const sortiert = [...ergebnisse].sort((a, b) => a.mitarbeiter.name.localeCompare(b.mitarbeiter.name, 'de'));
 
   let r = headerRow + 1;
   let sumVorschuss = 0;
