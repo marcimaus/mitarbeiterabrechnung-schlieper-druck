@@ -477,6 +477,9 @@ function MitarbeiterForm({
         abgemeldet: initial.abgemeldet ?? false,
         abmeldungUebermittlungDatum: initial.abmeldungUebermittlungDatum,
         letzteAbrechnungsperiodeId: initial.letzteAbrechnungsperiodeId,
+        abmeldungGeplant: initial.abmeldungGeplant,
+        abmeldungZielPeriodeId: initial.abmeldungZielPeriodeId,
+        abmeldungGeplantNotiz: initial.abmeldungGeplantNotiz,
         geburtsdatum: initial.geburtsdatum,
         rollen: [...initial.rollen],
         hatFestgehalt: initial.hatFestgehalt ?? false,
@@ -993,22 +996,31 @@ function MitarbeiterForm({
       </FormField>
 
       {/* Rollen */}
-      <FormField label="Rollen *">
+      <FormField
+        label="Rollen *"
+        hint='Die Rolle „sonstige" kann nur der Admin setzen — bei „sonstige" werden Ist-Zeiten der Zeiterfassung abgerechnet (sonst nur Soll-Zeiten).'
+      >
         <div className="flex flex-wrap gap-2 mt-1">
-          {ALLE_ROLLEN.map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => toggleRolle(r)}
-              className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                form.rollen.includes(r)
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
-              }`}
-            >
-              {ROLLEN_LABELS[r]}
-            </button>
-          ))}
+          {ALLE_ROLLEN.map((r) => {
+            const aktiv = form.rollen.includes(r);
+            const gesperrt = r === 'sonstige' && !isAdmin;
+            return (
+              <button
+                key={r}
+                type="button"
+                onClick={() => { if (!gesperrt) toggleRolle(r); }}
+                disabled={gesperrt}
+                title={gesperrt ? 'Nur durch Admin änderbar' : undefined}
+                className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                  aktiv
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                } ${gesperrt ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {ROLLEN_LABELS[r]}{gesperrt && ' 🔒'}
+              </button>
+            );
+          })}
         </div>
       </FormField>
 
@@ -1734,6 +1746,62 @@ function MitarbeiterForm({
                   </select>
                 </FormField>
               </>
+            )}
+
+            {!form.abgemeldet && (
+              <div className="border-t border-red-200 pt-4 space-y-3">
+                <div className="text-sm font-semibold text-amber-900">📌 Geplante Abmeldung</div>
+                <FormField label="Vormerken">
+                  <label className="flex items-start gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={form.abmeldungGeplant ?? false}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        abmeldungGeplant: e.target.checked || undefined,
+                        // Felder bei Deaktivierung entfernen
+                        abmeldungZielPeriodeId: e.target.checked ? f.abmeldungZielPeriodeId : undefined,
+                        abmeldungGeplantNotiz: e.target.checked ? f.abmeldungGeplantNotiz : undefined,
+                      }))}
+                      className="rounded mt-0.5"
+                    />
+                    <span>
+                      <span className="font-medium">Mit nächstem Monatswechsel/Abschluss zur Abmeldung vorschlagen</span>
+                      <span className="block text-xs text-gray-500">
+                        Erscheint dann in der Vorschlagsliste der Zielperiode in der Abrechnung — endgültig wird der MA erst beim Periodenabschluss abgemeldet.
+                      </span>
+                    </span>
+                  </label>
+                </FormField>
+                {form.abmeldungGeplant && (
+                  <>
+                    <FormField label="Zielperiode" hint="Leer lassen = mit der zeitlich nächsten offenen Periode.">
+                      <select
+                        value={form.abmeldungZielPeriodeId ?? ''}
+                        onChange={(e) => setForm((f) => ({ ...f, abmeldungZielPeriodeId: e.target.value || undefined }))}
+                        className={inputClass}
+                      >
+                        <option value="">— die nächste offene Periode —</option>
+                        {[...abrechnungsperioden]
+                          .filter((p) => p.status === 'offen')
+                          .sort((a, b) => (a.jahr !== b.jahr ? a.jahr - b.jahr : a.monat - b.monat))
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+                          ))}
+                      </select>
+                    </FormField>
+                    <FormField label="Notiz (optional)">
+                      <input
+                        type="text"
+                        value={form.abmeldungGeplantNotiz ?? ''}
+                        onChange={(e) => setForm((f) => ({ ...f, abmeldungGeplantNotiz: e.target.value || undefined }))}
+                        placeholder="z. B. Hintergrund / Auslöser"
+                        className={inputClass}
+                      />
+                    </FormField>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>
