@@ -1988,6 +1988,16 @@ function AnAbmeldungenListe({
   }
   async function handleAbmeldedatumAendern(m: Mitarbeiter, datum: string) {
     if (datum === m.abmeldungUebermittlungDatum) return;
+    // Datum darf nicht NACH dem Periodenende liegen — sonst würde der MA
+    // mit einem späteren Abmeldedatum geführt, beim Abschluss aber bereits
+    // als „abgemeldet" markiert und in Folgeperioden nicht mehr erscheinen.
+    if (datum && datum > periodenEndeIso) {
+      alert(
+        `Das Abmeldedatum darf nicht nach dem Ende der Abrechnungsperiode (${periodenEndeIso}) liegen.\n\n` +
+          `Sonst würde der Mitarbeiter mit dem Abschluss als abgemeldet gekennzeichnet, sein Abmeldedatum aber nach der Periode liegen — er erschiene in der nächsten Abrechnung nicht mehr, obwohl er dort eigentlich noch hingehört.`
+      );
+      return;
+    }
     await aktualisiereMitarbeiter(m.id, { abmeldungUebermittlungDatum: datum || undefined });
   }
 
@@ -2144,8 +2154,10 @@ function AnAbmeldungenListe({
                       <input
                         type="date"
                         defaultValue={effektivesAbmeldedatum(m)}
+                        max={periodenEndeIso}
                         disabled={istGesperrt}
                         onBlur={(e) => handleAbmeldedatumAendern(m, e.target.value)}
+                        title={`Maximal ${periodenEndeIso} (Ende der Abrechnungsperiode)`}
                         className="border border-gray-200 rounded px-1.5 py-0.5 text-xs disabled:bg-gray-50 disabled:text-gray-500"
                       />
                     </td>
