@@ -205,6 +205,11 @@ function AbrechnungInhalt() {
           abmeldungUebermittlungDatum: m.abmeldungUebermittlungDatum ?? heuteIso,
           letzteAbrechnungsperiodeId: selectedPeriode.id,
           isActive: false,
+          // Cleanup: geplante Abmeldung-Felder entfernen — der MA ist jetzt
+          // tatsächlich abgemeldet, das Vormerk-Flag ist obsolet.
+          abmeldungGeplant: undefined,
+          abmeldungZielPeriodeId: undefined,
+          abmeldungGeplantNotiz: undefined,
         });
       }
       // 2) Berechnetes Ergebnis als Snapshot mitschreiben — danach lassen sich
@@ -1884,7 +1889,7 @@ function AnAbmeldungenListe({
   istGesperrt: boolean;
   ergebnisse: MitarbeiterAbrechnung[];
 }) {
-  const { mitarbeiter } = useApp();
+  const { mitarbeiter, abrechnungsperioden } = useApp();
 
   // IDs der MA, die in der aktuellen Berechnung mit Beträgen vorkommen
   const idsMitBetrag = new Set<string>();
@@ -1933,21 +1938,44 @@ function AnAbmeldungenListe({
     )
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // „Nächste offene Periode" für die Auflösung von MAs mit
+  // abmeldungGeplant=true und ohne konkrete Zielperiode.
+  const naechsteOffene = (() => {
+    const offen = abrechnungsperioden
+      .filter((p) => p.status === 'offen')
+      .sort((a, b) => (a.jahr !== b.jahr ? a.jahr - b.jahr : a.monat - b.monat));
+    return offen[0];
+  })();
+
   // Vorschläge: aktive MA ohne Betrag in dieser Abrechnung — Kandidaten für
   // Abmeldung. Ausschluss: Festgehalt-MA, Geschäftsführer, bereits in der
   // Abmeldungs-Liste, bereits abgemeldet, noch nicht angemeldet.
+  // ZUSÄTZLICH: alle MAs mit `abmeldungGeplant=true`, deren Zielperiode auf
+  // diese Periode passt (oder die als „nächste offene" gilt).
+  const grundkandidat = (m: Mitarbeiter) =>
+    m.isActive
+    && !m.abgemeldet
+    && !m.nochNichtAngemeldet
+    && !ersetzteIds.has(m.id)
+    && m.letzteAbrechnungsperiodeId !== periode.id;
+
+  const passtZurGeplantenAbmeldung = (m: Mitarbeiter) => {
+    if (!m.abmeldungGeplant) return false;
+    if (m.abmeldungZielPeriodeId) return m.abmeldungZielPeriodeId === periode.id;
+    return naechsteOffene?.id === periode.id;
+  };
+
   const abmeldungVorschlaege = mitarbeiter
-    .filter(
-      (m) =>
-        m.isActive &&
-        !m.abgemeldet &&
-        !m.nochNichtAngemeldet &&
-        !m.hatFestgehalt &&
-        !m.istGeschaeftsfuehrer &&
-        !idsMitBetrag.has(m.id) &&
-        !ersetzteIds.has(m.id) &&
-        m.letzteAbrechnungsperiodeId !== periode.id
-    )
+    .filter((m) => {
+      if (!grundkandidat(m)) return false;
+      if (passtZurGeplantenAbmeldung(m)) return true;
+      // Bisherige Logik für Auto-Vorschläge: aktive MA ohne Betrag
+      return (
+        !m.hatFestgehalt
+        && !m.istGeschaeftsfuehrer
+        && !idsMitBetrag.has(m.id)
+      );
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 
   // MA-Auswahl-Modal (manuell hinzufügen)
@@ -2157,24 +2185,37 @@ function AnAbmeldungenListe({
                 💡 {abmeldungVorschlaege.length} Vorschlag{abmeldungVorschlaege.length === 1 ? '' : 'e'} (aktive MA ohne Betrag in dieser Periode)
               </summary>
               <p className="mt-1 mb-2 text-[11px] text-red-700">
-                Diese Mitarbeiter haben in der aktuellen Abrechnung keinen Betrag — Klick auf „+", um sie zur Abmelde-Liste hinzuzufügen.
+                Vorschläge enthalten MAs ohne Betrag in der Periode UND MAs, die per
+                „geplante Abmeldung" für diese Periode vorgemerkt sind. Klick auf „+",
+                um sie zur Abmelde-Liste hinzuzufügen.
               </p>
               <ul className="space-y-1 max-h-48 overflow-y-auto">
-                {abmeldungVorschlaege.map((m) => (
-                  <li key={m.id} className="flex items-center justify-between bg-white rounded border border-red-100 px-2 py-1">
-                    <span>
-                      <span className="font-medium text-gray-900">{m.name}</span>
-                      <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
-                    </span>
-                    <button
-                      onClick={() => handleAuswahlAb(m)}
-                      className="text-xs text-red-700 hover:text-red-900 font-medium px-1.5"
-                      title="Zur Abmeldungs-Liste hinzufügen"
-                    >
-                      + abmelden
-                    </button>
-                  </li>
-                ))}
+                {abmeldungVorschlaege.map((m) => {
+                  const vorgemerkt = passtZurGeplantenAbmeldung(m);
+                  return (
+                    <li key={m.id} className="flex items-center justify-between bg-white rounded border border-red-100 px-2 py-1">
+                      <span>
+                        <span className="font-medium text-gray-900">{m.name}</span>
+                        <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
+                        {vorgemerkt && (
+                          <span
+                            className="ml-2 text-[10px] bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded"
+                            title={m.abmeldungGeplantNotiz || 'Per geplanter Abmeldung vorgemerkt'}
+                          >
+                            📌 vorgemerkt
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        onClick={() => handleAuswahlAb(m)}
+                        className="text-xs text-red-700 hover:text-red-900 font-medium px-1.5"
+                        title="Zur Abmeldungs-Liste hinzufügen"
+                      >
+                        + abmelden
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </details>
           </div>
