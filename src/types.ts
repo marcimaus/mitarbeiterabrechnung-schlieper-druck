@@ -145,6 +145,14 @@ export interface Mitarbeiter {
   abmeldungUebermittlungDatum?: string;
   /** Letzte Abrechnungsperiode des MA. */
   letzteAbrechnungsperiodeId?: string;
+  /** Vormerkung: MA soll mit nächstem Monatswechsel/Abschluss zur Abmeldung
+   *  vorgeschlagen werden. Erscheint dann in der Vorschlagsliste der
+   *  Zielperiode (oder der nächsten offenen, falls Zielperiode leer). */
+  abmeldungGeplant?: boolean;
+  /** Optional konkrete Ziel-Periode für die geplante Abmeldung. */
+  abmeldungZielPeriodeId?: string;
+  /** Optional Notiz zum Hintergrund der geplanten Abmeldung. */
+  abmeldungGeplantNotiz?: string;
   teilgebietFreigaben?: string[];      // IDs der Teilgebiete, die dieser MA austragen darf
   teilgebietBoni?: TeilgebietBonus[];  // Bonus je Teilgebiet und Ausgabe
   erstelltAm: number;     // Unix-Timestamp ms
@@ -605,6 +613,29 @@ export interface AuditLog {
   entitaetId: string;
   aktion: string;              // z.B. 'erstellt', 'bearbeitet', 'gelöscht'
   details?: string;
+}
+
+// ---- Verteilplan-Vorschläge ---------------------------------
+//
+// Benutzer „Abrechnung" schlägt Änderungen am Verteilplan vor (neuer
+// Standardausträger eines Teilgebiets und/oder neue Stückzahl). Der Admin
+// übernimmt sie kontrolliert beim Monatswechsel/Abschluss. Ein Vorschlag
+// gilt für eine konkrete Zielperiode. Nach Übernahme/Ablehnung wird der
+// Datensatz gelöscht — keine Audit-Historie.
+//
+// Mind. eines von `vorgeschlagenerStandardAustraegerId` /
+// `vorgeschlageneStueckzahl` muss gesetzt sein (UI-Validierung).
+
+export interface VerteilplanVorschlag {
+  id: string;
+  teilgebietId: string;
+  zielPeriodeId: string;
+  vorgeschlagenerStandardAustraegerId?: string | null;
+  vorgeschlageneStueckzahl?: number;
+  notiz?: string;
+  erstelltVon: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
 }
 
 // ---- Hilfsfunktionen / Utils-Typen -------------------------
