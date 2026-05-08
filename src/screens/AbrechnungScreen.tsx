@@ -1865,14 +1865,14 @@ function SummaryCard({
 }
 
 // ============================================================
-// AN- / ABMELDUNGEN ANS LOHNBÜRO
+// ABMELDUNGEN ANS LOHNBÜRO
 // Listet alle MA, die in dieser Periode ans Lohnbüro gemeldet werden müssen:
-//  - Anmeldungen: alle MA mit nochNichtAngemeldet=true
-//  - Abmeldungen: alle MA, die durch einen anderen MA in dieser Periode
-//    ersetzt werden (ersetztMitarbeiterId-Verweis); plus alle MA, die der
-//    User manuell zur Abmeldung markiert hat (abgemeldet=true wird beim
-//    Periodenabschluss automatisch gesetzt).
-// Das Datum kann inline editiert werden — es wird direkt ins MA-Doc geschrieben.
+// MAs, die durch einen anderen MA ersetzt werden (ersetztMitarbeiterId-Verweis)
+// plus MAs, die der User manuell zur Abmeldung markiert hat. Das Kennzeichen
+// abgemeldet=true wird beim Periodenabschluss automatisch gesetzt. Das Datum
+// kann inline editiert werden — es wird direkt ins MA-Doc geschrieben.
+// Anmeldungen werden hier NICHT geführt — das nochNichtAngemeldet-Flag wird
+// ausschließlich manuell im Mitarbeiter-Stamm gesetzt/entfernt.
 // ============================================================
 
 function AnAbmeldungenListe({
@@ -1900,23 +1900,9 @@ function AnAbmeldungenListe({
     const dd = last.getDate().toString().padStart(2, '0');
     return `${yyyy}-${mm}-${dd}`;
   })();
-  const periodenStartIso = `${periode.jahr}-${periode.monat.toString().padStart(2, '0')}-01`;
-
-  function effektivesAnmeldedatum(m: Mitarbeiter): string {
-    if (m.startDatum && m.startDatum >= periodenStartIso && m.startDatum <= periodenEndeIso) {
-      return m.startDatum;
-    }
-    return periodenEndeIso;
-  }
   function effektivesAbmeldedatum(m: Mitarbeiter): string {
     return m.abmeldungUebermittlungDatum ?? periodenEndeIso;
   }
-
-  // Anmeldungen: alle MA mit nochNichtAngemeldet=true (unabhängig von der
-  // Periode; der User trägt das Anmelde-Datum ggf. ein und filtert so selbst).
-  const anmeldungen = mitarbeiter
-    .filter((m) => m.nochNichtAngemeldet === true)
-    .sort((a, b) => a.name.localeCompare(b.name));
 
   // Abmeldungen: ersetzte MAs (deren ID an einem anderen MA als
   // ersetztMitarbeiterId steht). Plus ggf. bereits manuell abgemeldete in
@@ -1951,13 +1937,8 @@ function AnAbmeldungenListe({
     .sort((a, b) => a.name.localeCompare(b.name));
 
   // MA-Auswahl-Modal (manuell hinzufügen)
-  const [showAuswahlAn, setShowAuswahlAn] = useState(false);
   const [showAuswahlAb, setShowAuswahlAb] = useState(false);
 
-  async function handleAnmeldedatumAendern(m: Mitarbeiter, datum: string) {
-    if (datum === m.startDatum) return;
-    await aktualisiereMitarbeiter(m.id, { startDatum: datum || undefined });
-  }
   async function handleAbmeldedatumAendern(m: Mitarbeiter, datum: string) {
     if (datum === m.abmeldungUebermittlungDatum) return;
     // Datum darf nicht NACH dem Periodenende liegen — sonst würde der MA
@@ -1973,19 +1954,11 @@ function AnAbmeldungenListe({
     await aktualisiereMitarbeiter(m.id, { abmeldungUebermittlungDatum: datum || undefined });
   }
 
-  async function handleAuswahlAn(m: Mitarbeiter) {
-    await aktualisiereMitarbeiter(m.id, { nochNichtAngemeldet: true });
-    setShowAuswahlAn(false);
-  }
   async function handleAuswahlAb(m: Mitarbeiter) {
     await aktualisiereMitarbeiter(m.id, { letzteAbrechnungsperiodeId: periode.id });
     setShowAuswahlAb(false);
   }
 
-  async function handleVomAnEntfernen(m: Mitarbeiter) {
-    if (!confirm(`„${m.name}" aus der Anmelde-Liste entfernen? Das Kennzeichen „Noch nicht angemeldet" wird abgewählt.`)) return;
-    await aktualisiereMitarbeiter(m.id, { nochNichtAngemeldet: false });
-  }
   async function handleVomAbEntfernen(m: Mitarbeiter) {
     if (!confirm(`„${m.name}" aus der Abmelde-Liste entfernen?`)) return;
     // Wenn er nur über letzteAbrechnungsperiodeId in der Liste war: Feld löschen.
@@ -2002,9 +1975,6 @@ function AnAbmeldungenListe({
   }
 
   // Kandidaten für die manuelle Auswahl
-  const kandidatenAn = mitarbeiter
-    .filter((m) => !m.nochNichtAngemeldet && !m.abgemeldet)
-    .sort((a, b) => a.name.localeCompare(b.name));
   const kandidatenAb = mitarbeiter
     .filter(
       (m) =>
@@ -2015,72 +1985,7 @@ function AnAbmeldungenListe({
     .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
-    <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {/* Anmeldungen */}
-      <div className="bg-white rounded-xl shadow-sm border border-blue-200 overflow-hidden">
-        <div className="bg-blue-50 px-4 py-2 border-b border-blue-200 flex items-center justify-between">
-          <h3 className="font-semibold text-blue-900 text-sm">
-            📝 Anmeldungen ans Lohnbüro
-            <span className="ml-2 font-normal text-xs text-blue-700">
-              ({anmeldungen.length})
-            </span>
-          </h3>
-          {!istGesperrt && (
-            <button
-              onClick={() => setShowAuswahlAn(true)}
-              className="text-xs text-blue-700 hover:text-blue-900 underline"
-            >
-              + MA hinzufügen
-            </button>
-          )}
-        </div>
-        {anmeldungen.length === 0 ? (
-          <div className="px-4 py-6 text-center text-gray-400 text-xs italic">
-            Keine offenen Anmeldungen.
-          </div>
-        ) : (
-          <table className="w-full text-xs">
-            <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
-              <tr>
-                <th className="px-3 py-1.5 text-left font-medium">Mitarbeiter</th>
-                <th className="px-3 py-1.5 text-left font-medium">Anmeldung zum</th>
-                <th className="px-3 py-1.5 w-8"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {anmeldungen.map((m) => (
-                <tr key={m.id} className="hover:bg-blue-50/40">
-                  <td className="px-3 py-1.5">
-                    <span className="font-medium text-gray-900">{m.name}</span>
-                    <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <input
-                      type="date"
-                      defaultValue={effektivesAnmeldedatum(m)}
-                      disabled={istGesperrt}
-                      onBlur={(e) => handleAnmeldedatumAendern(m, e.target.value)}
-                      className="border border-gray-200 rounded px-1.5 py-0.5 text-xs disabled:bg-gray-50 disabled:text-gray-500"
-                    />
-                  </td>
-                  <td className="px-3 py-1.5 text-right">
-                    {!istGesperrt && (
-                      <button
-                        onClick={() => handleVomAnEntfernen(m)}
-                        className="text-gray-400 hover:text-red-600 text-[11px]"
-                        title="Aus der Liste entfernen"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
+    <div className="mt-6">
       {/* Abmeldungen */}
       <div className="bg-white rounded-xl shadow-sm border border-red-200 overflow-hidden">
         <div className="bg-red-50 px-4 py-2 border-b border-red-200 flex items-center justify-between">
@@ -2193,15 +2098,6 @@ function AnAbmeldungenListe({
         )}
       </div>
 
-      {/* MA-Auswahl-Modal: Anmeldung */}
-      {showAuswahlAn && (
-        <MaAuswahlModal
-          titel="Mitarbeiter zur Anmeldung hinzufügen"
-          mitarbeiter={kandidatenAn}
-          onClose={() => setShowAuswahlAn(false)}
-          onSelect={handleAuswahlAn}
-        />
-      )}
       {showAuswahlAb && (
         <MaAuswahlModal
           titel="Mitarbeiter zur Abmeldung hinzufügen"
