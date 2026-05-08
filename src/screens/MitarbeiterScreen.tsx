@@ -993,22 +993,31 @@ function MitarbeiterForm({
       </FormField>
 
       {/* Rollen */}
-      <FormField label="Rollen *">
+      <FormField
+        label="Rollen *"
+        hint='Die Rolle „sonstige" kann nur der Admin setzen — bei „sonstige" werden Ist-Zeiten der Zeiterfassung abgerechnet (sonst nur Soll-Zeiten).'
+      >
         <div className="flex flex-wrap gap-2 mt-1">
-          {ALLE_ROLLEN.map((r) => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => toggleRolle(r)}
-              className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                form.rollen.includes(r)
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
-              }`}
-            >
-              {ROLLEN_LABELS[r]}
-            </button>
-          ))}
+          {ALLE_ROLLEN.map((r) => {
+            const aktiv = form.rollen.includes(r);
+            const gesperrt = r === 'sonstige' && !isAdmin;
+            return (
+              <button
+                key={r}
+                type="button"
+                onClick={() => { if (!gesperrt) toggleRolle(r); }}
+                disabled={gesperrt}
+                title={gesperrt ? 'Nur durch Admin änderbar' : undefined}
+                className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                  aktiv
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
+                } ${gesperrt ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {ROLLEN_LABELS[r]}{gesperrt && ' 🔒'}
+              </button>
+            );
+          })}
         </div>
       </FormField>
 
