@@ -1009,8 +1009,15 @@ export function abonniereReklamationen(cb: (list: Reklamation[]) => void): Unsub
 export async function erstelleReklamation(
   data: Omit<Reklamation, 'id' | 'erstelltAm' | 'aktualisiertAm'>
 ): Promise<string> {
+  // stripUndef: Firestore akzeptiert keine undefined-Werte. Das Formular
+  // setzt leere optionale Felder (telefon, email, teilgebietId, …)
+  // explizit auf undefined — ohne diesen Filter scheitert addDoc.
   const ts = now();
-  const ref = await addDoc(collection(db, 'reklamationen'), { ...data, erstelltAm: ts, aktualisiertAm: ts });
+  const ref = await addDoc(collection(db, 'reklamationen'), {
+    ...stripUndef(data as Record<string, unknown>),
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
   return ref.id;
 }
 
