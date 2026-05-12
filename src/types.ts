@@ -71,6 +71,13 @@ export interface Mitarbeiter {
    */
   abrechnungAlsErwachseneMiLoG?: boolean;
   fixesGehalt?: number;
+  /**
+   * Fahrtkosten-Erstattung freigeschaltet. Nur wenn `true`, sieht der MA
+   * die Fahrtkosten-Maske (Menü-Item + eigene Fahrten). Standardmäßig
+   * `false` / undefined — sonst würde jeder MA Fahrten erfassen können.
+   * Admins und Abrechnung sehen die Maske unabhängig davon.
+   */
+  fahrtkostenerstattung?: boolean;
   fahrkostenEurProKm?: number;   // Überschreibt den globalen Kilomtersatz
   /** Wenn true: Mitarbeiter bekommt fixes Monatsgehalt statt variabler Abrechnung. */
   hatFestgehalt: boolean;

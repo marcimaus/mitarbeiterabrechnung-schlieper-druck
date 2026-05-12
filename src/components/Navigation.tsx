@@ -10,10 +10,14 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Start', icon: '🏠' },
+  // Startseite nur für Admin/Abrechnung — Mitarbeiter landen direkt auf der
+  // Stempeluhr (Redirect in App.tsx).
+  { to: '/', label: 'Start', icon: '🏠', roles: ['admin', 'abrechnung'] },
   { to: '/zeiterfassung', label: 'Stempeluhr', icon: '⏱' },
   { to: '/fahrten', label: 'Fahrtkosten', icon: '🚗', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
-  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', roles: ['admin', 'abrechnung'] },
+  // Zeitübersicht: für Mitarbeiter ebenfalls sichtbar — eingeschränkt auf
+  // die eigenen Daten (Filterung im Screen).
+  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   { to: '/mitarbeiter', label: 'Mitarbeiter', icon: '👥', roles: ['admin', 'abrechnung'] },
   { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin', 'abrechnung'] },
   { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin', 'abrechnung'] },
@@ -38,14 +42,26 @@ function rollenConfig(userRole: string | null, adminName: string) {
 }
 
 export default function Navigation() {
-  const { userRole, isAdminAuthenticated, logoutAdmin, adminName } = useApp();
+  const { userRole, isAdminAuthenticated, logoutAdmin, adminName, mitarbeiter, mitarbeiterId } = useApp();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Eingeloggter Mitarbeiter — wird für das Fahrtkosten-Item gebraucht
+  // (nur sichtbar wenn fahrtkostenerstattung am MA gesetzt ist).
+  const loggedInMa = mitarbeiterId
+    ? mitarbeiter.find((m) => m.id === mitarbeiterId)
+    : undefined;
 
   const visibleItems = NAV_ITEMS.filter((item) => {
     if (!item.roles) return true;
     if (!userRole) return false;
-    return item.roles.includes(userRole);
+    if (!item.roles.includes(userRole)) return false;
+    // Spezialfall: Fahrtkosten-Item für Mitarbeiter nur, wenn das
+    // Kennzeichen am MA gesetzt ist. Admin/Abrechnung sehen es immer.
+    if (item.to === '/fahrten' && userRole === 'mitarbeiter') {
+      return loggedInMa?.fahrtkostenerstattung === true;
+    }
+    return true;
   });
 
   const rolle = rollenConfig(userRole, adminName);
