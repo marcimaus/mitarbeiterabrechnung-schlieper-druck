@@ -323,8 +323,40 @@ export interface Abrechnungsperiode {
   };
   /** Redundant zum Snapshot-Timestamp, vereinfacht UI-Checks. */
   monatswechselDurchgefuehrtAm?: number;
+  /**
+   * Snapshot der Abmelde-Liste zum Zeitpunkt des Periodenabschlusses.
+   * Wenn vorhanden, ersetzt er die Live-Liste in der UI — auch nachdem die
+   * Periode wieder geöffnet wurde, damit die gesetzten Kennzeichen
+   * nachvollziehbar bleiben. Pro Eintrag kann der Admin einzeln „MA wieder
+   * aktivieren" auslösen, was den Eintrag aus dem Snapshot entfernt.
+   */
+  abmeldungenSnapshot?: {
+    erstelltAm: number;
+    eintraege: Array<{
+      mitarbeiterId: string;
+      name: string;
+      nummer: string;
+      abmeldedatum: string;        // ISO YYYY-MM-DD
+      ersetztDurchId?: string;     // historisch — kann leer sein
+    }>;
+  };
   gesperrtAm?: number;                // Zeitstempel des Abschlusses
   erstelltAm: number;
+}
+
+// ---- Austrägerwechsel-Vorbereitung -------------------------
+//
+// Liste vorgemerkter Standardausträger-Wechsel: pro Teilgebiet ein Eintrag
+// (Upsert auf teilgebietId). Beim nächsten Monatswechsel werden die
+// Vorschläge dem Admin zur Einzel-Bestätigung angeboten.
+
+export interface Austraegerwechsel {
+  id: string;
+  teilgebietId: string;
+  neuerMitarbeiterId: string;
+  erstelltVon?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
 }
 
 // ---- Einsatz (wer trägt welches Gebiet aus) ----------------

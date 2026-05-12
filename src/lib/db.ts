@@ -37,6 +37,7 @@ import type {
   VariablerPeriodenZusatz,
   AuslieferungsMemo,
   LohnkontoBuchung,
+  Austraegerwechsel,
 } from '../types';
 import { berechneStapel } from './berechnung';
 import { normalisiereRollen } from '../types';
@@ -740,7 +741,19 @@ export async function schliessePeriodeAb(
    * hier `unknown[]` um zirkuläre Imports zu vermeiden. Der Aufrufer cast't
    * entsprechend.
    */
-  abrechnungErgebnisse?: unknown[]
+  abrechnungErgebnisse?: unknown[],
+  /**
+   * Liste der abgemeldeten Mitarbeiter für diese Periode (Vorschläge UND
+   * vom Benutzer übernommene Einträge). Wird im Snapshot persistiert; bleibt
+   * auch nach `oeffnePeriodeWieder` erhalten.
+   */
+  abmeldungenEintraege?: Array<{
+    mitarbeiterId: string;
+    name: string;
+    nummer: string;
+    abmeldedatum: string;
+    ersetztDurchId?: string;
+  }>
 ): Promise<void> {
   const ts = now();
 
@@ -786,6 +799,10 @@ export async function schliessePeriodeAb(
       }
     : undefined;
 
+  const abmeldungenSnapshotEintrag = abmeldungenEintraege && abmeldungenEintraege.length > 0
+    ? { erstelltAm: ts, eintraege: stripUndefDeep(abmeldungenEintraege) as typeof abmeldungenEintraege }
+    : undefined;
+
   // Periode aktualisieren
   await updateDoc(doc(db, 'abrechnungsperioden', periodeId), {
     ...stripUndef({
@@ -793,6 +810,7 @@ export async function schliessePeriodeAb(
       periodeSnapshot,
       paramSnapshot: params ?? undefined,
       abrechnungSnapshot: abrechnungSnapshotEintrag,
+      abmeldungenSnapshot: abmeldungenSnapshotEintrag,
       gesperrtAm: ts,
     }),
   });
@@ -814,6 +832,35 @@ export async function schliessePeriodeAb(
         })
       )
     );
+  }
+}
+
+/**
+ * Entfernt einen einzelnen Eintrag aus `abmeldungenSnapshot.eintraege`.
+ * Wird verwendet wenn der Admin nach dem Verwerfen des Abschlusses einen
+ * abgemeldeten MA wieder aktiviert.
+ */
+export async function entferneAusAbmeldungenSnapshot(
+  periodeId: string,
+  mitarbeiterId: string
+): Promise<void> {
+  const ref = doc(db, 'abrechnungsperioden', periodeId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return;
+  const periode = snap.data() as Abrechnungsperiode;
+  if (!periode.abmeldungenSnapshot) return;
+  const verbleibend = periode.abmeldungenSnapshot.eintraege.filter(
+    (e) => e.mitarbeiterId !== mitarbeiterId
+  );
+  if (verbleibend.length === 0) {
+    await updateDoc(ref, { abmeldungenSnapshot: deleteField() });
+  } else {
+    await updateDoc(ref, {
+      abmeldungenSnapshot: {
+        ...periode.abmeldungenSnapshot,
+        eintraege: verbleibend,
+      },
+    });
   }
 }
 
@@ -1056,6 +1103,51 @@ export async function aktualisiereLohnkontoBuchung(
 
 export async function loescheLohnkontoBuchung(id: string): Promise<void> {
   await deleteDoc(doc(db, 'lohnkontoBuchungen', id));
+}
+
+// ---- Austrägerwechsel-Vorbereitung -------------------------
+
+export async function ladeAustraegerwechsel(): Promise<Austraegerwechsel[]> {
+  const snap = await getDocs(collection(db, 'austraegerwechsel'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Austraegerwechsel));
+}
+
+export function austraegerwechselListener(
+  cb: (list: Austraegerwechsel[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'austraegerwechsel'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Austraegerwechsel)));
+  });
+}
+
+/**
+ * Upsert pro Teilgebiet: jeder TG kann nur einen offenen Wechsel-Eintrag
+ * haben — alte Einträge werden überschrieben.
+ */
+export async function setzeAustraegerwechsel(
+  data: Omit<Austraegerwechsel, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const existing = await getDocs(query(
+    collection(db, 'austraegerwechsel'),
+    where('teilgebietId', '==', data.teilgebietId)
+  ));
+  const payload = { ...stripUndef(data as Record<string, unknown>), aktualisiertAm: ts };
+  if (!existing.empty) {
+    const id = existing.docs[0].id;
+    // Falls mehrere Doubletten existieren: ältere zusätzlich entfernen.
+    await Promise.all(
+      existing.docs.slice(1).map((d) => deleteDoc(doc(db, 'austraegerwechsel', d.id)))
+    );
+    await updateDoc(doc(db, 'austraegerwechsel', id), payload);
+    return id;
+  }
+  const ref = await addDoc(collection(db, 'austraegerwechsel'), { ...payload, erstelltAm: ts });
+  return ref.id;
+}
+
+export async function loescheAustraegerwechsel(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'austraegerwechsel', id));
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------
