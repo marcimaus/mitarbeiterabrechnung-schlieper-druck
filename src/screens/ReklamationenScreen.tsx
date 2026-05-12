@@ -18,6 +18,9 @@ import {
   reklamationFormState,
   reklamationTgIds,
   reklamationMaIds,
+  erstelleOrtZuPlzMap,
+  findePlzFuerOrt,
+  buildGoogleMapsUrl,
 } from '../lib/reklamation';
 import { getISOWeek, getISOYear } from '../lib/kalender';
 
@@ -164,6 +167,18 @@ function ReklamationenInhalt() {
                     )}
                     {r.seitWann && (
                       <span className="text-xs text-gray-400">seit {new Date(r.seitWann).toLocaleDateString('de-DE')}</span>
+                    )}
+                    {r.mailLink && /^https?:\/\//i.test(r.mailLink) && (
+                      <a
+                        href={r.mailLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-xs text-blue-600 hover:text-blue-800 underline"
+                        title="Mail-Thread öffnen"
+                      >
+                        📧 Mail
+                      </a>
                     )}
                   </div>
                   {r.anmerkung && (
@@ -364,6 +379,25 @@ function ReklamationForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [maVorschlaege]);
 
+  // Ort → PLZ-Auto-Fill: einmal Map aufbauen (aus MA-Adressen), bei
+  // Ortsänderung prüfen, ob eindeutige PLZ existiert. Setzt PLZ nur, wenn
+  // sie aktuell leer ist — User-Eingabe wird nicht überschrieben.
+  const ortPlzMap = useMemo(() => erstelleOrtZuPlzMap(mitarbeiter), [mitarbeiter]);
+  useEffect(() => {
+    if (!form.ort.trim() || form.plz.trim()) return;
+    const plzVorschlag = findePlzFuerOrt(form.ort, ortPlzMap);
+    if (plzVorschlag) {
+      setForm((f) => (f.plz ? f : { ...f, plz: plzVorschlag }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.ort]);
+
+  // Google-Maps-URL — sobald genug Adressdaten vorliegen.
+  const mapsUrl = useMemo(
+    () => buildGoogleMapsUrl(form.strasse, form.hausnummer, form.plz, form.ort),
+    [form.strasse, form.hausnummer, form.plz, form.ort]
+  );
+
   function toggleTg(id: string) {
     setForm((f) => ({
       ...f,
@@ -413,6 +447,7 @@ function ReklamationForm({
         mitgeteilt: form.mitgeteilt,
         seitWann: form.seitWann || undefined,
         schonMalMitgeteilt: form.schonMalMitgeteilt,
+        mailLink: form.mailLink || undefined,
       };
       if (initial) {
         await aktualisiereReklamation(initial.id, payload);
@@ -434,6 +469,7 @@ function ReklamationForm({
           mitgeteilt: payload.mitgeteilt!,
           seitWann: payload.seitWann,
           schonMalMitgeteilt: payload.schonMalMitgeteilt!,
+          mailLink: payload.mailLink,
         });
       }
       onSave();
@@ -491,7 +527,20 @@ function ReklamationForm({
 
       {/* Adresse — Basis für die TG-Vorschlagslogik */}
       <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
-        <div className="text-xs font-semibold text-gray-600">📍 Adresse (Basis für TG-Vorschlag)</div>
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold text-gray-600">📍 Adresse (Basis für TG-Vorschlag)</div>
+          {mapsUrl && (
+            <a
+              href={mapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-blue-600 hover:text-blue-800 underline inline-flex items-center gap-1"
+              title="Adresse auf Google Maps öffnen"
+            >
+              🗺️ Auf Google Maps ansehen
+            </a>
+          )}
+        </div>
         <div className="grid grid-cols-3 gap-2">
           <div className="col-span-2">
             <label className="block text-xs text-gray-500 mb-1">Straße</label>
@@ -787,6 +836,34 @@ function ReklamationForm({
           placeholder="Details zur Reklamation..."
           className={inputClass + ' resize-none'}
         />
+      </div>
+
+      {/* Mail-Link — Dokumentation der Verarbeitung */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          📧 Mail-Link
+          <span className="ml-1 text-xs text-gray-400 font-normal">(Verarbeitung / Korrespondenz)</span>
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="url"
+            value={form.mailLink}
+            onChange={(e) => setForm((f) => ({ ...f, mailLink: e.target.value }))}
+            placeholder="https://mail.google.com/mail/u/0/#inbox/..."
+            className={inputClass}
+          />
+          {form.mailLink && /^https?:\/\//i.test(form.mailLink) && (
+            <a
+              href={form.mailLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0 text-xs text-blue-600 hover:text-blue-800 underline self-center px-2"
+              title="Mail-Thread öffnen"
+            >
+              ↗ öffnen
+            </a>
+          )}
+        </div>
       </div>
 
       {/* Mitgeteilt */}

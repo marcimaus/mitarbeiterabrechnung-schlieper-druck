@@ -218,6 +218,82 @@ export function findePassendeMitarbeiter(
   return out;
 }
 
+// ---- Ort → PLZ-Lookup -----------------------------------------------------
+
+/** Normalisiert einen Ortsnamen: trim, lowercase, Umlaute aufgelöst. */
+function normalisiereOrt(s: string | undefined): string {
+  if (!s) return '';
+  return s
+    .toLowerCase()
+    .replace(/ß/g, 'ss')
+    .replace(/ä/g, 'ae')
+    .replace(/ö/g, 'oe')
+    .replace(/ü/g, 'ue')
+    .trim();
+}
+
+/**
+ * Baut eine Map (normalisierter Ort) → Set<PLZ> aus den Mitarbeiter-Adressen.
+ * Wird im Reklamations-Form genutzt, um die PLZ aus dem Ort vorzuschlagen
+ * (die Mitarbeiter wohnen typischerweise im Geschäftsgebiet, das ist der
+ * praktischste Datenpool ohne externe PLZ-DB).
+ */
+export function erstelleOrtZuPlzMap(
+  mitarbeiter: Mitarbeiter[]
+): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  for (const m of mitarbeiter) {
+    const ort = normalisiereOrt(m.adresse?.ort);
+    const plz = m.adresse?.plz?.trim();
+    if (!ort || !plz || !/^\d{5}$/.test(plz)) continue;
+    const set = map.get(ort) ?? new Set<string>();
+    set.add(plz);
+    map.set(ort, set);
+  }
+  return map;
+}
+
+/**
+ * Findet die eindeutige PLZ für einen Ortsnamen. Liefert `null`, wenn der
+ * Ort nicht bekannt ist oder mehrere PLZ darauf passen (dann darf nicht
+ * automatisch befüllt werden — der Nutzer entscheidet selbst).
+ */
+export function findePlzFuerOrt(
+  ort: string,
+  map: Map<string, Set<string>>
+): string | null {
+  const key = normalisiereOrt(ort);
+  if (!key) return null;
+  const set = map.get(key);
+  if (!set || set.size !== 1) return null;
+  return Array.from(set)[0];
+}
+
+// ---- Google-Maps-Link ----------------------------------------------------
+
+/**
+ * Liefert eine Google-Maps-Suche-URL für die übergebene Adresse, sobald
+ * mindestens Straße ODER PLZ vorhanden ist. `null`, wenn die Eingabe zu
+ * dünn ist.
+ */
+export function buildGoogleMapsUrl(
+  strasse: string,
+  hausnummer: string,
+  plz: string,
+  ort: string
+): string | null {
+  const teile = [
+    [strasse, hausnummer].filter((s) => s && s.trim()).join(' ').trim(),
+    [plz, ort].filter((s) => s && s.trim()).join(' ').trim(),
+    'Deutschland',
+  ].filter((s) => s.length > 0);
+  // Mindestens eine Adress-Komponente (Straße oder PLZ) muss vorhanden sein
+  // — sonst ist die URL nicht aussagekräftig.
+  if (!strasse.trim() && !plz.trim()) return null;
+  const q = encodeURIComponent(teile.join(', '));
+  return `https://www.google.com/maps/search/?api=1&query=${q}`;
+}
+
 // ---- Form-State-Migration -------------------------------------------------
 
 /**
@@ -242,6 +318,7 @@ export function reklamationFormState(initial: Reklamation | null): {
   mitgeteilt: boolean;
   seitWann: string;
   schonMalMitgeteilt: boolean;
+  mailLink: string;
 } {
   if (!initial) {
     return {
@@ -260,6 +337,7 @@ export function reklamationFormState(initial: Reklamation | null): {
       mitgeteilt: false,
       seitWann: '',
       schonMalMitgeteilt: false,
+      mailLink: '',
     };
   }
   return {
@@ -278,6 +356,7 @@ export function reklamationFormState(initial: Reklamation | null): {
     mitgeteilt: initial.mitgeteilt,
     seitWann: initial.seitWann ?? '',
     schonMalMitgeteilt: initial.schonMalMitgeteilt,
+    mailLink: initial.mailLink ?? '',
   };
 }
 

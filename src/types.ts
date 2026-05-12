@@ -633,6 +633,11 @@ export interface Reklamation {
   mitgeteilt: boolean;          // dem Mitarbeiter mitgeteilt
   seitWann?: string;            // ISO-Date: seit wann besteht das Problem
   schonMalMitgeteilt: boolean;  // wurde es schon mal mitgeteilt
+  /**
+   * Optionaler Link auf einen E-Mail-Thread (Gmail, Outlook, …), in dem die
+   * Verarbeitung der Reklamation dokumentiert ist.
+   */
+  mailLink?: string;
   erstelltAm: number;
   aktualisiertAm: number;
 }
