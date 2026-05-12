@@ -1844,17 +1844,24 @@ function LohnkontoEditor({
       setFehler('Bitte einen positiven Betrag eingeben.');
       return;
     }
-    if (art === 'verschiebung' && betragEur > ergebnis.gesamt) {
+    // Vergleiche in Cent-Integer rechnen — sonst meldet
+    // „79,30 > 79,29999…" einen Fehler, obwohl beide gleich aussehen.
+    const toCent = (eur: number) => Math.round(eur * 100);
+    const betragCent = toCent(betragEur);
+    if (art === 'verschiebung' && betragCent > toCent(ergebnis.gesamt)) {
       setFehler(
         `Verschiebung (${eur(betragEur)}) kann den Brutto dieser Periode (${eur(ergebnis.gesamt)}) nicht übersteigen.`
       );
       return;
     }
     if (art === 'verrechnung') {
-      const verfuegbar = ergebnis.lohnkontoSaldoVorPeriode + ergebnis.lohnkontoVerschiebungPeriode - ergebnis.lohnkontoVerrechnungPeriode;
-      if (betragEur > verfuegbar) {
+      const verfuegbarCent =
+        toCent(ergebnis.lohnkontoSaldoVorPeriode) +
+        toCent(ergebnis.lohnkontoVerschiebungPeriode) -
+        toCent(ergebnis.lohnkontoVerrechnungPeriode);
+      if (betragCent > verfuegbarCent) {
         setFehler(
-          `Verrechnung (${eur(betragEur)}) übersteigt das verfügbare Lohnkonto (${eur(verfuegbar)}).`
+          `Verrechnung (${eur(betragEur)}) übersteigt das verfügbare Lohnkonto (${eur(verfuegbarCent / 100)}).`
         );
         return;
       }
