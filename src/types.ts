@@ -610,11 +610,26 @@ export interface Reklamation {
   anruferName: string;
   telefon?: string;
   email?: string;
+  /** Adresse des Anrufers — Basis für die TG-Vorschlag-Logik. */
+  strasse?: string;
+  hausnummer?: string;
+  plz?: string;
+  ort?: string;
   briefkastenVorhanden: boolean;
   aufkleberKeineWerbung: boolean;
   anmerkung?: string;
+  /**
+   * Aktuell genutztes Plural-Feld: ein Reklamationsfall kann mehrere
+   * Teilgebiete betreffen (z. B. wenn eine Straße durch mehrere TGs
+   * verläuft). Der Verursacher wird später geklärt.
+   */
+  teilgebietIds?: string[];
+  /** Analog: mehrere Austräger/Springer können in Frage kommen. */
+  mitarbeiterIds?: string[];
+  /** @deprecated — bleibt für alte Datensätze lesbar, wird nicht mehr geschrieben. */
   teilgebietId?: string;
-  mitarbeiterId?: string;       // zuständiger Austräger
+  /** @deprecated — siehe teilgebietId. */
+  mitarbeiterId?: string;
   mitgeteilt: boolean;          // dem Mitarbeiter mitgeteilt
   seitWann?: string;            // ISO-Date: seit wann besteht das Problem
   schonMalMitgeteilt: boolean;  // wurde es schon mal mitgeteilt

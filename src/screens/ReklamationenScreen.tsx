@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -8,22 +8,18 @@ import {
   erstelleReklamation,
   aktualisiereReklamation,
   loescheReklamation,
+  ladeAusgaben,
+  ladeEinsaetze,
 } from '../lib/db';
-import type { Reklamation } from '../types';
-
-const DEFAULT_FORM: Omit<Reklamation, 'id' | 'erstelltAm' | 'aktualisiertAm'> = {
-  anruferName: '',
-  telefon: '',
-  email: '',
-  briefkastenVorhanden: true,
-  aufkleberKeineWerbung: false,
-  anmerkung: '',
-  teilgebietId: '',
-  mitarbeiterId: '',
-  mitgeteilt: false,
-  seitWann: '',
-  schonMalMitgeteilt: false,
-};
+import type { Reklamation, Ausgabe, Einsatz } from '../types';
+import {
+  findePassendeTeilgebiete,
+  findePassendeMitarbeiter,
+  reklamationFormState,
+  reklamationTgIds,
+  reklamationMaIds,
+} from '../lib/reklamation';
+import { getISOWeek, getISOYear } from '../lib/kalender';
 
 const inputClass =
   'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
@@ -54,8 +50,23 @@ function ReklamationenInhalt() {
     return true;
   });
 
-  const getTg = (id?: string) => id ? (teilgebiete.find((t) => t.id === id)?.name ?? '?') : '—';
-  const getMA = (id?: string) => id ? (mitarbeiter.find((m) => m.id === id)?.name ?? '?') : '—';
+  /** Liefert die Namensliste der mit der Reklamation verknüpften TGs (Plural + Legacy). */
+  function getTgNames(r: Reklamation): string[] {
+    return reklamationTgIds(r).map((id) => teilgebiete.find((t) => t.id === id)?.name ?? '?');
+  }
+  /** Liefert die Namensliste der zugeordneten Mitarbeiter (Plural + Legacy). */
+  function getMaNames(r: Reklamation): string[] {
+    return reklamationMaIds(r).map((id) => mitarbeiter.find((m) => m.id === id)?.name ?? '?');
+  }
+  /** Kompakt-Render: erste 2 Namen, „(+N)" Tooltip enthält die ganze Liste. */
+  function renderListe(namen: string[]): { text: string; titel: string } {
+    if (namen.length === 0) return { text: '—', titel: '' };
+    if (namen.length <= 2) return { text: namen.join(', '), titel: namen.join(', ') };
+    return {
+      text: `${namen.slice(0, 2).join(', ')} (+${namen.length - 2})`,
+      titel: namen.join(', '),
+    };
+  }
 
   async function toggleMitgeteilt(r: Reklamation) {
     await aktualisiereReklamation(r.id, { mitgeteilt: !r.mitgeteilt });
@@ -126,9 +137,20 @@ function ReklamationenInhalt() {
                 <td className="px-4 py-3">
                   <div className="font-medium text-gray-900">{r.anruferName}</div>
                   {r.telefon && <div className="text-xs text-gray-500">{r.telefon}</div>}
+                  {(r.strasse || r.plz || r.ort) && (
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      {[r.strasse, r.hausnummer].filter(Boolean).join(' ')}
+                      {(r.strasse || r.hausnummer) && (r.plz || r.ort) ? ', ' : ''}
+                      {[r.plz, r.ort].filter(Boolean).join(' ')}
+                    </div>
+                  )}
                 </td>
-                <td className="px-4 py-3 text-gray-600">{getTg(r.teilgebietId)}</td>
-                <td className="px-4 py-3 text-gray-600">{getMA(r.mitarbeiterId)}</td>
+                <td className="px-4 py-3 text-gray-600">
+                  {(() => { const v = renderListe(getTgNames(r)); return <span title={v.titel}>{v.text}</span>; })()}
+                </td>
+                <td className="px-4 py-3 text-gray-600">
+                  {(() => { const v = renderListe(getMaNames(r)); return <span title={v.titel}>{v.text}</span>; })()}
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-1">
                     {!r.briefkastenVorhanden && (
@@ -213,48 +235,206 @@ function ReklamationForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const { mitarbeiter, teilgebiete } = useApp();
-  const [form, setForm] = useState<typeof DEFAULT_FORM>(() =>
-    initial
-      ? {
-          anruferName: initial.anruferName,
-          telefon: initial.telefon ?? '',
-          email: initial.email ?? '',
-          briefkastenVorhanden: initial.briefkastenVorhanden,
-          aufkleberKeineWerbung: initial.aufkleberKeineWerbung,
-          anmerkung: initial.anmerkung ?? '',
-          teilgebietId: initial.teilgebietId ?? '',
-          mitarbeiterId: initial.mitarbeiterId ?? '',
-          mitgeteilt: initial.mitgeteilt,
-          seitWann: initial.seitWann ?? '',
-          schonMalMitgeteilt: initial.schonMalMitgeteilt,
-        }
-      : { ...DEFAULT_FORM }
-  );
+  const { mitarbeiter, teilgebiete, abrechnungsperioden } = useApp();
+  const [form, setForm] = useState(() => reklamationFormState(initial));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const austraeger = mitarbeiter.filter((m) => istEinsatzbereit(m) && m.rollen.includes('austräger'));
+  // Cache geladener Daten pro Form-Open — Ausgaben einmal, Einsätze
+  // gruppiert pro ausgabeId.
+  const ausgabenRef = useRef<Ausgabe[] | null>(null);
+  const einsaetzeCacheRef = useRef<Map<string, Einsatz[]>>(new Map());
+  // Geladene Einsätze für die relevanten Ausgaben — Trigger für MA-Match.
+  const [relevanteEinsaetze, setRelevanteEinsaetze] = useState<Einsatz[]>([]);
+  const [maLoading, setMaLoading] = useState(false);
+
+  const aktiveAustraeger = mitarbeiter.filter(
+    (m) => istEinsatzbereit(m) && (m.rollen.includes('austräger') || m.rollen.includes('zusammenträger'))
+  );
+
+  // TG-Vorschlag — synchron, memoiziert auf Adresse + TG-Liste.
+  const tgVorschlaege = useMemo(
+    () => findePassendeTeilgebiete(form.strasse, form.plz, form.ort, teilgebiete),
+    [form.strasse, form.plz, form.ort, teilgebiete]
+  );
+
+  // Bei Adressänderung Vorschläge in die Auswahl übernehmen — aber nur,
+  // wenn die User-Auswahl ausschließlich aus früheren Vorschlägen oder
+  // leer war (sonst nicht überschreiben).
+  const vorschlagsIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const neuVorgeschlagen = new Set(tgVorschlaege.map((v) => v.tg.id));
+    setForm((f) => {
+      const manuellHinzu = f.teilgebietIds.filter((id) => !vorschlagsIdsRef.current.has(id));
+      const neu = Array.from(new Set([...Array.from(neuVorgeschlagen), ...manuellHinzu]));
+      vorschlagsIdsRef.current = neuVorgeschlagen;
+      // Falls neue Auswahl = alte Auswahl → State nicht ändern (vermeidet
+      // unnötige Re-Renders bei stabiler Adresse).
+      if (
+        neu.length === f.teilgebietIds.length &&
+        neu.every((id) => f.teilgebietIds.includes(id))
+      ) {
+        return f;
+      }
+      return { ...f, teilgebietIds: neu };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tgVorschlaege]);
+
+  // Einsätze für MA-Match lazy laden, sobald seitWann + TG-Auswahl vorhanden.
+  useEffect(() => {
+    if (form.teilgebietIds.length === 0) {
+      setRelevanteEinsaetze([]);
+      return;
+    }
+    let abgebrochen = false;
+    setMaLoading(true);
+    (async () => {
+      if (!ausgabenRef.current) {
+        ausgabenRef.current = await ladeAusgaben();
+      }
+      const heute = new Date();
+      const heuteJahr = getISOYear(heute);
+      const heuteKw = getISOWeek(heute);
+      const seitWannDate = form.seitWann ? new Date(form.seitWann) : null;
+      const seitJahr = seitWannDate ? getISOYear(seitWannDate) : null;
+      const seitKw = seitWannDate ? getISOWeek(seitWannDate) : null;
+
+      const relevant = ausgabenRef.current.filter((a) => {
+        if (a.jahr > heuteJahr) return false;
+        if (a.jahr === heuteJahr && a.kw > heuteKw) return false;
+        if (seitJahr !== null && seitKw !== null) {
+          if (a.jahr < seitJahr) return false;
+          if (a.jahr === seitJahr && a.kw < seitKw) return false;
+        }
+        return true;
+      });
+
+      // Einsätze gecached pro ausgabeId
+      const result: Einsatz[] = [];
+      await Promise.all(
+        relevant.map(async (a) => {
+          let einsList = einsaetzeCacheRef.current.get(a.id);
+          if (!einsList) {
+            einsList = await ladeEinsaetze(a.id);
+            einsaetzeCacheRef.current.set(a.id, einsList);
+          }
+          result.push(...einsList);
+        })
+      );
+      if (!abgebrochen) {
+        setRelevanteEinsaetze(result);
+        setMaLoading(false);
+      }
+    })().catch((e) => {
+      console.error('Einsätze laden fehlgeschlagen:', e);
+      if (!abgebrochen) setMaLoading(false);
+    });
+    return () => { abgebrochen = true; };
+  }, [form.seitWann, form.teilgebietIds]);
+
+  // MA-Vorschlag — synchron, memoiziert auf seitWann + TG-Auswahl + Einsätze.
+  const maVorschlaege = useMemo(
+    () =>
+      findePassendeMitarbeiter(form.seitWann, form.teilgebietIds, {
+        teilgebiete,
+        abrechnungsperioden,
+        mitarbeiter,
+        einsaetze: relevanteEinsaetze,
+      }),
+    [form.seitWann, form.teilgebietIds, teilgebiete, abrechnungsperioden, mitarbeiter, relevanteEinsaetze]
+  );
+
+  // Vorschläge auch in MA-Auswahl übernehmen — analog zu TGs.
+  const maVorschlagsIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const neuVorgeschlagen = new Set(maVorschlaege.map((v) => v.ma.id));
+    setForm((f) => {
+      const manuellHinzu = f.mitarbeiterIds.filter((id) => !maVorschlagsIdsRef.current.has(id));
+      const neu = Array.from(new Set([...Array.from(neuVorgeschlagen), ...manuellHinzu]));
+      maVorschlagsIdsRef.current = neuVorgeschlagen;
+      if (
+        neu.length === f.mitarbeiterIds.length &&
+        neu.every((id) => f.mitarbeiterIds.includes(id))
+      ) {
+        return f;
+      }
+      return { ...f, mitarbeiterIds: neu };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maVorschlaege]);
+
+  function toggleTg(id: string) {
+    setForm((f) => ({
+      ...f,
+      teilgebietIds: f.teilgebietIds.includes(id)
+        ? f.teilgebietIds.filter((x) => x !== id)
+        : [...f.teilgebietIds, id],
+    }));
+  }
+  function toggleMa(id: string) {
+    setForm((f) => ({
+      ...f,
+      mitarbeiterIds: f.mitarbeiterIds.includes(id)
+        ? f.mitarbeiterIds.filter((x) => x !== id)
+        : [...f.mitarbeiterIds, id],
+    }));
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!form.anruferName.trim()) { setError('Name des Anrufers ist erforderlich.'); return; }
+    // Validierung: seitWann darf nicht in der Zukunft liegen.
+    if (form.seitWann) {
+      const heuteIso = new Date().toISOString().slice(0, 10);
+      if (form.seitWann > heuteIso) {
+        setError('„Problem bekannt seit" darf nicht in der Zukunft liegen.');
+        return;
+      }
+    }
     setSaving(true);
     setError('');
     try {
-      const payload = {
-        ...form,
+      // Plural-Felder schreiben. Singular-Felder werden NICHT mehr gesetzt
+      // — alte Datensätze bleiben für Anzeige-Zwecke unverändert.
+      const payload: Partial<Reklamation> = {
+        anruferName: form.anruferName,
         telefon: form.telefon || undefined,
         email: form.email || undefined,
+        strasse: form.strasse || undefined,
+        hausnummer: form.hausnummer || undefined,
+        plz: form.plz || undefined,
+        ort: form.ort || undefined,
+        briefkastenVorhanden: form.briefkastenVorhanden,
+        aufkleberKeineWerbung: form.aufkleberKeineWerbung,
         anmerkung: form.anmerkung || undefined,
-        teilgebietId: form.teilgebietId || undefined,
-        mitarbeiterId: form.mitarbeiterId || undefined,
+        teilgebietIds: form.teilgebietIds.length > 0 ? form.teilgebietIds : undefined,
+        mitarbeiterIds: form.mitarbeiterIds.length > 0 ? form.mitarbeiterIds : undefined,
+        mitgeteilt: form.mitgeteilt,
         seitWann: form.seitWann || undefined,
+        schonMalMitgeteilt: form.schonMalMitgeteilt,
       };
       if (initial) {
         await aktualisiereReklamation(initial.id, payload);
       } else {
-        await erstelleReklamation(payload);
+        // Pflichtfelder, die der Type ohne `Partial` verlangt:
+        await erstelleReklamation({
+          anruferName: payload.anruferName!,
+          telefon: payload.telefon,
+          email: payload.email,
+          strasse: payload.strasse,
+          hausnummer: payload.hausnummer,
+          plz: payload.plz,
+          ort: payload.ort,
+          briefkastenVorhanden: payload.briefkastenVorhanden!,
+          aufkleberKeineWerbung: payload.aufkleberKeineWerbung!,
+          anmerkung: payload.anmerkung,
+          teilgebietIds: payload.teilgebietIds,
+          mitarbeiterIds: payload.mitarbeiterIds,
+          mitgeteilt: payload.mitgeteilt!,
+          seitWann: payload.seitWann,
+          schonMalMitgeteilt: payload.schonMalMitgeteilt!,
+        });
       }
       onSave();
     } catch (err) {
@@ -264,6 +444,12 @@ function ReklamationForm({
       setSaving(false);
     }
   }
+
+  const aktiveTgs = teilgebiete.filter((t) => t.isActive);
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+  const istVorgeschlagenTg = (id: string) => tgVorschlaege.some((v) => v.tg.id === id);
+  const istVorgeschlagenMa = (id: string) => maVorschlaege.some((v) => v.ma.id === id);
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -303,6 +489,56 @@ function ReklamationForm({
         />
       </div>
 
+      {/* Adresse — Basis für die TG-Vorschlagslogik */}
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
+        <div className="text-xs font-semibold text-gray-600">📍 Adresse (Basis für TG-Vorschlag)</div>
+        <div className="grid grid-cols-3 gap-2">
+          <div className="col-span-2">
+            <label className="block text-xs text-gray-500 mb-1">Straße</label>
+            <input
+              type="text"
+              value={form.strasse}
+              onChange={(e) => setForm((f) => ({ ...f, strasse: e.target.value }))}
+              placeholder="z. B. Bahnhofstraße"
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Hausnummer</label>
+            <input
+              type="text"
+              value={form.hausnummer}
+              onChange={(e) => setForm((f) => ({ ...f, hausnummer: e.target.value }))}
+              placeholder="z. B. 12a"
+              className={inputClass}
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">PLZ</label>
+            <input
+              type="text"
+              value={form.plz}
+              onChange={(e) => setForm((f) => ({ ...f, plz: e.target.value }))}
+              placeholder="37170"
+              className={inputClass}
+              maxLength={5}
+            />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs text-gray-500 mb-1">Ort</label>
+            <input
+              type="text"
+              value={form.ort}
+              onChange={(e) => setForm((f) => ({ ...f, ort: e.target.value }))}
+              placeholder="z. B. Uslar"
+              className={inputClass}
+            />
+          </div>
+        </div>
+      </div>
+
       {/* Briefkasten & Aufkleber */}
       <div className="grid grid-cols-2 gap-4">
         <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer p-3 border border-gray-200 rounded-lg hover:bg-gray-50">
@@ -325,51 +561,20 @@ function ReklamationForm({
         </label>
       </div>
 
-      {/* Zuordnung */}
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Teilgebiet</label>
-          <select
-            value={form.teilgebietId ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, teilgebietId: e.target.value }))}
-            className={inputClass}
-          >
-            <option value="">— Kein Teilgebiet —</option>
-            {[...teilgebiete]
-              .filter((t) => t.isActive)
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((t) => (
-                <option key={t.id} value={t.id}>{t.name} {t.plz ? `(${t.plz})` : ''}</option>
-              ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Austräger</label>
-          <select
-            value={form.mitarbeiterId ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, mitarbeiterId: e.target.value }))}
-            className={inputClass}
-          >
-            <option value="">— Kein Austräger —</option>
-            {[...austraeger]
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((m) => (
-                <option key={m.id} value={m.id}>{m.name} ({m.nummer})</option>
-              ))}
-          </select>
-        </div>
-      </div>
-
-      {/* Zeitangaben */}
+      {/* Zeitangaben — VOR der MA-Zuordnung, damit der MA-Vorschlag greift */}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Problem bekannt seit</label>
           <input
             type="date"
             value={form.seitWann ?? ''}
+            max={new Date().toISOString().slice(0, 10)}
             onChange={(e) => setForm((f) => ({ ...f, seitWann: e.target.value }))}
             className={inputClass}
           />
+          <p className="text-[11px] text-gray-400 mt-1">
+            Steuert den Zeitraum, in dem nach Austrägern / Springern gesucht wird.
+          </p>
         </div>
         <div className="flex flex-col gap-2 justify-end">
           <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer p-3 border border-gray-200 rounded-lg hover:bg-gray-50">
@@ -382,6 +587,194 @@ function ReklamationForm({
             Schon mal mitgeteilt
           </label>
         </div>
+      </div>
+
+      {/* Teilgebiet-Auswahl: Vorschläge oben, Erweiterung im Disclosure */}
+      <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-gray-700">Teilgebiet(e)</label>
+          <span className="text-xs text-gray-400">
+            {form.teilgebietIds.length} gewählt
+          </span>
+        </div>
+
+        {tgVorschlaege.length > 0 ? (
+          <div className="rounded-md border border-blue-200 bg-blue-50/60 p-2.5">
+            <div className="text-xs font-medium text-blue-800 mb-1.5">
+              💡 Vorgeschlagen anhand der Adresse:
+            </div>
+            <ul className="space-y-1">
+              {tgVorschlaege.map((v) => (
+                <li key={v.tg.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.teilgebietIds.includes(v.tg.id)}
+                    onChange={() => toggleTg(v.tg.id)}
+                    className="rounded"
+                  />
+                  <span className="font-medium text-gray-900">{v.tg.name}</span>
+                  {v.tg.plz && <span className="text-xs text-gray-500">({v.tg.plz})</span>}
+                  <span className="ml-auto text-[10px] bg-white border border-blue-200 text-blue-700 px-1.5 py-0.5 rounded">
+                    {v.grund}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-400 italic">
+            Keine automatischen Vorschläge — Adresse eingeben oder unten manuell wählen.
+          </p>
+        )}
+
+        <details className="text-sm">
+          <summary className="cursor-pointer text-xs text-gray-600 hover:text-gray-800 py-1">
+            Weitere Teilgebiete hinzufügen …
+          </summary>
+          <div className="mt-2 max-h-40 overflow-y-auto border border-gray-200 rounded p-2 grid grid-cols-2 gap-1">
+            {[...aktiveTgs]
+              .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }))
+              .filter((tg) => !istVorgeschlagenTg(tg.id))
+              .map((tg) => (
+                <label key={tg.id} className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.teilgebietIds.includes(tg.id)}
+                    onChange={() => toggleTg(tg.id)}
+                    className="rounded"
+                  />
+                  <span>{tg.name}{tg.plz ? ` (${tg.plz})` : ''}</span>
+                </label>
+              ))}
+          </div>
+        </details>
+
+        {/* Bereits gewählte TGs, die nicht im Vorschlag erscheinen (z. B. manuell hinzugefügt) */}
+        {form.teilgebietIds.some((id) => !istVorgeschlagenTg(id)) && (
+          <div className="flex flex-wrap gap-1 pt-1">
+            {form.teilgebietIds
+              .filter((id) => !istVorgeschlagenTg(id))
+              .map((id) => {
+                const tg = tgMap.get(id);
+                return (
+                  <span key={id} className="text-xs bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
+                    {tg?.name ?? id}
+                    <button
+                      type="button"
+                      onClick={() => toggleTg(id)}
+                      className="text-gray-400 hover:text-red-500"
+                      title="Entfernen"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                );
+              })}
+          </div>
+        )}
+      </div>
+
+      {/* Austräger-Auswahl */}
+      <div className="rounded-lg border border-gray-200 bg-white p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium text-gray-700">Austräger / Springer</label>
+          <span className="text-xs text-gray-400">
+            {form.mitarbeiterIds.length} gewählt
+            {maLoading && <span className="ml-2 text-blue-500">… lade Einsätze</span>}
+          </span>
+        </div>
+
+        {maVorschlaege.length > 0 ? (
+          <div className="rounded-md border border-blue-200 bg-blue-50/60 p-2.5">
+            <div className="text-xs font-medium text-blue-800 mb-1.5">
+              💡 Aus dem Zeitraum „{form.seitWann || 'aktuell'}" → heute:
+            </div>
+            <ul className="space-y-1">
+              {maVorschlaege.map((v) => (
+                <li key={v.ma.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.mitarbeiterIds.includes(v.ma.id)}
+                    onChange={() => toggleMa(v.ma.id)}
+                    className="rounded"
+                  />
+                  <span className="font-medium text-gray-900">{v.ma.name}</span>
+                  <span className="text-xs text-gray-500">({v.ma.nummer})</span>
+                  <div className="ml-auto flex gap-1">
+                    {v.rollen.includes('standard') && (
+                      <span className="text-[10px] bg-white border border-green-200 text-green-700 px-1.5 py-0.5 rounded">
+                        Standard
+                      </span>
+                    )}
+                    {v.rollen.includes('springer') && (
+                      <span className="text-[10px] bg-white border border-amber-200 text-amber-700 px-1.5 py-0.5 rounded">
+                        Springer
+                      </span>
+                    )}
+                    {!v.ma.isActive && (
+                      <span className="text-[10px] bg-gray-100 border border-gray-200 text-gray-500 px-1.5 py-0.5 rounded">
+                        inaktiv
+                      </span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-400 italic">
+            {form.teilgebietIds.length === 0
+              ? 'Bitte zuerst ein Teilgebiet wählen.'
+              : maLoading
+                ? '… ermittle Austräger im gewählten Zeitraum.'
+                : 'Keine Treffer im gewählten Zeitraum.'}
+          </p>
+        )}
+
+        <details className="text-sm">
+          <summary className="cursor-pointer text-xs text-gray-600 hover:text-gray-800 py-1">
+            Weitere Austräger hinzufügen …
+          </summary>
+          <div className="mt-2 max-h-40 overflow-y-auto border border-gray-200 rounded p-2 grid grid-cols-2 gap-1">
+            {[...aktiveAustraeger]
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .filter((m) => !istVorgeschlagenMa(m.id))
+              .map((m) => (
+                <label key={m.id} className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.mitarbeiterIds.includes(m.id)}
+                    onChange={() => toggleMa(m.id)}
+                    className="rounded"
+                  />
+                  <span>{m.name} ({m.nummer})</span>
+                </label>
+              ))}
+          </div>
+        </details>
+
+        {form.mitarbeiterIds.some((id) => !istVorgeschlagenMa(id)) && (
+          <div className="flex flex-wrap gap-1 pt-1">
+            {form.mitarbeiterIds
+              .filter((id) => !istVorgeschlagenMa(id))
+              .map((id) => {
+                const m = maMap.get(id);
+                return (
+                  <span key={id} className="text-xs bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded inline-flex items-center gap-1">
+                    {m?.name ?? id}
+                    <button
+                      type="button"
+                      onClick={() => toggleMa(id)}
+                      className="text-gray-400 hover:text-red-500"
+                      title="Entfernen"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                );
+              })}
+          </div>
+        )}
       </div>
 
       {/* Anmerkung */}
