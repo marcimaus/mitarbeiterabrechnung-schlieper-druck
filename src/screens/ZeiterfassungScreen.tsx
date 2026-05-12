@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import Modal from '../components/Modal';
 import { istEinsatzbereit } from '../utils';
@@ -44,6 +45,7 @@ function tätigkeitenFuerMitarbeiter(rollen: Rolle[]): ArbeitszeitsTyp[] {
 
 export default function ZeiterfassungScreen() {
   const { mitarbeiter, userRole, mitarbeiterId } = useApp();
+  const istAngemeldet = userRole !== null;
   const istMitarbeiter = userRole === 'mitarbeiter';
   const eigenerMa = mitarbeiterId
     ? mitarbeiter.find((m) => m.id === mitarbeiterId)
@@ -262,7 +264,11 @@ export default function ZeiterfassungScreen() {
   const aktiv = aktiveSess.filter((s) => s.status === 'aktiv');
 
   function darfAgieren(s: Arbeitszeit): boolean {
+    // Nicht angemeldet → nur lesender Zugriff, keine Aktionen.
+    if (!istAngemeldet) return false;
+    // Admin/Abrechnung dürfen alle stempeln.
     if (!istMitarbeiter) return true;
+    // Mitarbeiter-Login: nur eigene Session.
     return s.mitarbeiterId === mitarbeiterId;
   }
 
@@ -282,10 +288,27 @@ export default function ZeiterfassungScreen() {
     <div className="p-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Zeiterfassung</h1>
 
-      {/* NFC-Bereich — bzw. eigener Stempel-Button im MA-Login */}
+      {/* NFC-Bereich — drei Modi: nicht angemeldet, Mitarbeiter, Admin/Abrechnung */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
         <div className="flex flex-col items-center gap-4">
-          {istMitarbeiter ? (
+          {!istAngemeldet ? (
+            <>
+              <div className="w-24 h-24 rounded-full flex items-center justify-center text-4xl bg-gray-50">
+                🔒
+              </div>
+              <div className="text-center max-w-sm">
+                <p className="text-sm text-gray-700 mb-3">
+                  Nur lesender Zugriff — zum Ein-/Ausstempeln bitte zuerst anmelden.
+                </p>
+                <Link
+                  to="/admin"
+                  className="inline-block bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-blue-700 transition-colors text-sm"
+                >
+                  🔒 Anmelden
+                </Link>
+              </div>
+            </>
+          ) : istMitarbeiter ? (
             <>
               <div className="text-center">
                 <p className="text-sm text-gray-500 mb-1">Angemeldet als</p>

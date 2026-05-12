@@ -41,8 +41,13 @@ function AppLayout() {
   const mobilePt = isAdminAuthenticated ? 'pt-[84px]' : 'pt-14';
 
   // Mitarbeiter-Login: Startseite ist nicht sichtbar — Default ist die
-  // Stempeluhr. Alle anderen Rollen sehen die normale Startseite.
-  const startElement = istMitarbeiter ? <Navigate to="/zeiterfassung" replace /> : <HomeScreen />;
+  // Stempeluhr. Nicht angemeldete sehen ebenfalls keine Startseite — sie
+  // landen direkt in der (lesenden) Stempeluhr und können sich von dort
+  // anmelden. Nur Admin/Abrechnung sehen die normale Startseite.
+  const istAngemeldet = userRole !== null;
+  const startElement = istAngemeldet && !istMitarbeiter
+    ? <HomeScreen />
+    : <Navigate to="/zeiterfassung" replace />;
 
   return (
     <div className="flex flex-col min-h-screen">
