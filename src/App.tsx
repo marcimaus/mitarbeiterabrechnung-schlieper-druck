@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import Navigation from './components/Navigation';
 import OfflineBanner from './components/OfflineBanner';
@@ -33,11 +33,16 @@ export default function App() {
 // ---- Haupt-Layout (braucht useApp → innerhalb AppProvider) ----
 
 function AppLayout() {
-  const { isAdminAuthenticated } = useApp();
+  const { isAdminAuthenticated, userRole } = useApp();
+  const istMitarbeiter = userRole === 'mitarbeiter';
 
   // Mobile: Rollenbalken (h-7 = 28px) + Hamburger-Header (h-14 = 56px) = 84px
   // Ohne Login: nur Hamburger-Header (h-14 = 56px)
   const mobilePt = isAdminAuthenticated ? 'pt-[84px]' : 'pt-14';
+
+  // Mitarbeiter-Login: Startseite ist nicht sichtbar — Default ist die
+  // Stempeluhr. Alle anderen Rollen sehen die normale Startseite.
+  const startElement = istMitarbeiter ? <Navigate to="/zeiterfassung" replace /> : <HomeScreen />;
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -46,7 +51,7 @@ function AppLayout() {
         <Navigation />
         <main className={`flex-1 overflow-y-auto bg-gray-50 ${mobilePt} md:pt-0`}>
           <Routes>
-            <Route path="/" element={<HomeScreen />} />
+            <Route path="/" element={startElement} />
             <Route path="/zeiterfassung" element={<ZeiterfassungScreen />} />
             <Route path="/zeitübersicht" element={<ZeitübersichtScreen />} />
             <Route path="/mitarbeiter" element={<MitarbeiterScreen />} />

@@ -24,6 +24,7 @@ import type { Arbeitszeit, ArbeitszeitsTyp, Ausgabe, Mitarbeiter, Rolle } from '
 import { TYP_LABELS } from '../types';
 import { nameMitFestgehaltSymbol } from '../utils';
 import { ladeAusgaben } from '../lib/db';
+import { getISOWeek, getISOYear } from '../lib/kalender';
 
 const TYP_FARBEN: Record<ArbeitszeitsTyp, string> = {
   zusammentragen: 'bg-purple-100 text-purple-700',
@@ -42,7 +43,11 @@ function tätigkeitenFuerMitarbeiter(rollen: Rolle[]): ArbeitszeitsTyp[] {
 }
 
 export default function ZeiterfassungScreen() {
-  const { mitarbeiter } = useApp();
+  const { mitarbeiter, userRole, mitarbeiterId } = useApp();
+  const istMitarbeiter = userRole === 'mitarbeiter';
+  const eigenerMa = mitarbeiterId
+    ? mitarbeiter.find((m) => m.id === mitarbeiterId)
+    : undefined;
   const [aktiveSess, setAktiveSess] = useState<Arbeitszeit[]>([]);
   const [nfcStatus, setNfcStatus] = useState<'idle' | 'liest' | 'fehler'>('idle');
   const [nfcMeldung, setNfcMeldung] = useState('');
@@ -84,21 +89,26 @@ export default function ZeiterfassungScreen() {
     schliesseAbgelaufeneSessions().catch(console.error);
   }, []);
 
-  // Alle Ausgaben + neueste Ausgabe für Vorarbeit-Zuordnung (aktuelles Jahr, höchste KW)
+  // Ausgaben für Vorarbeit-Zuordnung: NUR Ausgaben der aktuellen Kalenderwoche.
+  // Ältere Ausgaben würden bei der Vorarbeits-Erfassung an der Stempeluhr
+  // nichts zur regulären Erfassung beitragen — Korrekturen laufen über die
+  // Zusammentragen-Maske.
+  const aktuellesKw = (() => {
+    const d = new Date();
+    return { kw: getISOWeek(d), jahr: getISOYear(d) };
+  })();
   const [alleAusgaben, setAlleAusgaben] = useState<Ausgabe[]>([]);
   const [vorarbeitAusgabeId, setVorarbeitAusgabeId] = useState<string>('');
   useEffect(() => {
     ladeAusgaben().then((list) => {
-      const sortiertAll = [...list].sort((a, b) =>
-        b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
+      const aktuelleKwAusgaben = list.filter(
+        (a) => a.jahr === aktuellesKw.jahr && a.kw === aktuellesKw.kw
       );
-      setAlleAusgaben(sortiertAll);
-      if (sortiertAll.length === 0) { setVorarbeitAusgabeId(''); return; }
-      const aktuellesJahr = new Date().getFullYear();
-      const imJahr = sortiertAll.filter((a) => a.jahr === aktuellesJahr);
-      const vorauswahl = (imJahr[0] ?? sortiertAll[0]);
-      setVorarbeitAusgabeId(vorauswahl.id);
+      setAlleAusgaben(aktuelleKwAusgaben);
+      if (aktuelleKwAusgaben.length === 0) { setVorarbeitAusgabeId(''); return; }
+      setVorarbeitAusgabeId(aktuelleKwAusgaben[0].id);
     }).catch((err) => console.error('Ausgaben laden fehlgeschlagen:', err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** Für einen bestimmten Typ ggf. die zugehörige AusgabeId liefern (nur Vorarbeit) */
@@ -245,61 +255,109 @@ export default function ZeiterfassungScreen() {
     setTimeout(() => setLetzteAktion(null), 4000);
   }
 
-  const inPause = aktiveSess.filter((s) => s.status === 'pause');
-  const aktiv = aktiveSess.filter((s) => s.status === 'aktiv');
+  // Mitarbeiter sehen NUR ihre eigene Session — andere MAs sind nicht
+  // sichtbar und können nicht angetippt/gestempelt werden.
+  const sichtbareSess = istMitarbeiter
+    ? aktiveSess.filter((s) => s.mitarbeiterId === mitarbeiterId)
+    : aktiveSess;
+  const inPause = sichtbareSess.filter((s) => s.status === 'pause');
+  const aktiv = sichtbareSess.filter((s) => s.status === 'aktiv');
+
+  /** MA-Modus: direkt eigenen Scan-Flow anstoßen (kein NFC-Lesen, keine Auswahl). */
+  async function eigenenScanAusloesen() {
+    if (!eigenerMa) {
+      setNfcMeldung('Mitarbeiter-Daten nicht verfügbar — bitte neu anmelden.');
+      setNfcStatus('fehler');
+      return;
+    }
+    setNfcStatus('idle');
+    setNfcMeldung('');
+    await verarbeiteScan(eigenerMa.id, 'manuell');
+  }
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Zeiterfassung</h1>
 
-      {/* NFC-Bereich */}
+      {/* NFC-Bereich — bzw. eigener Stempel-Button im MA-Login */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
         <div className="flex flex-col items-center gap-4">
-          <div
-            className={`w-24 h-24 rounded-full flex items-center justify-center text-4xl transition-all ${
-              nfcStatus === 'liest'
-                ? 'bg-blue-100 animate-pulse'
-                : nfcStatus === 'fehler'
-                ? 'bg-red-50'
-                : 'bg-gray-50 hover:bg-blue-50 cursor-pointer'
-            }`}
-            onClick={nfcStatus === 'idle' ? starteNfcScan : undefined}
-          >
-            📲
-          </div>
-
-          {nfcStatus === 'idle' && (
-            <div className="text-center">
-              <button
-                onClick={starteNfcScan}
-                className="bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-blue-700 transition-colors"
+          {istMitarbeiter ? (
+            <>
+              <div className="text-center">
+                <p className="text-sm text-gray-500 mb-1">Angemeldet als</p>
+                <p className="font-semibold text-gray-900 text-lg">{eigenerMa?.name ?? '?'}</p>
+              </div>
+              {nfcStatus === 'idle' && (
+                <button
+                  onClick={eigenenScanAusloesen}
+                  disabled={!eigenerMa}
+                  className="bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  ⏱ Stempeln
+                </button>
+              )}
+              {nfcStatus === 'fehler' && (
+                <div className="text-center">
+                  <p className="text-red-600 text-sm mb-2">{nfcMeldung}</p>
+                  <button
+                    onClick={() => { setNfcStatus('idle'); setNfcMeldung(''); }}
+                    className="text-sm text-gray-600 hover:text-gray-800"
+                  >
+                    Zurücksetzen
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div
+                className={`w-24 h-24 rounded-full flex items-center justify-center text-4xl transition-all ${
+                  nfcStatus === 'liest'
+                    ? 'bg-blue-100 animate-pulse'
+                    : nfcStatus === 'fehler'
+                    ? 'bg-red-50'
+                    : 'bg-gray-50 hover:bg-blue-50 cursor-pointer'
+                }`}
+                onClick={nfcStatus === 'idle' ? starteNfcScan : undefined}
               >
-                NFC-Chip scannen
-              </button>
-              <p className="text-xs text-gray-400 mt-2">oder</p>
-              <button
-                onClick={() => setShowManuell(true)}
-                className="text-sm text-blue-600 hover:text-blue-800 mt-1"
-              >
-                Mitarbeiter manuell auswählen
-              </button>
-            </div>
-          )}
+                📲
+              </div>
 
-          {nfcStatus === 'liest' && (
-            <p className="text-blue-600 font-medium">{nfcMeldung}</p>
-          )}
+              {nfcStatus === 'idle' && (
+                <div className="text-center">
+                  <button
+                    onClick={starteNfcScan}
+                    className="bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-blue-700 transition-colors"
+                  >
+                    NFC-Chip scannen
+                  </button>
+                  <p className="text-xs text-gray-400 mt-2">oder</p>
+                  <button
+                    onClick={() => setShowManuell(true)}
+                    className="text-sm text-blue-600 hover:text-blue-800 mt-1"
+                  >
+                    Mitarbeiter manuell auswählen
+                  </button>
+                </div>
+              )}
 
-          {nfcStatus === 'fehler' && (
-            <div className="text-center">
-              <p className="text-red-600 text-sm mb-2">{nfcMeldung}</p>
-              <button
-                onClick={() => { setNfcStatus('idle'); setNfcMeldung(''); }}
-                className="text-sm text-gray-600 hover:text-gray-800"
-              >
-                Zurücksetzen
-              </button>
-            </div>
+              {nfcStatus === 'liest' && (
+                <p className="text-blue-600 font-medium">{nfcMeldung}</p>
+              )}
+
+              {nfcStatus === 'fehler' && (
+                <div className="text-center">
+                  <p className="text-red-600 text-sm mb-2">{nfcMeldung}</p>
+                  <button
+                    onClick={() => { setNfcStatus('idle'); setNfcMeldung(''); }}
+                    className="text-sm text-gray-600 hover:text-gray-800"
+                  >
+                    Zurücksetzen
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 

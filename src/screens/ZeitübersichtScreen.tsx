@@ -23,17 +23,22 @@ const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
 export default function ZeitübersichtScreen() {
   return (
-    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>
       <ZeitübersichtInhalt />
     </AdminPinGate>
   );
 }
 
 function ZeitübersichtInhalt() {
-  const { mitarbeiter, parameter, adminName, userRole } = useApp();
+  const { mitarbeiter, parameter, adminName, userRole, mitarbeiterId } = useApp();
   const isAdmin = userRole === 'admin';
+  const istMitarbeiter = userRole === 'mitarbeiter';
   const heute = new Date();
-  const [selectedMaId, setSelectedMaId] = useState<string>('');
+  // Mitarbeiter sehen NUR ihre eigenen Daten — selectedMaId ist auf den
+  // eingeloggten MA fixiert; keine Auswahlliste, kein Wechsel möglich.
+  const [selectedMaId, setSelectedMaId] = useState<string>(
+    istMitarbeiter ? (mitarbeiterId ?? '') : ''
+  );
   const [monat, setMonat] = useState(heute.getMonth() + 1);
   const [jahr, setJahr] = useState(heute.getFullYear());
   const [sessions, setSessions] = useState<Arbeitszeit[]>([]);
@@ -171,34 +176,40 @@ function ZeitübersichtInhalt() {
                 {ma.hatFestgehalt ? '🔒 ' : ''}{ma.name}
               </span>
               <span className="text-blue-500 text-xs">({ma.nummer})</span>
-              <button
-                onClick={() => { setSelectedMaId(''); setFilterTyp(''); }}
-                className="ml-1 text-blue-500 hover:text-blue-700"
-                title="Auswahl aufheben"
-              >
-                ✕
-              </button>
+              {!istMitarbeiter && (
+                <button
+                  onClick={() => { setSelectedMaId(''); setFilterTyp(''); }}
+                  className="ml-1 text-blue-500 hover:text-blue-700"
+                  title="Auswahl aufheben"
+                >
+                  ✕
+                </button>
+              )}
             </div>
           ) : (
-            <input
-              type="text"
-              placeholder="Name oder Nummer suchen..."
-              value={suchText}
-              onChange={(e) => setSuchText(e.target.value)}
-              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
-            />
+            !istMitarbeiter && (
+              <input
+                type="text"
+                placeholder="Name oder Nummer suchen..."
+                value={suchText}
+                onChange={(e) => setSuchText(e.target.value)}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
+              />
+            )
           )}
-          <select
-            value={filterRolle}
-            onChange={(e) => setFilterRolle(e.target.value as Rolle | '')}
-            className={selectClass}
-            title="Kategorie des Mitarbeiters"
-          >
-            <option value="">Alle Kategorien</option>
-            {ALLE_ROLLEN.map((r) => (
-              <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
-            ))}
-          </select>
+          {!istMitarbeiter && (
+            <select
+              value={filterRolle}
+              onChange={(e) => setFilterRolle(e.target.value as Rolle | '')}
+              className={selectClass}
+              title="Kategorie des Mitarbeiters"
+            >
+              <option value="">Alle Kategorien</option>
+              {ALLE_ROLLEN.map((r) => (
+                <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
+              ))}
+            </select>
+          )}
           {selectedMaId && (
             <select
               value={filterTyp}
@@ -220,16 +231,18 @@ function ZeitübersichtInhalt() {
           <select value={jahr} onChange={(e) => setJahr(Number(e.target.value))} className={selectClass}>
             {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
           </select>
-          <button
-            onClick={() => setShowNeueZeit(true)}
-            className="ml-auto bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
-          >
-            + Neue Zeit erfassen
-          </button>
+          {!istMitarbeiter && (
+            <button
+              onClick={() => setShowNeueZeit(true)}
+              className="ml-auto bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
+              + Neue Zeit erfassen
+            </button>
+          )}
         </div>
       </div>
 
-      {!selectedMaId && (
+      {!selectedMaId && !istMitarbeiter && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 text-sm text-gray-600 font-medium">
             {suchKandidaten.length === 0
@@ -394,13 +407,15 @@ function ZeitübersichtInhalt() {
                             🚫 ignoriert
                           </span>
                         )}
-                        <button
-                          onClick={() => setEditSession(s)}
-                          className="text-xs text-blue-600 hover:text-blue-800 mr-2"
-                        >
-                          Bearbeiten
-                        </button>
-                        {!isAdmin && (
+                        {!istMitarbeiter && (
+                          <button
+                            onClick={() => setEditSession(s)}
+                            className="text-xs text-blue-600 hover:text-blue-800 mr-2"
+                          >
+                            Bearbeiten
+                          </button>
+                        )}
+                        {!isAdmin && !istMitarbeiter && (
                           <button
                             onClick={async () => {
                               if (s.nichtBeruecksichtigen) {
