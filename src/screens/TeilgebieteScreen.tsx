@@ -3,8 +3,21 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import { bestaetigeMonatswechselEinmalProSession } from '../utils';
-import { erstelleTeilgebiet, aktualisiereTeilgebiet, aktualisiereMitarbeiter } from '../lib/db';
-import type { Teilgebiet, Strasse, Sonderauslage, NichtBeliefen } from '../types';
+import {
+  erstelleTeilgebiet,
+  aktualisiereTeilgebiet,
+  aktualisiereMitarbeiter,
+  setzeAustraegerwechsel,
+  loescheAustraegerwechsel,
+} from '../lib/db';
+import type {
+  Teilgebiet,
+  Strasse,
+  Sonderauslage,
+  NichtBeliefen,
+  Mitarbeiter,
+  Austraegerwechsel,
+} from '../types';
 
 // ---- Hilfsfunktionen -------------------------------------------------------
 
@@ -43,9 +56,10 @@ export default function TeilgebieteScreen() {
 }
 
 function TeilgebieteInhalt() {
-  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole } = useApp();
+  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, austraegerwechsel, adminName } = useApp();
   // Abrechnung-Rolle: nur lesender Zugriff (keine Bearbeitung).
   const isAdmin = userRole === 'admin';
+  const [hauptview, setHauptview] = useState<'liste' | 'wechsel'>('liste');
 
   // Zeitwert (Stunden) aus Wegstrecke + Stückzahl
   const zeitwertStunden = (tg: Teilgebiet): number => {
@@ -124,7 +138,7 @@ function TeilgebieteInhalt() {
             {teilgebiete.filter((t) => t.isActive).length} aktive Gebiete
           </p>
         </div>
-        {isAdmin && (
+        {isAdmin && hauptview === 'liste' && (
           <button
             onClick={() => {
               setEditTarget(null);
@@ -137,6 +151,48 @@ function TeilgebieteInhalt() {
         )}
       </div>
 
+      {/* View-Switcher */}
+      <div className="flex border-b border-gray-200 mb-5">
+        <button
+          type="button"
+          onClick={() => setHauptview('liste')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            hauptview === 'liste'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Teilgebiete
+        </button>
+        <button
+          type="button"
+          onClick={() => setHauptview('wechsel')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            hauptview === 'wechsel'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Austrägerwechsel vorbereiten
+          {austraegerwechsel.length > 0 && (
+            <span className="ml-1.5 bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded-full">
+              {austraegerwechsel.length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {hauptview === 'wechsel' && (
+        <AustraegerwechselReiter
+          teilgebiete={teilgebiete}
+          mitarbeiter={mitarbeiter}
+          austraegerwechsel={austraegerwechsel}
+          adminName={adminName}
+        />
+      )}
+
+      {hauptview === 'liste' && (
+      <>
       {/* Filter */}
       <div className="flex flex-wrap gap-3 mb-4">
         <input
@@ -443,6 +499,8 @@ function TeilgebieteInhalt() {
         teilgebiete={teilgebiete}
         abrechnungsperioden={abrechnungsperioden}
       />
+      </>
+      )}
     </div>
   );
 }
@@ -1629,5 +1687,233 @@ function TeilgebietForm({
         </div>
       </div>
     </form>
+  );
+}
+
+// ---- Austrägerwechsel-Vorbereitung (Reiter) ---------------------------------
+
+function AustraegerwechselReiter({
+  teilgebiete,
+  mitarbeiter,
+  austraegerwechsel,
+  adminName,
+}: {
+  teilgebiete: Teilgebiet[];
+  mitarbeiter: Mitarbeiter[];
+  austraegerwechsel: Austraegerwechsel[];
+  adminName: string;
+}) {
+  const [tgId, setTgId] = useState('');
+  const [neuerMaId, setNeuerMaId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const aktiveTg = [...teilgebiete]
+    .filter((t) => t.isActive)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+
+  const aktuellesTg = tgId ? tgMap.get(tgId) : undefined;
+  const freigegebeneMa = mitarbeiter
+    .filter(
+      (m) =>
+        m.isActive
+        && !m.abgemeldet
+        && m.rollen.includes('austräger')
+        && (m.teilgebietFreigaben ?? []).includes(tgId)
+    )
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
+  function reset() {
+    setTgId('');
+    setNeuerMaId('');
+    setError('');
+  }
+
+  async function handleSpeichern() {
+    setError('');
+    if (!tgId) {
+      setError('Bitte ein Teilgebiet wählen.');
+      return;
+    }
+    if (!neuerMaId) {
+      setError('Bitte einen neuen Standardausträger wählen.');
+      return;
+    }
+    const ma = maMap.get(neuerMaId);
+    if (!ma || !(ma.teilgebietFreigaben ?? []).includes(tgId)) {
+      setError('Der gewählte Mitarbeiter hat keine Freigabe für dieses Teilgebiet.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await setzeAustraegerwechsel({
+        teilgebietId: tgId,
+        neuerMitarbeiterId: neuerMaId,
+        erstelltVon: adminName || undefined,
+      });
+      reset();
+    } catch (e) {
+      console.error(e);
+      setError('Fehler beim Speichern.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleEntfernen(w: Austraegerwechsel) {
+    if (!confirm('Diesen vorbereiteten Wechsel wirklich entfernen?')) return;
+    await loescheAustraegerwechsel(w.id);
+  }
+
+  const sortiert = [...austraegerwechsel].sort((a, b) => {
+    const na = tgMap.get(a.teilgebietId)?.name ?? '';
+    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
+    return na.localeCompare(nb, 'de', { numeric: true });
+  });
+
+  return (
+    <div className="space-y-5">
+      <div className="text-sm text-gray-600">
+        Liste vorbereiteter Standardausträger-Wechsel pro Teilgebiet. Beim
+        Klick auf „Monatswechsel" in der Abrechnung werden die Vorschläge zur
+        Einzel-Bestätigung angezeigt — der Mitarbeiter wird dann als neuer
+        Standardausträger des Teilgebiets eingetragen, der Eintrag verschwindet
+        aus dieser Liste.
+      </div>
+
+      {/* Eingabe */}
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-800">Neuen Wechsel vormerken</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">Teilgebiet *</label>
+            <select
+              value={tgId}
+              onChange={(e) => {
+                setTgId(e.target.value);
+                if (e.target.value && neuerMaId) {
+                  const m = maMap.get(neuerMaId);
+                  if (!m || !(m.teilgebietFreigaben ?? []).includes(e.target.value)) {
+                    setNeuerMaId('');
+                  }
+                }
+              }}
+              className={inputClass}
+            >
+              <option value="">— Teilgebiet wählen —</option>
+              {aktiveTg.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name} {t.plz && `(${t.plz})`}
+                </option>
+              ))}
+            </select>
+            {aktuellesTg && (
+              <p className="text-[11px] text-gray-500 mt-1">
+                Bisheriger Standard:{' '}
+                {aktuellesTg.standardAustraegerId
+                  ? maMap.get(aktuellesTg.standardAustraegerId)?.name ?? '?'
+                  : '— ohne Standard —'}
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">
+              Neuer Standardausträger *
+              <span className="text-gray-400 font-normal"> (nur MA mit Gebietsfreigabe)</span>
+            </label>
+            <select
+              value={neuerMaId}
+              onChange={(e) => setNeuerMaId(e.target.value)}
+              disabled={!tgId}
+              className={`${inputClass} ${!tgId ? 'opacity-60' : ''}`}
+            >
+              <option value="">— Mitarbeiter wählen —</option>
+              {freigegebeneMa.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+            {tgId && freigegebeneMa.length === 0 && (
+              <p className="text-[11px] text-amber-700 mt-1">
+                Keine Mitarbeiter mit Gebietsfreigabe für dieses TG. Erst Freigabe
+                im TG-Detail (Reiter „Freigaben") setzen.
+              </p>
+            )}
+          </div>
+        </div>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleSpeichern}
+            disabled={saving}
+            className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {saving ? '…' : 'Wechsel vormerken'}
+          </button>
+        </div>
+      </div>
+
+      {/* Liste */}
+      {sortiert.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 bg-white py-10 text-center text-sm text-gray-500">
+          Keine vorbereiteten Austrägerwechsel.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
+                <th className="px-3 py-2 text-left font-medium">Bisheriger Standard</th>
+                <th className="px-3 py-2 text-left font-medium">Neuer Standard</th>
+                <th className="px-3 py-2 text-right font-medium">Vorgemerkt</th>
+                <th className="px-3 py-2 text-right font-medium">Aktion</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sortiert.map((w) => {
+                const tg = tgMap.get(w.teilgebietId);
+                const bisheriger = tg?.standardAustraegerId ? maMap.get(tg.standardAustraegerId) : undefined;
+                const neuer = maMap.get(w.neuerMitarbeiterId);
+                const freigabeFehlt = neuer && !(neuer.teilgebietFreigaben ?? []).includes(w.teilgebietId);
+                return (
+                  <tr key={w.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium text-gray-900">
+                      {tg?.name ?? '— gelöscht —'}
+                      {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                    </td>
+                    <td className="px-3 py-2 text-gray-700">
+                      {bisheriger ? bisheriger.name : <span className="text-gray-400 italic">— ohne Standard —</span>}
+                    </td>
+                    <td className="px-3 py-2 text-gray-900">
+                      {neuer ? neuer.name : <span className="text-red-600 italic">— MA gelöscht —</span>}
+                      {freigabeFehlt && (
+                        <div className="text-[10px] text-red-700">⚠ keine Gebietsfreigabe (mehr)</div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right text-xs text-gray-500">
+                      {new Date(w.erstelltAm).toLocaleDateString('de-DE')}
+                      {w.erstelltVon && <div className="text-[10px] text-gray-400">{w.erstelltVon}</div>}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleEntfernen(w)}
+                        className="text-xs text-red-500 hover:text-red-700"
+                        title="Wechsel verwerfen"
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
