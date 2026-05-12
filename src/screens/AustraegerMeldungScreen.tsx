@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { getDoc, doc, collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { aktualisiereEinsatzMeldung } from '../lib/db';
+import { aktualisiereEinsatzMeldung, setzeEinsatz } from '../lib/db';
 import type { Mitarbeiter, Einsatz, Ausgabe, Teilgebiet, AustraegerArbeitszeit } from '../types';
 
 // ---- Hilfsfunktionen ----------------------------------------
@@ -100,7 +100,7 @@ export default function AustraegerMeldungScreen() {
       }
       setMitarbeiter(ma);
 
-      // Einsätze laden
+      // Explizite Einsätze des MA laden (Springer, manuell erfasste Standards …)
       const eSnap = await getDocs(
         query(collection(db, 'einsaetze'), where('mitarbeiterId', '==', mitarbeiterId))
       );
@@ -116,13 +116,62 @@ export default function AustraegerMeldungScreen() {
       const tgMap = new Map<string, Teilgebiet>();
       for (const d of tSnap.docs) tgMap.set(d.id, { id: d.id, ...d.data() } as Teilgebiet);
 
+      // Virtuelle Einsätze ergänzen: für TGs, deren Standardausträger der
+      // eingeloggte MA ist, existiert normalerweise KEIN expliziter
+      // Einsatz-Datensatz pro KW — die Standard-Zuordnung steckt nur am
+      // Teilgebiet. Damit der QR-Code-Empfänger trotzdem etwas zum Melden
+      // hat, generieren wir pro (TG, noch nicht abgeschlossene Ausgabe)
+      // einen virtuellen Einsatz mit synthetic-ID. Beim Speichern wird
+      // daraus über setzeEinsatz ein echter angelegt.
+      const standardTgs = Array.from(tgMap.values()).filter(
+        (tg) => tg.standardAustraegerId === mitarbeiterId && tg.isActive
+      );
+      const aktiveAusgaben = Array.from(ausgabenMap.values()).filter(
+        (a) => a.status !== 'abgeschlossen'
+      );
+      const aktiveAusgabeIds = aktiveAusgaben.map((a) => a.id);
+      // Alle Einsätze für die noch offenen Ausgaben (egal welcher MA), um
+      // zu erkennen, ob das TG durch einen Springer / Ausfall übernommen
+      // wurde — dann KEIN virtueller Einsatz für den Standardausträger.
+      const alleEinsaetzeAktive: Einsatz[] = [];
+      for (let i = 0; i < aktiveAusgabeIds.length; i += 30) {
+        const chunk = aktiveAusgabeIds.slice(i, i + 30);
+        if (chunk.length === 0) continue;
+        const snap = await getDocs(
+          query(collection(db, 'einsaetze'), where('ausgabeId', 'in', chunk))
+        );
+        alleEinsaetzeAktive.push(...snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz)));
+      }
+      const heuteTs = Date.now();
+      const virtuelle: Einsatz[] = [];
+      for (const tg of standardTgs) {
+        for (const a of aktiveAusgaben) {
+          const exist = alleEinsaetzeAktive.find(
+            (e) => e.teilgebietId === tg.id && e.ausgabeId === a.id
+          );
+          if (exist) continue; // entweder eigener (loadedEinsaetze) oder ein anderer MA
+          virtuelle.push({
+            id: `synthetic_${tg.id}__${a.id}`,
+            ausgabeId: a.id,
+            kw: a.kw,
+            jahr: a.jahr,
+            teilgebietId: tg.id,
+            mitarbeiterId,
+            typ: 'standard',
+            erstelltAm: heuteTs,
+            aktualisiertAm: heuteTs,
+          });
+        }
+      }
+
+      const alle = [...loadedEinsaetze, ...virtuelle];
       // Einsätze sortieren: neueste Ausgabe zuerst
-      loadedEinsaetze.sort((a, b) => {
+      alle.sort((a, b) => {
         if (b.jahr !== a.jahr) return b.jahr - a.jahr;
         return b.kw - a.kw;
       });
 
-      setEinsaetze(loadedEinsaetze);
+      setEinsaetze(alle);
       setAusgaben(ausgabenMap);
       setTeilgebiete(tgMap);
     } catch (err) {
@@ -285,13 +334,27 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
         pausenMinuten: Number(pausenMin) || 0,
       };
       const ts = Date.now();
-      await aktualisiereEinsatzMeldung(einsatz.id, {
+      // Virtueller Einsatz (synthetic-ID): erst echten Datensatz in
+      // Firestore anlegen, dann die Meldung darauf schreiben.
+      let echteId = einsatz.id;
+      if (echteId.startsWith('synthetic_')) {
+        echteId = await setzeEinsatz({
+          ausgabeId: einsatz.ausgabeId,
+          kw: einsatz.kw,
+          jahr: einsatz.jahr,
+          teilgebietId: einsatz.teilgebietId,
+          mitarbeiterId: einsatz.mitarbeiterId,
+          typ: 'standard',
+        });
+      }
+      await aktualisiereEinsatzMeldung(echteId, {
         arbeitszeit: az,
         restmenge: Number(restmenge) || 0,
         meldungEingereichtAm: ts,
       });
       onGespeichert({
         ...einsatz,
+        id: echteId,
         arbeitszeit: az,
         restmenge: Number(restmenge) || 0,
         meldungEingereichtAm: ts,
