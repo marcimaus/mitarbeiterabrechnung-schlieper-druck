@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -14,10 +14,14 @@ import {
   erstelleLohnkontoBuchung,
   aktualisiereLohnkontoBuchung,
   loescheLohnkontoBuchung,
+  sondervereinbarungenListener,
+  erstelleSondervereinbarung,
+  aktualisiereSondervereinbarung,
+  loescheSondervereinbarung,
 } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { Mitarbeiter, Rolle, TeilgebietBonus } from '../types';
+import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet } from '../types';
 import { ROLLEN_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
 import { nameMitFestgehaltSymbol } from '../utils';
@@ -503,9 +507,9 @@ function MitarbeiterForm({
   });
   // Freigaben und Boni als eigene States
   const [freigaben, setFreigaben] = useState<string[]>(initial?.teilgebietFreigaben ?? []);
-  const [boni, setBoni] = useState<TeilgebietBonus[]>(initial?.teilgebietBoni ?? []);
-  const [neuBonusTgId, setNeuBonusTgId] = useState('');
-  const [neuBonusBetrag, setNeuBonusBetrag] = useState('');
+  // Anzahl der Sondervereinbarungen — wird vom Reiter selbst aktualisiert,
+  // damit der Tab-Badge ohne zusätzliche Daten am MA-Payload korrekt zählt.
+  const [sondervereinbarungenCount, setSondervereinbarungenCount] = useState(0);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -601,7 +605,10 @@ function MitarbeiterForm({
     setSaving(true);
     setError('');
     try {
-      const payload = { ...form, teilgebietFreigaben: freigaben, teilgebietBoni: boni };
+      // Hinweis: teilgebietBoni am MA wird NICHT mehr aktiv gepflegt — die
+      // echte Quelle für TG-bezogene Zuschläge ist die Collection
+      // `sondervereinbarungen` (eigener Reiter „Teilgebiet-Boni").
+      const payload = { ...form, teilgebietFreigaben: freigaben };
       if (initial) {
         await aktualisiereMitarbeiter(initial.id, payload);
       } else {
@@ -716,25 +723,10 @@ function MitarbeiterForm({
     );
   }
 
-  function addBonus() {
-    if (!neuBonusTgId || !neuBonusBetrag) return;
-    const betrag = parseFloat(neuBonusBetrag);
-    if (isNaN(betrag) || betrag <= 0) return;
-    setBoni((prev) => {
-      const existing = prev.findIndex((b) => b.teilgebietId === neuBonusTgId);
-      if (existing >= 0) {
-        return prev.map((b, i) => i === existing ? { ...b, betragEur: betrag } : b);
-      }
-      return [...prev, { teilgebietId: neuBonusTgId, betragEur: betrag }];
-    });
-    setNeuBonusTgId('');
-    setNeuBonusBetrag('');
-  }
-
   const TABS: { id: MaFormTab; label: string; count?: number }[] = [
     { id: 'stammdaten', label: 'Stammdaten' },
     { id: 'freigaben', label: 'Gebiets-Freigaben', count: freigaben.length },
-    { id: 'boni', label: 'Teilgebiet-Boni', count: boni.length },
+    { id: 'boni', label: 'Teilgebiet-Boni', count: sondervereinbarungenCount },
     { id: 'anmeldung', label: 'Anmeldung / Abmeldung' },
     ...(isAdmin && initial ? [{ id: 'lohnkonto' as const, label: 'Lohnkonto' }] : []),
   ];
@@ -1469,102 +1461,14 @@ function MitarbeiterForm({
         </div>
       )}
 
-      {/* ---- Tab: Boni ---- */}
+      {/* ---- Tab: Teilgebiet-Boni (Sondervereinbarungen) ---- */}
       {tab === 'boni' && (
-        <div className="space-y-4">
-          <p className="text-sm text-gray-500">
-            Definiere einen zusätzlichen Betrag, der je verteilter Ausgabe vergütet wird,
-            wenn dieser Austräger als <strong>Standardausträger</strong> eingesetzt wird.
-          </p>
-
-          {boni.length === 0 ? (
-            <div className="border border-gray-200 rounded-lg p-6 text-center text-gray-400 text-sm">
-              Keine Teilgebiet-Boni hinterlegt
-            </div>
-          ) : (
-            <div className="border border-gray-200 rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200">
-                  <tr>
-                    <th className="text-left px-3 py-2 font-medium text-gray-600">Teilgebiet</th>
-                    <th className="text-right px-3 py-2 font-medium text-gray-600">Bonus je Ausgabe</th>
-                    <th className="px-3 py-2 w-10"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {boni.map((b) => {
-                    const tg = teilgebiete.find((t) => t.id === b.teilgebietId);
-                    return (
-                      <tr key={b.teilgebietId} className="hover:bg-gray-50">
-                        <td className="px-3 py-2 font-medium text-gray-800">{tg?.name ?? b.teilgebietId}</td>
-                        <td className="px-3 py-2 text-right text-green-700 font-medium">
-                          + {b.betragEur.toFixed(2)} €
-                        </td>
-                        <td className="px-3 py-2">
-                          {isAdmin && (
-                            <button
-                              type="button"
-                              onClick={() => setBoni((prev) => prev.filter((x) => x.teilgebietId !== b.teilgebietId))}
-                              className="text-red-400 hover:text-red-600 text-xs"
-                            >
-                              ✕
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Neue Bonus-Zeile — nur Admin darf hinzufügen */}
-          {isAdmin && (
-          <div className="border border-dashed border-gray-300 rounded-lg p-3">
-            <p className="text-xs font-medium text-gray-500 mb-2">Bonus hinzufügen</p>
-            <div className="flex gap-2 items-end">
-              <div className="flex-1">
-                <label className="block text-xs text-gray-500 mb-1">Teilgebiet</label>
-                <select
-                  value={neuBonusTgId}
-                  onChange={(e) => setNeuBonusTgId(e.target.value)}
-                  className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="">— Teilgebiet wählen —</option>
-                  {[...aktiveTeilgebiete]
-                    .filter((tg) => !boni.find((b) => b.teilgebietId === tg.id))
-                    .sort((a, b) => a.name.localeCompare(b.name))
-                    .map((tg) => (
-                      <option key={tg.id} value={tg.id}>{tg.name} {tg.plz ? `(${tg.plz})` : ''}</option>
-                    ))}
-                </select>
-              </div>
-              <div className="w-28">
-                <label className="block text-xs text-gray-500 mb-1">Betrag (€)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={neuBonusBetrag}
-                  onChange={(e) => setNeuBonusBetrag(e.target.value)}
-                  onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-                  placeholder="0.00"
-                  className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-              <button
-                type="button"
-                onClick={addBonus}
-                disabled={!neuBonusTgId || !neuBonusBetrag}
-                className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-40"
-              >
-                + Hinzufügen
-              </button>
-            </div>
-          </div>
-          )}
-        </div>
+        <SondervereinbarungenReiter
+          mitarbeiter={initial}
+          teilgebiete={aktiveTeilgebiete}
+          isAdmin={isAdmin}
+          onCountChange={setSondervereinbarungenCount}
+        />
       )}
 
       {/* ---- Tab: Anmeldung / Abmeldung ---- */}
@@ -2386,6 +2290,293 @@ function LohnkontoTab({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Reiter „Teilgebiet-Boni" — Sondervereinbarungen pro MA+TG
+// ============================================================
+
+function SondervereinbarungenReiter({
+  mitarbeiter,
+  teilgebiete,
+  isAdmin,
+  onCountChange,
+}: {
+  mitarbeiter: Mitarbeiter | null;
+  teilgebiete: Teilgebiet[];
+  isAdmin: boolean;
+  onCountChange: (n: number) => void;
+}) {
+  const [eintraege, setEintraege] = useState<Sondervereinbarung[]>([]);
+  const [neuTgId, setNeuTgId] = useState('');
+  const [neuBetrag, setNeuBetrag] = useState('');
+  const [neuBegruendung, setNeuBegruendung] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editBetrag, setEditBetrag] = useState('');
+  const [editBegruendung, setEditBegruendung] = useState('');
+
+  // Listener: alle Sondervereinbarungen, lokal auf den MA filtern.
+  useEffect(() => {
+    if (!mitarbeiter) {
+      onCountChange(0);
+      return;
+    }
+    const unsub = sondervereinbarungenListener((list) => {
+      const eigene = list.filter((s) => s.mitarbeiterId === mitarbeiter.id);
+      setEintraege(eigene);
+      onCountChange(eigene.length);
+    });
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mitarbeiter?.id]);
+
+  if (!mitarbeiter) {
+    return (
+      <div className="border border-gray-200 rounded-lg p-6 text-center text-gray-400 text-sm">
+        Bitte zuerst den Mitarbeiter speichern — danach können Teilgebiet-Boni
+        (Sondervereinbarungen) hinzugefügt werden.
+      </div>
+    );
+  }
+
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const sortiert = [...eintraege].sort((a, b) => {
+    const na = tgMap.get(a.teilgebietId)?.name ?? '';
+    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
+    return na.localeCompare(nb, 'de', { numeric: true });
+  });
+
+  async function handleNeu() {
+    setError('');
+    if (!neuTgId) { setError('Bitte ein Teilgebiet wählen.'); return; }
+    const betrag = parseFloat(neuBetrag.replace(',', '.'));
+    if (!Number.isFinite(betrag) || betrag <= 0) {
+      setError('Betrag muss > 0 sein.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await erstelleSondervereinbarung({
+        mitarbeiterId: mitarbeiter!.id,
+        teilgebietId: neuTgId,
+        betragEur: betrag,
+        begruendung: neuBegruendung.trim(),
+      });
+      setNeuTgId('');
+      setNeuBetrag('');
+      setNeuBegruendung('');
+    } catch (e) {
+      console.error(e);
+      setError('Fehler beim Speichern.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function startEdit(s: Sondervereinbarung) {
+    setEditId(s.id);
+    setEditBetrag(s.betragEur.toString());
+    setEditBegruendung(s.begruendung ?? '');
+  }
+
+  async function handleEditSpeichern(s: Sondervereinbarung) {
+    const betrag = parseFloat(editBetrag.replace(',', '.'));
+    if (!Number.isFinite(betrag) || betrag <= 0) {
+      alert('Betrag muss > 0 sein.');
+      return;
+    }
+    await aktualisiereSondervereinbarung(s.id, {
+      betragEur: betrag,
+      begruendung: editBegruendung.trim(),
+    });
+    setEditId(null);
+  }
+
+  async function handleLoeschen(s: Sondervereinbarung) {
+    const tg = tgMap.get(s.teilgebietId);
+    if (!confirm(`Sondervereinbarung für „${tg?.name ?? s.teilgebietId}" wirklich löschen?`)) return;
+    await loescheSondervereinbarung(s.id);
+  }
+
+  const verfuegbareTg = teilgebiete
+    .filter((tg) => !eintraege.some((e) => e.teilgebietId === tg.id))
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">
+        Sondervereinbarung pro Teilgebiet: zusätzlicher Betrag je verteilter
+        Ausgabe, wenn dieser Mitarbeiter als <strong>Standardausträger</strong>
+        eingesetzt wird. Wirkt sich direkt in der Abrechnung aus.
+      </p>
+
+      {sortiert.length === 0 ? (
+        <div className="border border-gray-200 rounded-lg p-6 text-center text-gray-400 text-sm">
+          Keine Sondervereinbarungen hinterlegt
+        </div>
+      ) : (
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium">Teilgebiet</th>
+                <th className="text-right px-3 py-2 font-medium">Bonus je Ausgabe</th>
+                <th className="text-left px-3 py-2 font-medium">Begründung</th>
+                <th className="text-right px-3 py-2 font-medium w-24">Aktion</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sortiert.map((s) => {
+                const tg = tgMap.get(s.teilgebietId);
+                const isEditing = editId === s.id;
+                return (
+                  <tr key={s.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium text-gray-800">
+                      {tg?.name ?? s.teilgebietId}
+                      {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {isEditing ? (
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={editBetrag}
+                          onChange={(e) => setEditBetrag(e.target.value)}
+                          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+                          className="w-20 border border-gray-300 rounded px-2 py-1 text-sm text-right"
+                        />
+                      ) : (
+                        <span className="text-green-700 font-medium">
+                          + {s.betragEur.toFixed(2)} €
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-gray-600">
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editBegruendung}
+                          onChange={(e) => setEditBegruendung(e.target.value)}
+                          placeholder="Begründung"
+                          className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                        />
+                      ) : (
+                        s.begruendung || <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                      {isAdmin ? (
+                        isEditing ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleEditSpeichern(s)}
+                              className="text-green-600 hover:text-green-800 text-xs mr-2"
+                            >
+                              ✓
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditId(null)}
+                              className="text-gray-400 hover:text-gray-600 text-xs"
+                            >
+                              ✕
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => startEdit(s)}
+                              className="text-blue-500 hover:text-blue-700 text-xs mr-2"
+                              title="Betrag/Begründung bearbeiten"
+                            >
+                              ✎
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleLoeschen(s)}
+                              className="text-red-400 hover:text-red-600 text-xs"
+                              title="Sondervereinbarung löschen"
+                            >
+                              ✕
+                            </button>
+                          </>
+                        )
+                      ) : (
+                        <span className="text-gray-300 text-xs">read-only</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Neue Sondervereinbarung — nur Admin */}
+      {isAdmin && (
+        <div className="border border-dashed border-gray-300 rounded-lg p-3">
+          <p className="text-xs font-medium text-gray-500 mb-2">Sondervereinbarung hinzufügen</p>
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-2">
+            <div className="md:col-span-5">
+              <label className="block text-xs text-gray-500 mb-1">Teilgebiet</label>
+              <select
+                value={neuTgId}
+                onChange={(e) => setNeuTgId(e.target.value)}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">— Teilgebiet wählen —</option>
+                {verfuegbareTg.map((tg) => (
+                  <option key={tg.id} value={tg.id}>
+                    {tg.name}{tg.plz ? ` (${tg.plz})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs text-gray-500 mb-1">Betrag (€)</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={neuBetrag}
+                onChange={(e) => setNeuBetrag(e.target.value)}
+                onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+                placeholder="0.00"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+            <div className="md:col-span-4">
+              <label className="block text-xs text-gray-500 mb-1">Begründung (optional)</label>
+              <input
+                type="text"
+                value={neuBegruendung}
+                onChange={(e) => setNeuBegruendung(e.target.value)}
+                placeholder="z. B. Mehrfamilienhaus mit hoher Stueckzahl"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-full focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+            <div className="md:col-span-1 flex items-end">
+              <button
+                type="button"
+                onClick={handleNeu}
+                disabled={!neuTgId || !neuBetrag || saving}
+                className="bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-40 w-full"
+              >
+                {saving ? '…' : '+'}
+              </button>
+            </div>
+          </div>
+          {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
         </div>
       )}
     </div>

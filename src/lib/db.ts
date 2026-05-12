@@ -259,6 +259,18 @@ export async function ladeSondervereinbarungen(): Promise<Sondervereinbarung[]> 
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Sondervereinbarung));
 }
 
+/**
+ * Live-Listener für Sondervereinbarungen — wird im „Teilgebiet-Boni"-Reiter
+ * des Mitarbeiter-Formulars genutzt, damit Änderungen sofort sichtbar sind.
+ */
+export function sondervereinbarungenListener(
+  cb: (list: Sondervereinbarung[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'sondervereinbarungen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Sondervereinbarung)));
+  });
+}
+
 export async function erstelleSondervereinbarung(
   data: Omit<Sondervereinbarung, 'id' | 'erstelltAm'>
 ): Promise<string> {
