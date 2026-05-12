@@ -145,36 +145,47 @@ export default function LieferscheinDruck({
         memosByAusgabe.set(m.ausgabeId, list);
       }
 
-      // Lieferscheine aufbauen: je Teilgebiet, getrennt nach Empfänger
-      // (Standardausträger und jeder Springer bekommen einen eigenen Lieferschein)
+      // Lieferscheine aufbauen: je (Teilgebiet, tatsächlicher Empfänger) ein
+      // Schein. Regeln:
+      //  - Pro KW + TG genau ein Empfänger: Springer wenn vorhanden, sonst
+      //    der Standardausträger.
+      //  - KWs ohne Ausgabe in der Periode fließen NICHT in den Schein ein
+      //    (sonst entstehen leere Standard-Lieferscheine, obwohl der
+      //    Springer das TG vollständig übernommen hat — Bug #2).
+      //  - TGs ohne Standardausträger werden trotzdem ausgegeben, sofern
+      //    mindestens ein Springer-Einsatz existiert (Bug #1).
       const result: LieferscheinInfo[] = [];
       const sortedKWs = [...periode.kalenderwochen].sort((a, b) => a - b);
 
       for (const tg of teilgebiete) {
-        if (!tg.isActive || !tg.standardAustraegerId) continue;
-        const standardMA = mitarbeiterMap.get(tg.standardAustraegerId);
-        if (!standardMA) continue;
+        if (!tg.isActive) continue;
+        const standardMA = tg.standardAustraegerId
+          ? (mitarbeiterMap.get(tg.standardAustraegerId) ?? null)
+          : null;
 
-        // Zeilen je KW aufbauen (mit Zuordnung zum Empfänger)
-        const alleZeilen: (KWZeile & { empfaengerId: string })[] = sortedKWs.map((kw) => {
+        // Zeilen pro KW mit Empfänger ermitteln — leere KWs (keine Ausgabe
+        // ODER kein Empfänger feststellbar) werden komplett übersprungen.
+        type ZeileMitEmpf = KWZeile & { empfaengerId: string };
+        const alleZeilen: ZeileMitEmpf[] = [];
+        for (const kw of sortedKWs) {
           const ausgabe = periodeAusgaben.find((a) => a.kw === kw) ?? null;
-          const einsätzeList = ausgabe ? (einsaetzeByAusgabe.get(ausgabe.id) ?? []) : [];
+          if (!ausgabe) continue; // ohne Ausgabe: keine Auslieferung dieser KW
+          const einsätzeList = einsaetzeByAusgabe.get(ausgabe.id) ?? [];
           const einsatz = einsätzeList.find((e) => e.teilgebietId === tg.id) ?? null;
           const springer =
             einsatz?.typ === 'springer' && einsatz.mitarbeiterId
               ? (mitarbeiterMap.get(einsatz.mitarbeiterId) ?? null)
               : null;
-          const beilagen = ausgabe
-            ? (beilagenByAusgabe.get(ausgabe.id) ?? []).filter((b) =>
-                b.teilgebietIds.includes(tg.id)
-              )
-            : [];
-          // Empfänger bestimmen: Springer hat eigenen Lieferschein,
-          // Ausfall/Ungeklärt/Standard → gehen auf Lieferschein des Standard-Austrägers
-          const empfaengerId =
-            springer && einsatz?.typ === 'springer' ? springer.id : standardMA.id;
+          const beilagen = (beilagenByAusgabe.get(ausgabe.id) ?? []).filter((b) =>
+            b.teilgebietIds.includes(tg.id)
+          );
+          // Empfänger: Springer hat Vorrang. Wenn kein Springer und kein
+          // Standardausträger gesetzt → diese KW gehört zu keinem
+          // Lieferschein.
+          const empfaengerId = springer?.id ?? standardMA?.id ?? null;
+          if (!empfaengerId) continue;
 
-          return {
+          alleZeilen.push({
             kw,
             ausgabe,
             einsatz,
@@ -182,8 +193,10 @@ export default function LieferscheinDruck({
             beilagen,
             mittwoch: mittwochDerKW(kw, periode.jahr),
             empfaengerId,
-          };
-        });
+          });
+        }
+
+        if (alleZeilen.length === 0) continue;
 
         // Memos je KW ermitteln (alle/tour/teilgebiet zusammenführen)
         function memosFuerKw(kw: number): MemoEintrag[] {
@@ -204,7 +217,7 @@ export default function LieferscheinDruck({
         }
 
         // Nach Empfänger gruppieren
-        const byEmpfaenger = new Map<string, (KWZeile & { empfaengerId: string })[]>();
+        const byEmpfaenger = new Map<string, ZeileMitEmpf[]>();
         for (const z of alleZeilen) {
           const arr = byEmpfaenger.get(z.empfaengerId) ?? [];
           arr.push(z);
@@ -214,7 +227,7 @@ export default function LieferscheinDruck({
         for (const [empfId, zeilen] of byEmpfaenger.entries()) {
           const empfaenger = mitarbeiterMap.get(empfId);
           if (!empfaenger) continue;
-          const istSpringer = empfId !== standardMA.id;
+          const istSpringer = !standardMA || empfId !== standardMA.id;
           const meldungsLink = `${window.location.origin}/meldung?ma=${encodeURIComponent(empfaenger.id)}`;
 
           // Memos für die KWs dieses Lieferscheins
@@ -261,11 +274,24 @@ export default function LieferscheinDruck({
       {/* Print-CSS */}
       <style>{`
         @media print {
+          @page { size: A4 landscape; margin: 8mm; }
+          /* Sicherheitsnetz: ALLE Body-Inhalte unsichtbar machen, dann
+             nur den Druckbereich (.lieferschein-druckbereich) wieder
+             sichtbar — verhindert, dass das Modal-Overlay (z. B. wegen
+             stacking-context oder Tailwind-Print-Variantenreihenfolge)
+             versehentlich mitgedruckt wird. */
+          body * { visibility: hidden !important; }
+          .lieferschein-druckbereich,
+          .lieferschein-druckbereich * { visibility: visible !important; }
+          .lieferschein-druckbereich {
+            position: absolute;
+            inset: 0;
+            background: white;
+          }
           .no-print { display: none !important; }
-          .lieferschein-seite { break-after: page; }
-          .lieferschein-seite:last-child { break-after: avoid; }
+          .lieferschein-seite { break-after: page; page-break-after: always; }
+          .lieferschein-seite:last-child { break-after: avoid; page-break-after: avoid; }
           body { margin: 0; }
-          @page { size: A4 portrait; margin: 12mm 14mm; }
         }
         @media screen {
           .lieferschein-seite {
@@ -386,7 +412,7 @@ export default function LieferscheinDruck({
       </div>
 
       {/* ---- Druck-Inhalt (nur beim Drucken sichtbar) ---- */}
-      <div className="hidden print:block">
+      <div className="lieferschein-druckbereich hidden print:block">
         {sichtbareScheine.map((s) => (
           <LieferscheinSeite key={s.schluessel} info={s} periode={periode} />
         ))}
