@@ -49,7 +49,7 @@ export async function ladeAktiveSessionFuerMitarbeiter(
 export async function einstempeln(
   mitarbeiterId: string,
   typ: ArbeitszeitsTyp,
-  quelle: 'nfc' | 'manuell' = 'nfc',
+  quelle: import('../types').ArbeitszeitsQuelle = 'nfc',
   ausgabeId?: string
 ): Promise<Arbeitszeit> {
   // Sicherheitscheck: keine doppelte Session
