@@ -397,7 +397,7 @@ export interface Einsatz {
 
 // ---- Arbeitszeiterfassung ----------------------------------
 
-export type ArbeitszeitsQuelle = 'nfc' | 'manuell';
+export type ArbeitszeitsQuelle = 'nfc' | 'manuell' | 'selbstmeldung';
 export type ArbeitszeitsTyp =
   | 'zusammentragen'
   | 'austragen'
@@ -443,6 +443,13 @@ export interface Arbeitszeit {
   korrekturLog: AuditEintrag[];
   /** Zuordnung zu einer Ausgabe — nötig für Vorarbeit (Freigabe-Kennzeichen pro Ausgabe). */
   ausgabeId?: string;
+  /**
+   * Zuordnung zu einem Einsatz — wird gesetzt, wenn die Arbeitszeit aus der
+   * QR-Code-Selbstmeldung des Austrägers entstanden ist. Beim erneuten
+   * Speichern derselben Selbstmeldung wird der bestehende Datensatz
+   * aktualisiert, statt einen zweiten anzulegen.
+   */
+  einsatzId?: string;
   erstelltAm: number;
   aktualisiertAm: number;
   autoGeschlossenUm24?: boolean;

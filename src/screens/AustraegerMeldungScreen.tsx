@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { getDoc, doc, collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { aktualisiereEinsatzMeldung, setzeEinsatz } from '../lib/db';
+import { aktualisiereEinsatzMeldung, setzeEinsatz, setzeArbeitszeitFuerEinsatz } from '../lib/db';
 import type { Mitarbeiter, Einsatz, Ausgabe, Teilgebiet, AustraegerArbeitszeit } from '../types';
 
 // ---- Hilfsfunktionen ----------------------------------------
@@ -56,6 +56,40 @@ function formatDauer(min: number): string {
   const h = Math.floor(min / 60);
   const m = min % 60;
   return `${h}:${String(m).padStart(2, '0')} h`;
+}
+
+/**
+ * Synchronisiert die selbstgemeldete Arbeitszeit mit der zentralen
+ * `arbeitszeiten`-Collection — damit erscheint die Zeit in der
+ * Zeitübersicht und in der Abrechnung. Idempotent: pro `einsatzId` ein
+ * Datensatz (Upsert über `setzeArbeitszeitFuerEinsatz`).
+ */
+async function syncArbeitszeitSelbstmeldung(
+  einsatzId: string,
+  mitarbeiterId: string,
+  az: AustraegerArbeitszeit,
+  ausgabeId: string
+): Promise<void> {
+  const startTime = new Date(`${az.datum}T${az.von}:00`).getTime();
+  const endTime = new Date(`${az.datum}T${az.bis}:00`).getTime();
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
+    // Defensive: ungültige Zeiten nicht spiegeln. Die UI hat das vorher
+    // schon validiert, aber wenn der Import fehlschlägt, wollen wir
+    // nicht das Speichern der Meldung blockieren.
+    return;
+  }
+  await setzeArbeitszeitFuerEinsatz(einsatzId, {
+    mitarbeiterId,
+    startTime,
+    endTime,
+    status: 'abgeschlossen',
+    quelle: 'selbstmeldung',
+    typ: 'austragen',
+    pausen: [],
+    gesamtPauseMinuten: Math.max(0, az.pausenMinuten || 0),
+    korrekturLog: [],
+    ausgabeId,
+  });
 }
 
 // ---- Haupt-Export -------------------------------------------
@@ -352,6 +386,16 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
         restmenge: Number(restmenge) || 0,
         meldungEingereichtAm: ts,
       });
+      // Selbstgemeldete Arbeitszeit zusätzlich in der zentralen
+      // arbeitszeiten-Collection spiegeln, damit sie in Zeitübersicht
+      // und Abrechnung sichtbar wird (vorher nur eingebettet im Einsatz).
+      try {
+        await syncArbeitszeitSelbstmeldung(echteId, einsatz.mitarbeiterId ?? '', az, einsatz.ausgabeId);
+      } catch (syncErr) {
+        // Sync-Fehler nicht eskalieren — die Selbstmeldung am Einsatz
+        // ist bereits gespeichert. Admin kann den Datensatz nachziehen.
+        console.warn('Arbeitszeit-Sync fehlgeschlagen:', syncErr);
+      }
       onGespeichert({
         ...einsatz,
         id: echteId,
@@ -561,6 +605,13 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
         restmenge: Number(restmenge) || 0,
         meldungEingereichtAm: ts,
       });
+      // Selbstgemeldete Arbeitszeit auch bei nachträglicher Bearbeitung
+      // mit der zentralen Collection synchronisieren (Upsert via einsatzId).
+      try {
+        await syncArbeitszeitSelbstmeldung(einsatz.id, einsatz.mitarbeiterId ?? '', az, einsatz.ausgabeId);
+      } catch (syncErr) {
+        console.warn('Arbeitszeit-Sync fehlgeschlagen:', syncErr);
+      }
       onBearbeiten({
         ...einsatz,
         arbeitszeit: az,

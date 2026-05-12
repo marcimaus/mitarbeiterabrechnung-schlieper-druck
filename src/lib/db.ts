@@ -665,6 +665,40 @@ export async function loescheArbeitszeit(id: string): Promise<void> {
   await deleteDoc(doc(db, 'arbeitszeiten', id));
 }
 
+/**
+ * Upsert pro `einsatzId`: legt eine `Arbeitszeit` an oder aktualisiert die
+ * bestehende, wenn der Austräger seine QR-Code-Selbstmeldung erneut
+ * speichert. Damit erscheint die selbst gemeldete Zeit auch in der
+ * zentralen Zeitübersicht.
+ */
+export async function setzeArbeitszeitFuerEinsatz(
+  einsatzId: string,
+  data: Omit<Arbeitszeit, 'id' | 'erstelltAm' | 'aktualisiertAm' | 'einsatzId'>
+): Promise<string> {
+  const ts = now();
+  const existing = await getDocs(
+    query(collection(db, 'arbeitszeiten'), where('einsatzId', '==', einsatzId))
+  );
+  const payload = {
+    ...stripUndef({ ...data, einsatzId } as Record<string, unknown>),
+    aktualisiertAm: ts,
+  };
+  if (!existing.empty) {
+    const id = existing.docs[0].id;
+    // Falls Doubletten existieren (sollten nicht), neuere überschreiben + alte entfernen
+    await Promise.all(
+      existing.docs.slice(1).map((d) => deleteDoc(doc(db, 'arbeitszeiten', d.id)))
+    );
+    await updateDoc(doc(db, 'arbeitszeiten', id), payload);
+    return id;
+  }
+  const ref = await addDoc(collection(db, 'arbeitszeiten'), {
+    ...payload,
+    erstelltAm: ts,
+  });
+  return ref.id;
+}
+
 /** Lädt Arbeitszeiten einer bestimmten Ausgabe (Vorarbeit-Zuordnung) */
 export async function ladeArbeitszeitenFuerAusgabe(ausgabeId: string): Promise<Arbeitszeit[]> {
   const q = query(collection(db, 'arbeitszeiten'), where('ausgabeId', '==', ausgabeId));

@@ -4,6 +4,7 @@ import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import {
   ladeMonatsarbeitszeiten,
+  ladeAlleMonatsarbeitszeiten,
   berechneNettoMinuten,
   formatierZeit,
   formatierDatum,
@@ -65,6 +66,12 @@ function ZeitübersichtInhalt() {
   const [suchText, setSuchText] = useState('');
   const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
   const [filterTyp, setFilterTyp] = useState<ArbeitszeitsTyp | ''>('');
+  // Filter „Mit/Ohne Zeiten im Zeitraum" für die Alle-MA-Übersicht
+  const [filterZeiten, setFilterZeiten] = useState<'' | 'mit' | 'ohne'>('');
+  // Sessions ALLER Mitarbeiter im Zeitraum — nur geladen, wenn kein MA
+  // ausgewählt ist und nicht Mitarbeiter-Login.
+  const [alleSessions, setAlleSessions] = useState<Arbeitszeit[]>([]);
+  const [loadingAlle, setLoadingAlle] = useState(false);
 
   const aktiveMitarbeiter = mitarbeiter.filter((m) => istEinsatzbereit(m));
 
@@ -100,6 +107,19 @@ function ZeitübersichtInhalt() {
       setLoading(false);
     });
   }, [selectedMaId, monat, jahr, reloadKey]);
+
+  // Alle-MA-Modus: alle Arbeitszeiten des gewählten Monats laden
+  useEffect(() => {
+    if (selectedMaId || istMitarbeiter) {
+      setAlleSessions([]);
+      return;
+    }
+    setLoadingAlle(true);
+    ladeAlleMonatsarbeitszeiten(jahr, monat)
+      .then(setAlleSessions)
+      .catch((err) => console.error('Fehler beim Laden aller Zeiten:', err))
+      .finally(() => setLoadingAlle(false));
+  }, [selectedMaId, jahr, monat, reloadKey, istMitarbeiter]);
 
   const ma = mitarbeiter.find((m) => m.id === selectedMaId);
 
@@ -210,17 +230,32 @@ function ZeitübersichtInhalt() {
               ))}
             </select>
           )}
-          {selectedMaId && (
+          {/* Typ-Filter — sowohl für Einzelansicht (selectedMaId) als
+              auch im Alle-MA-Modus. Beim Mitarbeiter-Login bleibt er
+              ebenfalls verfügbar. */}
+          <select
+            value={filterTyp}
+            onChange={(e) => setFilterTyp(e.target.value as ArbeitszeitsTyp | '')}
+            className={selectClass}
+            title="Typ der Zeiterfassung"
+          >
+            <option value="">Alle Typen</option>
+            {ALLE_TYPEN.map((t) => (
+              <option key={t} value={t}>{TYP_LABELS[t]}</option>
+            ))}
+          </select>
+          {/* „Mit/Ohne Zeiten"-Filter: nur sinnvoll im Alle-MA-Modus,
+              da er die MA-Liste (nicht die Zeiten) einschränkt. */}
+          {!selectedMaId && !istMitarbeiter && (
             <select
-              value={filterTyp}
-              onChange={(e) => setFilterTyp(e.target.value as ArbeitszeitsTyp | '')}
+              value={filterZeiten}
+              onChange={(e) => setFilterZeiten(e.target.value as '' | 'mit' | 'ohne')}
               className={selectClass}
-              title="Typ der Zeiterfassung"
+              title="Mitarbeiter mit oder ohne erfasste Zeiten im gewählten Zeitraum"
             >
-              <option value="">Alle Typen</option>
-              {ALLE_TYPEN.map((t) => (
-                <option key={t} value={t}>{TYP_LABELS[t]}</option>
-              ))}
+              <option value="">MA: alle</option>
+              <option value="mit">nur mit Zeiten</option>
+              <option value="ohne">nur ohne Zeiten</option>
             </select>
           )}
           <select value={monat} onChange={(e) => setMonat(Number(e.target.value))} className={selectClass}>
@@ -242,38 +277,125 @@ function ZeitübersichtInhalt() {
         </div>
       </div>
 
-      {!selectedMaId && !istMitarbeiter && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 text-sm text-gray-600 font-medium">
-            {suchKandidaten.length === 0
-              ? 'Keine Mitarbeiter gefunden'
-              : `${suchKandidaten.length} Mitarbeiter — zum Öffnen anklicken`}
+      {!selectedMaId && !istMitarbeiter && (() => {
+        // Zeiten pro MA gruppieren (gefiltert nach Typ)
+        const gefilterteSessions = filterTyp
+          ? alleSessions.filter((s) => s.typ === filterTyp)
+          : alleSessions;
+        const minutenJeMa = new Map<string, number>();
+        const zeitenJeMa = new Map<string, Arbeitszeit[]>();
+        for (const s of gefilterteSessions) {
+          if (s.status !== 'abgeschlossen') continue;
+          minutenJeMa.set(s.mitarbeiterId, (minutenJeMa.get(s.mitarbeiterId) ?? 0) + berechneNettoMinuten(s));
+          const arr = zeitenJeMa.get(s.mitarbeiterId) ?? [];
+          arr.push(s);
+          zeitenJeMa.set(s.mitarbeiterId, arr);
+        }
+        // MA-Liste auf Such-/Rollen-Filter anwenden
+        let liste = suchKandidaten;
+        if (filterZeiten === 'mit') {
+          liste = liste.filter((m) => (minutenJeMa.get(m.id) ?? 0) > 0);
+        } else if (filterZeiten === 'ohne') {
+          liste = liste.filter((m) => (minutenJeMa.get(m.id) ?? 0) === 0);
+        }
+        // Sortierung: MA mit Zeiten zuerst (absteigend), dann Name
+        liste = [...liste].sort((a, b) => {
+          const ma = minutenJeMa.get(a.id) ?? 0;
+          const mb = minutenJeMa.get(b.id) ?? 0;
+          if (ma !== mb) return mb - ma;
+          return a.name.localeCompare(b.name, 'de');
+        });
+        const summeAlleMinuten = Array.from(minutenJeMa.values()).reduce((s, m) => s + m, 0);
+        const maMitZeiten = Array.from(minutenJeMa.values()).filter((m) => m > 0).length;
+        return (
+          <div className="space-y-4">
+            {/* Zusammenfassung */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <SummaryCard
+                label="Mitarbeiter mit Zeiten"
+                value={maMitZeiten.toString()}
+                sub={`von ${suchKandidaten.length} angezeigten`}
+              />
+              <SummaryCard
+                label="Σ Sessions"
+                value={gefilterteSessions.length.toString()}
+              />
+              <SummaryCard
+                label="Σ Netto-Stunden"
+                value={formatierDauer(summeAlleMinuten)}
+              />
+              <SummaryCard
+                label="Zeitraum"
+                value={`${MONATSNAMEN[monat - 1]} ${jahr}`}
+              />
+            </div>
+
+            {/* MA-Liste mit Stunden + Klick-Drilldown */}
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-100 bg-gray-50 text-sm text-gray-600 font-medium flex items-center justify-between">
+                <span>
+                  {loadingAlle
+                    ? 'Lade Zeiten…'
+                    : `${liste.length} Mitarbeiter — zum Drilldown anklicken`}
+                </span>
+                {filterTyp && (
+                  <span className="text-xs text-blue-700">
+                    Filter Typ: {TYP_LABELS[filterTyp as ArbeitszeitsTyp]}
+                  </span>
+                )}
+              </div>
+              {!loadingAlle && liste.length === 0 && (
+                <div className="px-4 py-8 text-center text-sm text-gray-400">
+                  Keine Mitarbeiter passen zu den Filterkriterien.
+                </div>
+              )}
+              {!loadingAlle && liste.length > 0 && (
+                <ul className="max-h-[560px] overflow-y-auto divide-y divide-gray-100">
+                  {liste.map((m) => {
+                    const minutenSum = minutenJeMa.get(m.id) ?? 0;
+                    const sessions = zeitenJeMa.get(m.id) ?? [];
+                    const istLeer = minutenSum === 0;
+                    return (
+                      <li key={m.id}>
+                        <button
+                          onClick={() => setSelectedMaId(m.id)}
+                          className={`w-full flex items-center justify-between px-4 py-3 text-left transition-colors ${
+                            istLeer ? 'hover:bg-gray-50' : 'hover:bg-blue-50'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium text-gray-800 text-sm">
+                              {m.hatFestgehalt ? '🔒 ' : ''}{m.name}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {m.nummer} ·{' '}
+                              {m.rollen.map((r) => ROLLEN_LABELS[r]).join(', ') || 'ohne Rolle'}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            {istLeer ? (
+                              <span className="text-xs text-gray-400 italic">keine Zeiten</span>
+                            ) : (
+                              <>
+                                <div className="text-sm font-semibold text-gray-800">
+                                  {formatierDauer(minutenSum)}
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                  {sessions.length} {sessions.length === 1 ? 'Session' : 'Sessions'}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
-          {suchKandidaten.length > 0 && (
-            <ul className="max-h-[480px] overflow-y-auto divide-y divide-gray-100">
-              {suchKandidaten.map((m) => (
-                <li key={m.id}>
-                  <button
-                    onClick={() => setSelectedMaId(m.id)}
-                    className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-blue-50 transition-colors"
-                  >
-                    <div>
-                      <div className="font-medium text-gray-800 text-sm">
-                        {m.hatFestgehalt ? '🔒 ' : ''}{m.name}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {m.nummer} ·{' '}
-                        {m.rollen.map((r) => ROLLEN_LABELS[r]).join(', ') || 'ohne Rolle'}
-                      </div>
-                    </div>
-                    <span className="text-xs text-blue-600">Öffnen →</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+        );
+      })()}
 
       {selectedMaId && loading && (
         <div className="text-gray-400 text-sm text-center p-8">Lädt...</div>
