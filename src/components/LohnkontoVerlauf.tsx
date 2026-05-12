@@ -46,24 +46,29 @@ export default function LohnkontoVerlauf({ isOpen, onClose, mitarbeiter }: Props
       return a.erstelltAm - b.erstelltAm;
     });
 
-    let saldo = 0;
+    // Saldo-Akkumulation in Cent-Integer, sonst Float-Drift bei Summen
+    // mit vielen Buchungen („79,30 + 0,02 → 79,28").
+    const toCent = (eur: number) => Math.round(eur * 100);
+    let saldoCent = 0;
     return sorted.map((b) => {
-      saldo += b.art === 'verschiebung' ? b.betragEur : -b.betragEur;
+      saldoCent += b.art === 'verschiebung' ? toCent(b.betragEur) : -toCent(b.betragEur);
       return {
         buchung: b,
         periode: periodeMap.get(b.abrechnungsperiodeId),
-        saldoNach: saldo,
+        saldoNach: saldoCent / 100,
       };
     });
   }, [lohnkontoBuchungen, abrechnungsperioden, mitarbeiter.id]);
 
   const aktuellerSaldo = zeilen.length > 0 ? zeilen[zeilen.length - 1].saldoNach : 0;
-  const summeVerschiebung = zeilen
-    .filter((z) => z.buchung.art === 'verschiebung')
-    .reduce((s, z) => s + z.buchung.betragEur, 0);
-  const summeVerrechnung = zeilen
-    .filter((z) => z.buchung.art === 'verrechnung')
-    .reduce((s, z) => s + z.buchung.betragEur, 0);
+  const summeVerschiebung =
+    zeilen
+      .filter((z) => z.buchung.art === 'verschiebung')
+      .reduce((s, z) => s + Math.round(z.buchung.betragEur * 100), 0) / 100;
+  const summeVerrechnung =
+    zeilen
+      .filter((z) => z.buchung.art === 'verrechnung')
+      .reduce((s, z) => s + Math.round(z.buchung.betragEur * 100), 0) / 100;
 
   return (
     <Modal

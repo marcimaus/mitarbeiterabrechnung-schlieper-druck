@@ -640,12 +640,15 @@ function MitarbeiterForm({
       );
     }
 
-    // 2) Lohnkonto-Saldo
-    const saldo = lohnkontoBuchungen
+    // 2) Lohnkonto-Saldo — in Cent gerechnet gegen Float-Drift
+    const saldoCent = lohnkontoBuchungen
       .filter((b) => b.mitarbeiterId === initial.id)
-      .reduce((s, b) => s + (b.art === 'verschiebung' ? b.betragEur : -b.betragEur), 0);
-    if (Math.abs(saldo) > 0.005) {
-      probleme.push(`Lohnkonto-Saldo nicht ausgeglichen: ${eur(saldo)}`);
+      .reduce(
+        (s, b) => s + (b.art === 'verschiebung' ? Math.round(b.betragEur * 100) : -Math.round(b.betragEur * 100)),
+        0
+      );
+    if (saldoCent !== 0) {
+      probleme.push(`Lohnkonto-Saldo nicht ausgeglichen: ${eur(saldoCent / 100)}`);
     }
 
     // 3) Springer-Einsätze in offenen Folge-Perioden + 4) Arbeitszeiten + 5) Fahrtkosten
@@ -2078,10 +2081,13 @@ function LohnkontoTab({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
     }
     return a.erstelltAm - b.erstelltAm;
   });
-  let saldo = 0;
+  // Saldo-Akkumulation in Cent-Integer gegen Float-Drift
+  // („79,30 + 0,02 → 79,28").
+  const toCent = (eur: number) => Math.round(eur * 100);
+  let saldoCent = 0;
   const zeilen = sortiert.map((b) => {
-    saldo += b.art === 'verschiebung' ? b.betragEur : -b.betragEur;
-    return { buchung: b, periode: periodeMap.get(b.abrechnungsperiodeId), saldoNach: saldo };
+    saldoCent += b.art === 'verschiebung' ? toCent(b.betragEur) : -toCent(b.betragEur);
+    return { buchung: b, periode: periodeMap.get(b.abrechnungsperiodeId), saldoNach: saldoCent / 100 };
   });
   const aktuellerSaldo = zeilen.length > 0 ? zeilen[zeilen.length - 1].saldoNach : 0;
 

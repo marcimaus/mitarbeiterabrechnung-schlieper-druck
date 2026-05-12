@@ -316,25 +316,28 @@ export function berechneAbrechnung(
     const periode_ = periodeId
       ? buchungenMa.filter((b) => b.abrechnungsperiodeId === periodeId)
       : [];
-    const verschiebungPeriode = periode_
+    // WICHTIG: Saldo-Akkumulation in Cent-Integer rechnen, sonst entsteht
+    // Float-Drift („79,30 + 0,02 → 79,28"). Am Ende /100 für die EUR-Form.
+    const toCent = (eur: number) => Math.round(eur * 100);
+    const verschiebungPeriodeCent = periode_
       .filter((b) => b.art === 'verschiebung')
-      .reduce((s, b) => s + b.betragEur, 0);
-    const verrechnungPeriode = periode_
+      .reduce((s, b) => s + toCent(b.betragEur), 0);
+    const verrechnungPeriodeCent = periode_
       .filter((b) => b.art === 'verrechnung')
-      .reduce((s, b) => s + b.betragEur, 0);
-    const saldoVor = buchungenMa
+      .reduce((s, b) => s + toCent(b.betragEur), 0);
+    const saldoVorCent = buchungenMa
       .filter((b) => periodeIdsVorAktueller.has(b.abrechnungsperiodeId))
       .reduce(
-        (s, b) => s + (b.art === 'verschiebung' ? b.betragEur : -b.betragEur),
+        (s, b) => s + (b.art === 'verschiebung' ? toCent(b.betragEur) : -toCent(b.betragEur)),
         0
       );
-    const saldoNach = saldoVor + verschiebungPeriode - verrechnungPeriode;
+    const saldoNachCent = saldoVorCent + verschiebungPeriodeCent - verrechnungPeriodeCent;
     return {
       lohnkontoBuchungenPeriode: periode_,
-      lohnkontoVerschiebungPeriode: verschiebungPeriode,
-      lohnkontoVerrechnungPeriode: verrechnungPeriode,
-      lohnkontoSaldoVorPeriode: saldoVor,
-      lohnkontoSaldoNachPeriode: saldoNach,
+      lohnkontoVerschiebungPeriode: verschiebungPeriodeCent / 100,
+      lohnkontoVerrechnungPeriode: verrechnungPeriodeCent / 100,
+      lohnkontoSaldoVorPeriode: saldoVorCent / 100,
+      lohnkontoSaldoNachPeriode: saldoNachCent / 100,
     };
   }
 

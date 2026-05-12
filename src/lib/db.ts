@@ -1098,12 +1098,22 @@ export function lohnkontoBuchungenListener(
   });
 }
 
+/**
+ * Rundet einen EUR-Betrag auf volle Cent. Beim Schreiben einer
+ * Lohnkonto-Buchung gehen wir damit auf Nummer sicher, dass nicht
+ * versehentlich Float-Drift-Werte wie 79.29999999999999 in Firestore
+ * landen (parseFloat('79.30') ergibt genau einen solchen Wert).
+ */
+function rundeAufCent(eur: number): number {
+  return Math.round(eur * 100) / 100;
+}
+
 export async function erstelleLohnkontoBuchung(
   data: Omit<LohnkontoBuchung, 'id' | 'erstelltAm' | 'aktualisiertAm'>
 ): Promise<string> {
   const ts = now();
   const ref = await addDoc(collection(db, 'lohnkontoBuchungen'), {
-    ...stripUndef(data as Record<string, unknown>),
+    ...stripUndef({ ...data, betragEur: rundeAufCent(data.betragEur) } as Record<string, unknown>),
     erstelltAm: ts,
     aktualisiertAm: ts,
   });
@@ -1114,8 +1124,10 @@ export async function aktualisiereLohnkontoBuchung(
   id: string,
   data: Partial<LohnkontoBuchung>
 ): Promise<void> {
+  const payload: Record<string, unknown> = { ...data };
+  if (typeof data.betragEur === 'number') payload.betragEur = rundeAufCent(data.betragEur);
   await updateDoc(doc(db, 'lohnkontoBuchungen', id), {
-    ...stripUndef(data as Record<string, unknown>),
+    ...stripUndef(payload),
     aktualisiertAm: now(),
   });
 }
