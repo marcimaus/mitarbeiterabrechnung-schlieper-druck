@@ -669,8 +669,25 @@ export function berechneAbrechnung(
           return effParams.austragenNachIstZeit === true;
         case 'zusammentragen':
           return effParams.zusammentragenNachIstZeit === true;
-        case 'vorarbeit':
-          return a.ausgabeId ? ausgabenFreigegebenMap.get(a.ausgabeId) === true : false;
+        case 'vorarbeit': {
+          // Vorarbeit wird abgerechnet, wenn:
+          //  (1) die direkt zugeordnete Ausgabe vorarbeitFreigegeben=true
+          //      hat — wird beim nächsten Berechnen aufgegriffen, auch wenn
+          //      das Kennzeichen NACH dem Einstempeln gesetzt wurde, oder
+          //  (2) keine ausgabeId an der Arbeitszeit gespeichert ist (z. B.
+          //      weil die Ausgabe der KW zur Stempelzeit noch nicht
+          //      existierte) UND eine Ausgabe der gleichen KW/Jahr-Kombi
+          //      mit vorarbeitFreigegeben=true existiert.
+          if (a.ausgabeId) {
+            return ausgabenFreigegebenMap.get(a.ausgabeId) === true;
+          }
+          const d = new Date(a.startTime);
+          const kw = getISOWeek(d);
+          const jahr = getISOYear(d);
+          return data.ausgaben.some(
+            (x) => x.jahr === jahr && x.kw === kw && x.vorarbeitFreigegeben === true
+          );
+        }
         case 'sonstige':
           return true;
         default:
