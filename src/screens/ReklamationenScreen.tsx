@@ -361,7 +361,6 @@ function ReklamationenInhalt() {
         onClose={() => setShowForm(false)}
         title={editTarget ? 'Reklamation bearbeiten' : 'Neue Reklamation erfassen'}
         size="lg"
-        size="lg"
       >
         <ReklamationForm
           initial={editTarget}
