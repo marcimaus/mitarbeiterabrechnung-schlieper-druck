@@ -46,12 +46,17 @@ export interface TgVorschlag {
 }
 
 /**
- * Sucht aktive Teilgebiete, die zu einer Adresse passen. Score:
+ * Sucht aktive Teilgebiete, die zur Adresse passen. Je genauer die
+ * Eingaben, desto strenger der Filter:
+ *
+ *   - Straße angegeben → TG MUSS eine matchende Straße haben.
+ *     PLZ-Match (falls eingegeben) wirkt nur als Sortier-Bonus.
+ *   - Nur PLZ (keine Straße) → TG.plz muss matchen.
+ *   - Weder Straße noch PLZ → keine Vorschläge.
+ *
+ * Score (für Sortierung):
  *   +10  PLZ am TG = Eingabe-PLZ
- *    +5  irgend ein TG.strassen[].strassenname enthält die Eingabe-Straße
- *    +1  fallback, wenn nur PLZ matcht und keine Straße eingegeben wurde
- * Ergebnis ab score >= 1, absteigend sortiert. Inaktive TGs werden
- * ausgeschlossen.
+ *    +5  Straßen-Match
  *
  * `ort` wird derzeit nicht für den Score genutzt — am TG ist kein Ort
  * gespeichert; wir behalten ihn nur als Anzeige-Daten.
@@ -71,33 +76,40 @@ export function findePassendeTeilgebiete(
   const out: TgVorschlag[] = [];
   for (const tg of teilgebiete) {
     if (!tg.isActive) continue;
-    let score = 0;
-    const gruende: string[] = [];
 
     const plzMatch = hatPlz && tg.plz === plzTrim;
-    if (plzMatch) {
-      score += 10;
-      gruende.push('PLZ');
-    }
-
-    if (hatStrasse) {
-      const treffer = (tg.strassen ?? []).some((s) =>
+    const strasseMatch =
+      hatStrasse &&
+      (tg.strassen ?? []).some((s) =>
         normalisiereStrasse(s.strassenname).includes(strNorm)
       );
-      if (treffer) {
-        score += 5;
-        gruende.push('Straße');
-      }
-    } else if (plzMatch) {
-      // Nur PLZ eingegeben → ausreichend für eine schwache Empfehlung.
-      score += 1;
+
+    // Pflicht-Filter: je nach Eingabe-Lage muss MINDESTENS das angegebene
+    // Kriterium matchen — sonst kein Vorschlag.
+    if (hatStrasse) {
+      // Straße ist die spezifischere Angabe: ohne Straßen-Match raus.
+      if (!strasseMatch) continue;
+      // Wenn der Nutzer ZUSÄTZLICH eine PLZ angegeben hat, soll sie auch
+      // passen. So fallen TGs raus, in denen die gleichnamige Straße zwar
+      // existiert, das TG aber in einer anderen PLZ liegt.
+      if (hatPlz && !plzMatch) continue;
+    } else {
+      // Keine Straße, nur PLZ → TG.plz muss matchen.
+      if (!plzMatch) continue;
     }
 
-    if (score >= 1) {
-      out.push({ tg, score, grund: gruende.join(' + ') || 'PLZ' });
-    }
+    const gruende: string[] = [];
+    let score = 0;
+    if (plzMatch) { score += 10; gruende.push('PLZ'); }
+    if (strasseMatch) { score += 5; gruende.push('Straße'); }
+
+    out.push({ tg, score, grund: gruende.join(' + ') });
   }
-  out.sort((a, b) => b.score - a.score || a.tg.name.localeCompare(b.tg.name, 'de', { numeric: true }));
+  out.sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.tg.name.localeCompare(b.tg.name, 'de', { numeric: true })
+  );
   return out;
 }
 
