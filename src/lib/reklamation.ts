@@ -79,28 +79,33 @@ export interface TgVorschlag {
  * Eingaben, desto strenger der Filter:
  *
  *   - Straße angegeben → TG MUSS eine matchende Straße haben.
- *     PLZ-Match (falls eingegeben) wirkt nur als Sortier-Bonus.
- *   - Nur PLZ (keine Straße) → TG.plz muss matchen.
- *   - Weder Straße noch PLZ → keine Vorschläge.
+ *   - PLZ angegeben → TG.plz muss exakt matchen.
+ *   - Ort angegeben → der Ort muss unscharf im TG-Namen vorkommen
+ *     (Konvention: TGs heißen typischerweise nach dem Ort, z. B.
+ *     „Volpriehausen1", „Uslar2"). Damit lassen sich Dörfer innerhalb
+ *     einer PLZ-Region auseinanderhalten (37170 → Volpriehausen,
+ *     Bollensen, Allershausen …).
+ *   - Wenn weder Straße noch PLZ noch Ort eingegeben sind → keine
+ *     Vorschläge.
  *
  * Score (für Sortierung):
  *   +10  PLZ am TG = Eingabe-PLZ
  *    +5  Straßen-Match
- *
- * `ort` wird derzeit nicht für den Score genutzt — am TG ist kein Ort
- * gespeichert; wir behalten ihn nur als Anzeige-Daten.
+ *    +3  Ort matcht TG-Namen
  */
 export function findePassendeTeilgebiete(
   strasse: string,
   plz: string,
-  _ort: string,
+  ort: string,
   teilgebiete: Teilgebiet[]
 ): TgVorschlag[] {
   const strNorm = normalisiereStrasse(strasse);
   const plzTrim = plz.trim();
+  const ortNorm = normalisiereOrt(ort);
   const hatStrasse = strNorm.length > 0;
   const hatPlz = plzTrim.length > 0;
-  if (!hatStrasse && !hatPlz) return [];
+  const hatOrt = ortNorm.length >= 3; // <3 Zeichen → zu unspezifisch
+  if (!hatStrasse && !hatPlz && !hatOrt) return [];
 
   const out: TgVorschlag[] = [];
   for (const tg of teilgebiete) {
@@ -110,25 +115,25 @@ export function findePassendeTeilgebiete(
     const strasseMatch =
       hatStrasse &&
       (tg.strassen ?? []).some((s) => strasseUnscharfPasst(strNorm, s.strassenname));
+    // Ort-Match: TG-Name enthält den eingegebenen Ort (oder umgekehrt) —
+    // unscharf, lower-case, Umlaute aufgelöst. Substring genügt; damit
+    // matchen „Volpri" → „Volpriehausen1/2".
+    const tgNameNorm = normalisiereOrt(tg.name);
+    const ortMatch =
+      hatOrt &&
+      tgNameNorm.length >= 3 &&
+      (tgNameNorm.includes(ortNorm) || ortNorm.includes(tgNameNorm));
 
-    // Pflicht-Filter: je nach Eingabe-Lage muss MINDESTENS das angegebene
-    // Kriterium matchen — sonst kein Vorschlag.
-    if (hatStrasse) {
-      // Straße ist die spezifischere Angabe: ohne Straßen-Match raus.
-      if (!strasseMatch) continue;
-      // Wenn der Nutzer ZUSÄTZLICH eine PLZ angegeben hat, soll sie auch
-      // passen. So fallen TGs raus, in denen die gleichnamige Straße zwar
-      // existiert, das TG aber in einer anderen PLZ liegt.
-      if (hatPlz && !plzMatch) continue;
-    } else {
-      // Keine Straße, nur PLZ → TG.plz muss matchen.
-      if (!plzMatch) continue;
-    }
+    // Pflicht-Filter: alle angegebenen Kriterien müssen MATCHEN, sonst raus.
+    if (hatStrasse && !strasseMatch) continue;
+    if (hatPlz && !plzMatch) continue;
+    if (hatOrt && !ortMatch) continue;
 
     const gruende: string[] = [];
     let score = 0;
     if (plzMatch) { score += 10; gruende.push('PLZ'); }
     if (strasseMatch) { score += 5; gruende.push('Straße'); }
+    if (ortMatch) { score += 3; gruende.push('Ort'); }
 
     out.push({ tg, score, grund: gruende.join(' + ') });
   }
