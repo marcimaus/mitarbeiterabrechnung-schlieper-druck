@@ -19,6 +19,9 @@ import {
   schreibeMonatswechselSnapshot,
   verwerfeMonatswechselSnapshot,
   aktualisiereMitarbeiter,
+  aktualisiereTeilgebiet,
+  loescheAustraegerwechsel,
+  entferneAusAbmeldungenSnapshot,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
 import type { Abrechnungsperiode, Vorschuss, Mitarbeiter } from '../types';
@@ -32,7 +35,7 @@ export default function AbrechnungScreen() {
 }
 
 function AbrechnungInhalt() {
-  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze } = useApp();
+  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, austraegerwechsel } = useApp();
   const [selectedPeriodeId, setSelectedPeriodeId] = useState('');
   const [ergebnisse, setErgebnisse] = useState<MitarbeiterAbrechnung[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -41,6 +44,7 @@ function AbrechnungInhalt() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [abschliessenBestaetigt, setAbschliessenBestaetigt] = useState(false);
   const [monatswechselBestaetigt, setMonatswechselBestaetigt] = useState(false);
+  const [zeigeWechselDialog, setZeigeWechselDialog] = useState(false);
   const [suchbegriff, setSuchbegriff] = useState('');
 
   const sortedPerioden = [...abrechnungsperioden].sort((a, b) =>
@@ -199,6 +203,20 @@ function AbrechnungInhalt() {
         }
       }
 
+      // Snapshot-Einträge sammeln BEVOR die Felder am MA geschrieben werden
+      // (sonst wäre m.abmeldungUebermittlungDatum noch nicht final). Pro MA
+      // mit Name, Nummer, effektivem Abmeldedatum und ggf. ersetztDurchId.
+      const abmeldungenEintraege = abzumelden.map((m) => {
+        const ersetzendeMa = mitarbeiter.find((x) => x.ersetztMitarbeiterId === m.id);
+        return {
+          mitarbeiterId: m.id,
+          name: m.name,
+          nummer: m.nummer,
+          abmeldedatum: m.abmeldungUebermittlungDatum ?? heuteIso,
+          ersetztDurchId: ersetzendeMa?.id,
+        };
+      });
+
       for (const m of abzumelden) {
         await aktualisiereMitarbeiter(m.id, {
           abgemeldet: true,
@@ -209,7 +227,16 @@ function AbrechnungInhalt() {
       }
       // 2) Berechnetes Ergebnis als Snapshot mitschreiben — danach lassen sich
       //    die historischen Werte ohne Neu-Berechnung jederzeit anzeigen.
-      await schliessePeriodeAb(selectedPeriode.id, teilgebiete, params, ergebnisse);
+      //    Plus Abmelde-Liste als eigener Snapshot — bleibt auch nach
+      //    Wieder-Öffnen der Periode erhalten (Verwerfen ändert die
+      //    Ansicht nicht).
+      await schliessePeriodeAb(
+        selectedPeriode.id,
+        teilgebiete,
+        params,
+        ergebnisse,
+        abmeldungenEintraege
+      );
     } catch (e: any) {
       alert('Fehler beim Abschließen: ' + (e.message ?? e));
     }
@@ -233,6 +260,10 @@ function AbrechnungInhalt() {
       // Frisch laden, damit das Banner sofort sichtbar ist und die fixierten
       // Werte zukünftige Berechnungen greifen.
       await handleBerechnen();
+      // Vorgemerkte Austrägerwechsel zur Einzel-Bestätigung anbieten.
+      if (austraegerwechsel.length > 0) {
+        setZeigeWechselDialog(true);
+      }
     } catch (e: any) {
       alert('Fehler beim Monatswechsel: ' + (e.message ?? e));
     }
@@ -934,6 +965,145 @@ function AbrechnungInhalt() {
           Klicke auf "Berechnen" um die Abrechnung zu starten.
         </div>
       )}
+
+      {zeigeWechselDialog && (
+        <AustraegerwechselDialog
+          wechsel={austraegerwechsel}
+          teilgebiete={teilgebiete}
+          mitarbeiter={mitarbeiter}
+          onClose={() => setZeigeWechselDialog(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---- Modal: Austrägerwechsel-Bestätigung ------------------
+
+function AustraegerwechselDialog({
+  wechsel,
+  teilgebiete,
+  mitarbeiter,
+  onClose,
+}: {
+  wechsel: import('../types').Austraegerwechsel[];
+  teilgebiete: import('../types').Teilgebiet[];
+  mitarbeiter: Mitarbeiter[];
+  onClose: () => void;
+}) {
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const offen = [...wechsel].sort((a, b) => {
+    const na = tgMap.get(a.teilgebietId)?.name ?? '';
+    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
+    return na.localeCompare(nb, 'de', { numeric: true });
+  });
+
+  async function handleUebernehmen(w: import('../types').Austraegerwechsel) {
+    const tg = tgMap.get(w.teilgebietId);
+    if (!tg) {
+      alert('Teilgebiet nicht mehr vorhanden — Eintrag wird verworfen.');
+      await loescheAustraegerwechsel(w.id);
+      return;
+    }
+    setBusyId(w.id);
+    try {
+      await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: w.neuerMitarbeiterId });
+      await loescheAustraegerwechsel(w.id);
+    } catch (e: any) {
+      alert('Fehler beim Übernehmen: ' + (e.message ?? e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+        <div className="px-5 py-3 border-b border-gray-200">
+          <h3 className="text-base font-semibold text-gray-900">
+            Vorbereitete Austrägerwechsel ({offen.length})
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Bitte einzeln bestätigen: der Mitarbeiter wird als neuer Standardausträger
+            des Teilgebiets eingetragen, der Eintrag verschwindet anschließend aus der
+            Vorbereitungsliste.
+          </p>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {offen.length === 0 ? (
+            <div className="px-5 py-10 text-center text-sm text-gray-500">
+              Keine offenen Wechsel mehr.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
+                  <th className="px-3 py-2 text-left font-medium">Bisheriger</th>
+                  <th className="px-3 py-2 text-left font-medium">Neuer</th>
+                  <th className="px-3 py-2 text-right font-medium">Aktion</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {offen.map((w) => {
+                  const tg = tgMap.get(w.teilgebietId);
+                  const bisheriger = tg?.standardAustraegerId ? maMap.get(tg.standardAustraegerId) : undefined;
+                  const neuer = maMap.get(w.neuerMitarbeiterId);
+                  return (
+                    <tr key={w.id} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 font-medium text-gray-900">
+                        {tg?.name ?? '— gelöscht —'}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">
+                        {bisheriger?.name ?? <span className="text-gray-400 italic">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-gray-900">
+                        {neuer?.name ?? <span className="text-red-600 italic">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => handleUebernehmen(w)}
+                          disabled={busyId === w.id}
+                          className="text-xs bg-green-600 text-white px-2.5 py-1 rounded hover:bg-green-700 disabled:opacity-50 mr-1.5"
+                        >
+                          {busyId === w.id ? '…' : '✓ Übernehmen'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!confirm('Diesen vorbereiteten Wechsel verwerfen?')) return;
+                            await loescheAustraegerwechsel(w.id);
+                          }}
+                          className="text-xs text-red-500 hover:text-red-700"
+                          title="Wechsel verwerfen"
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-200 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700"
+          >
+            Schließen
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1884,7 +2054,7 @@ function AnAbmeldungenListe({
   istGesperrt: boolean;
   ergebnisse: MitarbeiterAbrechnung[];
 }) {
-  const { mitarbeiter } = useApp();
+  const { mitarbeiter, teilgebiete, austraegerwechsel } = useApp();
 
   // IDs der MA, die in der aktuellen Berechnung mit Beträgen vorkommen
   const idsMitBetrag = new Set<string>();
@@ -1919,21 +2089,52 @@ function AnAbmeldungenListe({
     )
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  // Wechsel-Verlierer: bisherige Standardausträger der TGs auf der
+  // Austrägerwechsel-Liste, die durch den Wechsel komplett ohne aktives
+  // Standardausträger-TG dastehen — sie sollen explizit als Abmelde-
+  // Kandidaten erscheinen, auch wenn sie in der Periode noch Beträge haben.
+  const wechselTgIds = new Set(austraegerwechsel.map((w) => w.teilgebietId));
+  const wechselNeuPerTg = new Map(austraegerwechsel.map((w) => [w.teilgebietId, w.neuerMitarbeiterId]));
+  const wechselVerlierer = new Set<string>();
+  for (const w of austraegerwechsel) {
+    const tg = teilgebiete.find((t) => t.id === w.teilgebietId);
+    if (!tg || !tg.isActive) continue;
+    const bisheriger = tg.standardAustraegerId;
+    if (!bisheriger || bisheriger === w.neuerMitarbeiterId) continue;
+    // Bleibt dem bisherigen MA nach Anwendung ALLER Wechsel noch ein TG?
+    const hatNochTg = teilgebiete.some((t) => {
+      if (!t.isActive) return false;
+      if (t.id === tg.id) return false;
+      if (wechselTgIds.has(t.id)) {
+        // Auch dieses TG ist im Wechsel — bleibt nur, wenn der Neuvorschlag
+        // weiterhin der bisherige MA ist (Edge-Fall, selten).
+        return wechselNeuPerTg.get(t.id) === bisheriger;
+      }
+      return t.standardAustraegerId === bisheriger;
+    });
+    if (!hatNochTg) wechselVerlierer.add(bisheriger);
+  }
+
   // Vorschläge: aktive MA ohne Betrag in dieser Abrechnung — Kandidaten für
-  // Abmeldung. Ausschluss: Festgehalt-MA, Geschäftsführer, bereits in der
-  // Abmeldungs-Liste, bereits abgemeldet, noch nicht angemeldet.
+  // Abmeldung. Plus: MAs, die durch einen vorbereiteten Austrägerwechsel ihr
+  // letztes Teilgebiet verlieren (auch wenn sie in dieser Periode noch
+  // Beträge haben). Ausschluss in beiden Pfaden: Festgehalt, Geschäftsführer,
+  // bereits abgemeldet, noch nicht angemeldet, schon in Abmeldungs-Liste.
   const abmeldungVorschlaege = mitarbeiter
-    .filter(
-      (m) =>
-        m.isActive &&
-        !m.abgemeldet &&
-        !m.nochNichtAngemeldet &&
-        !m.hatFestgehalt &&
-        !m.istGeschaeftsfuehrer &&
-        !idsMitBetrag.has(m.id) &&
-        !ersetzteIds.has(m.id) &&
-        m.letzteAbrechnungsperiodeId !== periode.id
-    )
+    .filter((m) => {
+      const grund =
+        m.isActive
+        && !m.abgemeldet
+        && !m.nochNichtAngemeldet
+        && !m.hatFestgehalt
+        && !m.istGeschaeftsfuehrer
+        && !ersetzteIds.has(m.id)
+        && m.letzteAbrechnungsperiodeId !== periode.id;
+      if (!grund) return false;
+      const istWechselVerlierer = wechselVerlierer.has(m.id);
+      const istLiveVorschlag = !idsMitBetrag.has(m.id);
+      return istWechselVerlierer || istLiveVorschlag;
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 
   // MA-Auswahl-Modal (manuell hinzufügen)
@@ -1983,6 +2184,102 @@ function AnAbmeldungenListe({
         m.letzteAbrechnungsperiodeId !== periode.id
     )
     .sort((a, b) => a.name.localeCompare(b.name));
+
+  // Snapshot-Anzeige wenn beim Abschluss schon eine Abmelde-Liste fixiert
+  // wurde — bleibt auch nach Verwerfen erhalten. In der offenen Periode
+  // (= Periode wurde wieder geöffnet) bietet jede Zeile „Wieder aktivieren"
+  // an; in der abgeschlossenen Periode ist alles read-only.
+  const snapshot = periode.abmeldungenSnapshot;
+  const istVerworfenMitSnapshot = !!snapshot && periode.status === 'offen';
+
+  async function handleWiederAktivieren(eintrag: { mitarbeiterId: string; name: string }) {
+    if (!confirm(
+      `„${eintrag.name}" wieder aktivieren? Das Abmelde-Kennzeichen, das Abmeldedatum und die letzte Abrechnungsperiode werden zurückgesetzt; der MA wird wieder als aktiv markiert.`
+    )) return;
+    await aktualisiereMitarbeiter(eintrag.mitarbeiterId, {
+      abgemeldet: false,
+      isActive: true,
+      abmeldungUebermittlungDatum: undefined,
+      letzteAbrechnungsperiodeId: undefined,
+    });
+    await entferneAusAbmeldungenSnapshot(periode.id, eintrag.mitarbeiterId);
+  }
+
+  if (snapshot) {
+    return (
+      <div className="mt-6">
+        <div className="bg-white rounded-xl shadow-sm border border-red-200 overflow-hidden">
+          <div className="bg-red-50 px-4 py-2 border-b border-red-200 flex items-center justify-between">
+            <h3 className="font-semibold text-red-900 text-sm">
+              🚪 Abmeldungen ans Lohnbüro (Snapshot)
+              <span className="ml-2 font-normal text-xs text-red-700">
+                ({snapshot.eintraege.length})
+              </span>
+            </h3>
+            <span className="text-[10px] text-red-700">
+              Stand {new Date(snapshot.erstelltAm).toLocaleDateString('de-DE')}
+              {istVerworfenMitSnapshot && ' · Periode wurde wieder geöffnet'}
+            </span>
+          </div>
+          {snapshot.eintraege.length === 0 ? (
+            <div className="px-4 py-6 text-center text-gray-400 text-xs italic">
+              Snapshot ist leer.
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 text-gray-600 border-b border-gray-200">
+                <tr>
+                  <th className="px-3 py-1.5 text-left font-medium">Mitarbeiter</th>
+                  <th className="px-3 py-1.5 text-left font-medium">Abmeldung zum</th>
+                  <th className="px-3 py-1.5 text-left font-medium">Ersetzt durch</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Aktion</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {snapshot.eintraege.map((e) => {
+                  const ersetzendeMa = e.ersetztDurchId
+                    ? mitarbeiter.find((m) => m.id === e.ersetztDurchId)
+                    : undefined;
+                  return (
+                    <tr key={e.mitarbeiterId} className="hover:bg-red-50/40">
+                      <td className="px-3 py-1.5">
+                        <span className="font-medium text-gray-900">{e.name}</span>
+                        <span className="ml-1 text-gray-400 text-[10px]">({e.nummer})</span>
+                      </td>
+                      <td className="px-3 py-1.5 text-gray-700">{e.abmeldedatum}</td>
+                      <td className="px-3 py-1.5 text-gray-700">
+                        {ersetzendeMa ? (
+                          <span>
+                            {ersetzendeMa.name}
+                            <span className="ml-1 text-gray-400 text-[10px]">({ersetzendeMa.nummer})</span>
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5 text-right">
+                        {istVerworfenMitSnapshot ? (
+                          <button
+                            onClick={() => handleWiederAktivieren(e)}
+                            className="text-xs text-green-700 hover:text-green-900 font-medium px-1.5"
+                            title="MA wieder aktivieren und Abmelde-Kennzeichen entfernen"
+                          >
+                            ↺ wieder aktivieren
+                          </button>
+                        ) : (
+                          <span className="text-[10px] text-gray-400 italic">eingefroren</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-6">
@@ -2074,24 +2371,37 @@ function AnAbmeldungenListe({
                 💡 {abmeldungVorschlaege.length} Vorschlag{abmeldungVorschlaege.length === 1 ? '' : 'e'} (aktive MA ohne Betrag in dieser Periode)
               </summary>
               <p className="mt-1 mb-2 text-[11px] text-red-700">
-                Diese Mitarbeiter haben in der aktuellen Abrechnung keinen Betrag — Klick auf „+", um sie zur Abmelde-Liste hinzuzufügen.
+                Vorschläge enthalten MAs ohne Betrag in der Periode UND MAs, die
+                durch einen vorbereiteten Austrägerwechsel ihr letztes Teilgebiet
+                verlieren. Klick auf „+", um sie zur Abmelde-Liste hinzuzufügen.
               </p>
               <ul className="space-y-1 max-h-48 overflow-y-auto">
-                {abmeldungVorschlaege.map((m) => (
-                  <li key={m.id} className="flex items-center justify-between bg-white rounded border border-red-100 px-2 py-1">
-                    <span>
-                      <span className="font-medium text-gray-900">{m.name}</span>
-                      <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
-                    </span>
-                    <button
-                      onClick={() => handleAuswahlAb(m)}
-                      className="text-xs text-red-700 hover:text-red-900 font-medium px-1.5"
-                      title="Zur Abmeldungs-Liste hinzufügen"
-                    >
-                      + abmelden
-                    </button>
-                  </li>
-                ))}
+                {abmeldungVorschlaege.map((m) => {
+                  const istVerlierer = wechselVerlierer.has(m.id);
+                  return (
+                    <li key={m.id} className="flex items-center justify-between bg-white rounded border border-red-100 px-2 py-1">
+                      <span>
+                        <span className="font-medium text-gray-900">{m.name}</span>
+                        <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
+                        {istVerlierer && (
+                          <span
+                            className="ml-2 text-[10px] bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded"
+                            title="Verliert durch vorbereiteten Austrägerwechsel sein letztes Teilgebiet"
+                          >
+                            🔄 verliert TG durch Wechsel
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        onClick={() => handleAuswahlAb(m)}
+                        className="text-xs text-red-700 hover:text-red-900 font-medium px-1.5"
+                        title="Zur Abmeldungs-Liste hinzufügen"
+                      >
+                        + abmelden
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </details>
           </div>
