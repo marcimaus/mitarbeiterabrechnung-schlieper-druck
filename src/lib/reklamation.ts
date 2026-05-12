@@ -17,9 +17,15 @@ import { getISOWeek, getISOYear } from './kalender';
 // ---- Normalisierung -------------------------------------------------------
 
 /**
- * Vereinheitlicht Straßenangaben so weit, dass „Hauptstr.", „Hauptstrasse"
- * und „hauptstraße" denselben Suchtext liefern. Lower-case, „str." → „strasse",
- * Umlaute aufgelöst, Mehrfach-Whitespace und Bindestriche entfernt.
+ * Vereinheitlicht Straßenangaben für eine unscharfe Suche:
+ *  - lower-case, Umlaute aufgelöst (ß→ss, ä→ae, …)
+ *  - Trenner (-,. ; ,) → Space
+ *  - Hausnummern (12, 12a, 12-15) entfernen
+ *  - alle Schreibvarianten von „straße" (straße/strasse/str./str) auf den
+ *    Stamm reduzieren — d. h. das Suffix wird komplett entfernt. Damit
+ *    bilden „Lindenstraße", „Lindenstr." und „Lindenstrasse" alle den
+ *    gleichen Stamm „linden".
+ *  - mehrfache Spaces zusammenziehen + trimmen
  */
 export function normalisiereStrasse(s: string | undefined): string {
   if (!s) return '';
@@ -29,12 +35,35 @@ export function normalisiereStrasse(s: string | undefined): string {
     .replace(/ä/g, 'ae')
     .replace(/ö/g, 'oe')
     .replace(/ü/g, 'ue')
-    .replace(/\bstrasse\b/g, 'strasse')
-    .replace(/\bstraße\b/g, 'strasse')
-    .replace(/\bstr\.?\b/g, 'strasse')
-    .replace(/[-]/g, ' ')
+    // Trenner zu Space
+    .replace(/[-.,;]/g, ' ')
+    // Hausnummern wegwerfen — die kommen aus dem getrennten
+    // Hausnummer-Feld; falls sie versehentlich im Straße-Feld stehen,
+    // sollen sie den Match nicht stören.
+    .replace(/\d+[a-z]?/g, ' ')
+    // Alle Varianten von "straße/strasse" auf das kompakte Suffix "str"
+    .replace(/strasse/g, 'str')
+    // "str" am Wortende vollständig entfernen → Stamm extrahieren.
+    // (?=\s|$) sorgt dafür, dass z. B. „bahnstrang" nicht angefasst wird.
+    .replace(/str(?=\s|$)/g, '')
+    // Whitespace cleanup
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Vergleicht zwei normalisierte Straßennamen unscharf:
+ *  - beide Seiten müssen mind. 3 Zeichen normalisiert haben (vermeidet
+ *    falsche Treffer bei Stammen mit 1–2 Buchstaben),
+ *  - Match ist bidirektional: `a` enthält `b` ODER `b` enthält `a`.
+ */
+export function strasseUnscharfPasst(eingabeNorm: string, tgNamen: string): boolean {
+  const tgNorm = normalisiereStrasse(tgNamen);
+  if (!eingabeNorm || !tgNorm) return false;
+  if (eingabeNorm.length < 3 || tgNorm.length < 3) {
+    return eingabeNorm === tgNorm;
+  }
+  return tgNorm.includes(eingabeNorm) || eingabeNorm.includes(tgNorm);
 }
 
 // ---- TG-Vorschlag ---------------------------------------------------------
@@ -80,9 +109,7 @@ export function findePassendeTeilgebiete(
     const plzMatch = hatPlz && tg.plz === plzTrim;
     const strasseMatch =
       hatStrasse &&
-      (tg.strassen ?? []).some((s) =>
-        normalisiereStrasse(s.strassenname).includes(strNorm)
-      );
+      (tg.strassen ?? []).some((s) => strasseUnscharfPasst(strNorm, s.strassenname));
 
     // Pflicht-Filter: je nach Eingabe-Lage muss MINDESTENS das angegebene
     // Kriterium matchen — sonst kein Vorschlag.
@@ -267,6 +294,38 @@ export function findePlzFuerOrt(
   const set = map.get(key);
   if (!set || set.size !== 1) return null;
   return Array.from(set)[0];
+}
+
+/**
+ * Liefert die einzigartigen Orte, die im Verteilbereich vorkommen. Quelle:
+ * Mitarbeiter-Adressen (deren PLZ sich auch in irgendeinem aktiven TG
+ * wiederfindet) plus bereits erfasste Reklamationen. Damit erscheinen im
+ * Ort-Eingabefeld nur Orte, die für den Verteilplan relevant sind, statt
+ * eine offene Eingabe.
+ */
+export function erstelleOrteVorschlag(
+  mitarbeiter: Mitarbeiter[],
+  teilgebiete: Teilgebiet[],
+  reklamationen: Reklamation[] = []
+): string[] {
+  const aktiveTgPlz = new Set(
+    teilgebiete.filter((t) => t.isActive).map((t) => t.plz?.trim()).filter(Boolean)
+  );
+  const orte = new Set<string>();
+  for (const m of mitarbeiter) {
+    const o = m.adresse?.ort?.trim();
+    const p = m.adresse?.plz?.trim();
+    if (!o) continue;
+    // Nur Orte einer PLZ, die auch im aktiven Verteilplan vorkommt.
+    if (p && aktiveTgPlz.has(p)) orte.add(o);
+  }
+  // Plus alle in bestehenden Reklamationen erfassten Orte — damit auch
+  // historisch erfasste Orte weiter angeboten werden, selbst wenn dort
+  // (noch) kein MA wohnt.
+  for (const r of reklamationen) {
+    if (r.ort && r.ort.trim()) orte.add(r.ort.trim());
+  }
+  return Array.from(orte).sort((a, b) => a.localeCompare(b, 'de'));
 }
 
 // ---- Google-Maps-Link ----------------------------------------------------

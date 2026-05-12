@@ -21,6 +21,9 @@ import {
   erstelleOrtZuPlzMap,
   findePlzFuerOrt,
   buildGoogleMapsUrl,
+  erstelleOrteVorschlag,
+  normalisiereStrasse,
+  strasseUnscharfPasst,
 } from '../lib/reklamation';
 import { getISOWeek, getISOYear } from '../lib/kalender';
 
@@ -41,17 +44,75 @@ function ReklamationenInhalt() {
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Reklamation | null>(null);
   const [filterMitgeteilt, setFilterMitgeteilt] = useState<'' | 'offen' | 'mitgeteilt'>('');
+  // Such-/Einschränkfilter
+  const [filterAnrufer, setFilterAnrufer] = useState('');
+  const [filterStrasse, setFilterStrasse] = useState('');
+  const [filterTgId, setFilterTgId] = useState('');
+  const [filterMaId, setFilterMaId] = useState('');
 
   useEffect(() => {
     const unsub = abonniereReklamationen(setReklamationen);
     return unsub;
   }, []);
 
-  const gefiltert = reklamationen.filter((r) => {
-    if (filterMitgeteilt === 'offen' && r.mitgeteilt) return false;
-    if (filterMitgeteilt === 'mitgeteilt' && !r.mitgeteilt) return false;
-    return true;
-  });
+  const gefiltert = useMemo(() => {
+    const anruferLower = filterAnrufer.trim().toLowerCase();
+    const strasseNorm = filterStrasse.trim() ? normalisiereStrasse(filterStrasse) : '';
+    return reklamationen.filter((r) => {
+      if (filterMitgeteilt === 'offen' && r.mitgeteilt) return false;
+      if (filterMitgeteilt === 'mitgeteilt' && !r.mitgeteilt) return false;
+      // Anrufer-Volltextsuche: anruferName + telefon + email
+      if (anruferLower) {
+        const hay = [r.anruferName, r.telefon ?? '', r.email ?? '']
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(anruferLower)) return false;
+      }
+      // Teilgebiet-Filter
+      if (filterTgId) {
+        if (!reklamationTgIds(r).includes(filterTgId)) return false;
+      }
+      // Mitarbeiter-Filter
+      if (filterMaId) {
+        if (!reklamationMaIds(r).includes(filterMaId)) return false;
+      }
+      // Straßen-Filter — unscharf
+      if (strasseNorm) {
+        if (!strasseUnscharfPasst(strasseNorm, r.strasse ?? '')) return false;
+      }
+      return true;
+    });
+  }, [reklamationen, filterMitgeteilt, filterAnrufer, filterStrasse, filterTgId, filterMaId]);
+
+  // Listen für die Select-Filter — aktive MA mit Austräger-Rolle (für die
+  // Auswahl) plus alle in bestehenden Reklamationen referenzierten MAs,
+  // damit der Filter auch historische Zuordnungen abdeckt.
+  const filterMaListe = useMemo(() => {
+    const referenziert = new Set<string>();
+    for (const r of reklamationen) reklamationMaIds(r).forEach((id) => referenziert.add(id));
+    const set = new Set<string>(referenziert);
+    for (const m of mitarbeiter) {
+      if (m.isActive && (m.rollen.includes('austräger') || m.rollen.includes('zusammenträger'))) {
+        set.add(m.id);
+      }
+    }
+    return Array.from(set)
+      .map((id) => mitarbeiter.find((m) => m.id === id))
+      .filter((m): m is NonNullable<typeof m> => !!m)
+      .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  }, [reklamationen, mitarbeiter]);
+  const filterTgListe = useMemo(() => {
+    const referenziert = new Set<string>();
+    for (const r of reklamationen) reklamationTgIds(r).forEach((id) => referenziert.add(id));
+    const set = new Set<string>(referenziert);
+    for (const t of teilgebiete) if (t.isActive) set.add(t.id);
+    return Array.from(set)
+      .map((id) => teilgebiete.find((t) => t.id === id))
+      .filter((t): t is NonNullable<typeof t> => !!t)
+      .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  }, [reklamationen, teilgebiete]);
+  const hatSuchfilter =
+    !!filterAnrufer || !!filterStrasse || !!filterTgId || !!filterMaId;
 
   /** Liefert die Namensliste der mit der Reklamation verknüpften TGs (Plural + Legacy). */
   function getTgNames(r: Reklamation): string[] {
@@ -94,7 +155,7 @@ function ReklamationenInhalt() {
       </div>
 
       {/* Filter */}
-      <div className="flex gap-3 mb-4 flex-wrap">
+      <div className="flex gap-3 mb-3 flex-wrap items-center">
         {(['', 'offen', 'mitgeteilt'] as const).map((f) => (
           <button
             key={f}
@@ -108,6 +169,76 @@ function ReklamationenInhalt() {
             {f === '' ? 'Alle' : f === 'offen' ? 'Offen' : 'Mitgeteilt'}
           </button>
         ))}
+        <span className="text-xs text-gray-400 ml-auto">
+          {gefiltert.length} von {reklamationen.length}
+        </span>
+      </div>
+
+      {/* Such-/Einschränkfilter */}
+      <div className="bg-white border border-gray-200 rounded-lg p-3 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Anrufer (Name / Tel. / E-Mail)</label>
+            <input
+              type="text"
+              value={filterAnrufer}
+              onChange={(e) => setFilterAnrufer(e.target.value)}
+              placeholder="Volltextsuche"
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Straße (unscharf)</label>
+            <input
+              type="text"
+              value={filterStrasse}
+              onChange={(e) => setFilterStrasse(e.target.value)}
+              placeholder="z. B. Lindenstr."
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Teilgebiet</label>
+            <select
+              value={filterTgId}
+              onChange={(e) => setFilterTgId(e.target.value)}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">— alle —</option>
+              {filterTgListe.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}{t.plz ? ` (${t.plz})` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Mitarbeiter</label>
+            <select
+              value={filterMaId}
+              onChange={(e) => setFilterMaId(e.target.value)}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="">— alle —</option>
+              {filterMaListe.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.nummer})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {hatSuchfilter && (
+          <div className="mt-2 text-right">
+            <button
+              type="button"
+              onClick={() => { setFilterAnrufer(''); setFilterStrasse(''); setFilterTgId(''); setFilterMaId(''); }}
+              className="text-xs text-gray-500 hover:text-gray-700 underline"
+            >
+              ✕ Suchfilter zurücksetzen
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Tabelle */}
@@ -230,9 +361,11 @@ function ReklamationenInhalt() {
         onClose={() => setShowForm(false)}
         title={editTarget ? 'Reklamation bearbeiten' : 'Neue Reklamation erfassen'}
         size="lg"
+        size="lg"
       >
         <ReklamationForm
           initial={editTarget}
+          alleReklamationen={reklamationen}
           onSave={() => setShowForm(false)}
           onCancel={() => setShowForm(false)}
         />
@@ -243,10 +376,12 @@ function ReklamationenInhalt() {
 
 function ReklamationForm({
   initial,
+  alleReklamationen,
   onSave,
   onCancel,
 }: {
   initial: Reklamation | null;
+  alleReklamationen: Reklamation[];
   onSave: () => void;
   onCancel: () => void;
 }) {
@@ -383,6 +518,14 @@ function ReklamationForm({
   // Ortsänderung prüfen, ob eindeutige PLZ existiert. Setzt PLZ nur, wenn
   // sie aktuell leer ist — User-Eingabe wird nicht überschrieben.
   const ortPlzMap = useMemo(() => erstelleOrtZuPlzMap(mitarbeiter), [mitarbeiter]);
+  // Orte-Vorschlagsliste: nur Orte, die zum Verteilbereich gehören
+  // (Adressen aktiver Mitarbeiter im PLZ-Bereich der aktiven TGs, plus
+  // bereits in Reklamationen erfasste Orte).
+  const orteVorschlag = useMemo(
+    () => erstelleOrteVorschlag(mitarbeiter, teilgebiete, alleReklamationen),
+    [mitarbeiter, teilgebiete, alleReklamationen]
+  );
+  const datalistId = 'reklamation-orte';
   useEffect(() => {
     if (!form.ort.trim() || form.plz.trim()) return;
     const plzVorschlag = findePlzFuerOrt(form.ort, ortPlzMap);
@@ -582,8 +725,14 @@ function ReklamationForm({
               value={form.ort}
               onChange={(e) => setForm((f) => ({ ...f, ort: e.target.value }))}
               placeholder="z. B. Uslar"
+              list={datalistId}
               className={inputClass}
             />
+            <datalist id={datalistId}>
+              {orteVorschlag.map((o) => (
+                <option key={o} value={o} />
+              ))}
+            </datalist>
           </div>
         </div>
       </div>
