@@ -255,13 +255,16 @@ export default function ZeiterfassungScreen() {
     setTimeout(() => setLetzteAktion(null), 4000);
   }
 
-  // Mitarbeiter sehen NUR ihre eigene Session — andere MAs sind nicht
-  // sichtbar und können nicht angetippt/gestempelt werden.
-  const sichtbareSess = istMitarbeiter
-    ? aktiveSess.filter((s) => s.mitarbeiterId === mitarbeiterId)
-    : aktiveSess;
-  const inPause = sichtbareSess.filter((s) => s.status === 'pause');
-  const aktiv = sichtbareSess.filter((s) => s.status === 'aktiv');
+  // Mitarbeiter sehen ALLE Sessions (wer ist gerade eingestempelt, mit
+  // welcher Tätigkeit, wie lange, seit wann), dürfen aber NUR an der
+  // eigenen Session Aktionen auslösen — Klick auf fremde Karte ist gesperrt.
+  const inPause = aktiveSess.filter((s) => s.status === 'pause');
+  const aktiv = aktiveSess.filter((s) => s.status === 'aktiv');
+
+  function darfAgieren(s: Arbeitszeit): boolean {
+    if (!istMitarbeiter) return true;
+    return s.mitarbeiterId === mitarbeiterId;
+  }
 
   /** MA-Modus: direkt eigenen Scan-Flow anstoßen (kein NFC-Lesen, keine Auswahl). */
   async function eigenenScanAusloesen() {
@@ -390,7 +393,9 @@ export default function ZeiterfassungScreen() {
                 session={s}
                 mitarbeiter={getMitarbeiter(s.mitarbeiterId)}
                 tick={tick}
+                readOnly={!darfAgieren(s)}
                 onAktion={() => {
+                  if (!darfAgieren(s)) return;
                   const ma = getMitarbeiter(s.mitarbeiterId);
                   if (ma) setAktionDialog({ session: s, mitarbeiter: ma });
                 }}
@@ -416,7 +421,9 @@ export default function ZeiterfassungScreen() {
                 session={s}
                 mitarbeiter={getMitarbeiter(s.mitarbeiterId)}
                 tick={tick}
+                readOnly={!darfAgieren(s)}
                 onAktion={() => {
+                  if (!darfAgieren(s)) return;
                   const ma = getMitarbeiter(s.mitarbeiterId);
                   if (ma) setAktionDialog({ session: s, mitarbeiter: ma });
                 }}
@@ -610,11 +617,14 @@ function SessionKarte({
   mitarbeiter: ma,
   tick: _tick,
   onAktion,
+  readOnly = false,
 }: {
   session: Arbeitszeit;
   mitarbeiter: Mitarbeiter | undefined;
   tick: number;
   onAktion: () => void;
+  /** Wenn true: Karte ist nicht antippbar (fremder MA für Mitarbeiter-Rolle). */
+  readOnly?: boolean;
 }) {
   const nettoMin = berechneNettoMinuten(session);
   const typ = session.typ as ArbeitszeitsTyp;
@@ -622,10 +632,15 @@ function SessionKarte({
 
   return (
     <div
-      className={`bg-white rounded-xl border p-3 cursor-pointer hover:border-blue-300 transition-colors ${
+      className={`bg-white rounded-xl border p-3 transition-colors ${
+        readOnly
+          ? 'cursor-default'
+          : 'cursor-pointer hover:border-blue-300'
+      } ${
         session.status === 'pause' ? 'border-amber-300 bg-amber-50' : 'border-gray-200'
       }`}
-      onClick={onAktion}
+      onClick={readOnly ? undefined : onAktion}
+      title={readOnly ? 'Nur lesender Zugriff — andere Mitarbeiter darf nur Admin/Abrechnung stempeln' : undefined}
     >
       <div className="flex items-center justify-between">
         <div>
