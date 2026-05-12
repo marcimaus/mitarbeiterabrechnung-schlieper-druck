@@ -470,7 +470,6 @@ function MitarbeiterForm({
         lohnbueroBestaetigungLink: initial.lohnbueroBestaetigungLink,
         startAbrechnungsperiodeId: initial.startAbrechnungsperiodeId,
         startDatum: initial.startDatum,
-        ersetztMitarbeiterId: initial.ersetztMitarbeiterId,
         anmeldungStatus: initial.anmeldungStatus,
         anmeldungUnvollstaendigMemo: initial.anmeldungUnvollstaendigMemo,
         anmeldungUebermittlungDatum: initial.anmeldungUebermittlungDatum,
@@ -1628,24 +1627,6 @@ function MitarbeiterForm({
                 />
               </FormField>
             </div>
-
-            <FormField label="Ersetzt Mitarbeiter (optional)">
-              <select
-                value={form.ersetztMitarbeiterId ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, ersetztMitarbeiterId: e.target.value || undefined }))}
-                className={inputClass}
-              >
-                <option value="">— niemand —</option>
-                {[...mitarbeiter]
-                  .filter((m) => !initial || m.id !== initial.id)
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} ({m.nummer})
-                    </option>
-                  ))}
-              </select>
-            </FormField>
 
             <FormField label="Vollständigkeit der Erfassung">
               <select
