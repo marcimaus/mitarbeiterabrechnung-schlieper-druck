@@ -1,7 +1,7 @@
 // Lieferschein-Druckkomponente
 // Zeigt print-fertige Lieferscheine für alle Teilgebiete einer Abrechnungsperiode
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { ladeAuslieferungsmemosFuerAusgaben } from '../lib/db';
@@ -266,7 +266,26 @@ export default function LieferscheinDruck({
     }
   }
 
-  const sichtbareScheine = scheine.filter((s) => selectedIds.has(s.schluessel));
+  // KW-Filter: bei aktivem Filter werden nur Lieferscheine angezeigt, deren
+  // Empfänger das TG in dieser KW (Ausgabe) tatsächlich austrägt. Im Schein
+  // selbst werden dann auch nur die KW-passenden Zeilen + Memos behalten.
+  // → Damit erscheint Scherbarths Schein nicht im KW-18-Druck, wenn KW18
+  //   ein Springer austrägt.
+  const [filterKw, setFilterKw] = useState<number | null>(null);
+  const sichtbareScheine = useMemo(() => {
+    const ausgewaehlt = scheine.filter((s) => selectedIds.has(s.schluessel));
+    if (filterKw === null) return ausgewaehlt;
+    return ausgewaehlt.flatMap((s) => {
+      const zeilen = s.zeilen.filter((z) => z.kw === filterKw);
+      if (zeilen.length === 0) return [];
+      const memos = s.memos.filter((m) => m.kw === filterKw);
+      return [{ ...s, zeilen, memos }];
+    });
+  }, [scheine, selectedIds, filterKw]);
+  const kwListe = useMemo(
+    () => [...periode.kalenderwochen].sort((a, b) => a - b),
+    [periode.kalenderwochen]
+  );
 
   // ---- Render -----------------------------------------------
   return (
@@ -360,6 +379,44 @@ export default function LieferscheinDruck({
             </button>
           </div>
         </div>
+
+        {/* KW-Filter — beschränkt die Lieferscheine auf eine bestimmte Ausgabe */}
+        {!loading && scheine.length > 0 && kwListe.length > 1 && (
+          <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 flex flex-wrap items-center gap-2 shrink-0">
+            <span className="text-xs font-semibold text-blue-900">Ausgabe (KW):</span>
+            <button
+              type="button"
+              onClick={() => setFilterKw(null)}
+              className={`text-xs px-2.5 py-1 rounded-full border ${
+                filterKw === null
+                  ? 'bg-blue-700 text-white border-blue-700'
+                  : 'bg-white text-blue-700 border-blue-300 hover:border-blue-400'
+              }`}
+            >
+              Alle ({kwListe.length})
+            </button>
+            {kwListe.map((kw) => (
+              <button
+                key={kw}
+                type="button"
+                onClick={() => setFilterKw(kw)}
+                className={`text-xs px-2.5 py-1 rounded-full border ${
+                  filterKw === kw
+                    ? 'bg-blue-700 text-white border-blue-700'
+                    : 'bg-white text-blue-700 border-blue-300 hover:border-blue-400'
+                }`}
+                title={`Nur Lieferscheine für KW ${kw}`}
+              >
+                KW {kw}
+              </button>
+            ))}
+            {filterKw !== null && (
+              <span className="text-[11px] text-blue-700 italic ml-1">
+                Filter aktiv — nur die Empfänger der KW {filterKw} werden gedruckt.
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Auswahl-Leiste */}
         {!loading && scheine.length > 0 && (
