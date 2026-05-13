@@ -14,7 +14,11 @@ export function nameMitFestgehaltSymbol(m: { name: string; hatFestgehalt?: boole
 export function istEinsatzbereit(m: {
   isActive: boolean;
   abgemeldet?: boolean;
+  istInteressent?: boolean;
 }): boolean {
+  // Interessenten sind nie einsatzbereit — sie sind nur Kontaktdaten und
+  // werden in operativen Auswahllisten nicht angeboten.
+  if (m.istInteressent) return false;
   return m.isActive === true && m.abgemeldet !== true;
 }
 

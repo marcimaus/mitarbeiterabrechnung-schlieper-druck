@@ -21,8 +21,8 @@ import {
 } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet } from '../types';
-import { ROLLEN_LABELS } from '../types';
+import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit } from '../types';
+import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
 import { nameMitFestgehaltSymbol } from '../utils';
 import { eur } from '../lib/abrechnungslogik';
@@ -45,7 +45,16 @@ const DEFAULT_FORM: Omit<Mitarbeiter, 'id' | 'erstelltAm' | 'aktualisiertAm' | '
   // erscheint dann automatisch in der Anmelde-Liste der Abrechnung.
   nochNichtAngemeldet: true,
   isActive: true,
+  istInteressent: false,
 };
+
+const ALLE_INTERESSE_TAETIGKEITEN: InteresseTaetigkeit[] = [
+  'aushilfeProduktion',
+  'auslieferungsfahrer',
+  'zusammentragen',
+  'austragen',
+  'buero',
+];
 
 export default function MitarbeiterScreen() {
   return (
@@ -67,6 +76,7 @@ function MitarbeiterInhalt() {
   const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
   const [filterAnmeldung, setFilterAnmeldung] = useState<'' | 'offen' | 'angemeldet' | 'abgemeldet'>('');
   const [filterFahrtkosten, setFilterFahrtkosten] = useState<'' | 'ja' | 'nein'>('');
+  const [filterInteressent, setFilterInteressent] = useState<'' | 'nur' | 'ohne'>('ohne');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
 
@@ -82,7 +92,19 @@ function MitarbeiterInhalt() {
   }
 
   const gefiltert = mitarbeiter.filter((m) => {
-    if (nurAktive && !m.isActive) return false;
+    // Interessenten-Filter: 'ohne' (Standard) blendet Interessenten aus,
+    // 'nur' zeigt ausschließlich Interessenten, '' zeigt alle.
+    if (filterInteressent === 'ohne' && m.istInteressent) return false;
+    if (filterInteressent === 'nur' && !m.istInteressent) return false;
+    // „Nur aktive" gilt sowohl für normale MAs (isActive) als auch für
+    // Interessenten (interessentDeinteressiert).
+    if (nurAktive) {
+      if (m.istInteressent) {
+        if (m.interessentDeinteressiert) return false;
+      } else {
+        if (!m.isActive) return false;
+      }
+    }
     if (filterText && !m.name.toLowerCase().includes(filterText.toLowerCase()) &&
         !m.nummer.includes(filterText)) return false;
     if (filterRolle && !m.rollen.includes(filterRolle)) return false;
@@ -113,7 +135,14 @@ function MitarbeiterInhalt() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Mitarbeiter</h1>
-          <p className="text-gray-500 text-sm">{mitarbeiter.filter(m=>m.isActive).length} aktive Mitarbeiter</p>
+          <p className="text-gray-500 text-sm">
+            {mitarbeiter.filter((m) => m.isActive && !m.istInteressent).length} aktive Mitarbeiter
+            {mitarbeiter.filter((m) => m.istInteressent && !m.interessentDeinteressiert).length > 0 && (
+              <span className="ml-2 text-amber-700">
+                · {mitarbeiter.filter((m) => m.istInteressent && !m.interessentDeinteressiert).length} Interessenten
+              </span>
+            )}
+          </p>
         </div>
         <button
           onClick={oeffneNeu}
@@ -182,6 +211,16 @@ function MitarbeiterInhalt() {
           <option value="">Fahrtkosten: alle</option>
           <option value="ja">🚗 nur erlaubt</option>
           <option value="nein">nur nicht erlaubt</option>
+        </select>
+        <select
+          value={filterInteressent}
+          onChange={(e) => setFilterInteressent(e.target.value as '' | 'nur' | 'ohne')}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          title="Filter Interessenten"
+        >
+          <option value="ohne">ohne Interessenten</option>
+          <option value="nur">💡 nur Interessenten</option>
+          <option value="">alle (inkl. Interessenten)</option>
         </select>
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
@@ -261,11 +300,21 @@ function MitarbeiterInhalt() {
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    m.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                  }`}>
-                    {m.isActive ? 'Aktiv' : 'Inaktiv'}
-                  </span>
+                  {m.istInteressent ? (
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      m.interessentDeinteressiert
+                        ? 'bg-gray-100 text-gray-500'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      {m.interessentDeinteressiert ? '💡 desinteressiert' : '💡 Interessent'}
+                    </span>
+                  ) : (
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      m.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                    }`}>
+                      {m.isActive ? 'Aktiv' : 'Inaktiv'}
+                    </span>
+                  )}
                   <span className="text-blue-600 text-xs font-medium">Bearbeiten ›</span>
                 </div>
               </div>
@@ -389,11 +438,21 @@ function MitarbeiterInhalt() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      m.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      {m.isActive ? 'Aktiv' : 'Inaktiv'}
-                    </span>
+                    {m.istInteressent ? (
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        m.interessentDeinteressiert
+                          ? 'bg-gray-100 text-gray-500'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {m.interessentDeinteressiert ? '💡 deinteressiert' : '💡 Interessent'}
+                      </span>
+                    ) : (
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        m.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                      }`}>
+                        {m.isActive ? 'Aktiv' : 'Inaktiv'}
+                      </span>
+                    )}
                   </td>
                   {isAdmin && (
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
@@ -511,6 +570,12 @@ function MitarbeiterForm({
         ausgabenBonusMinuten: initial.ausgabenBonusMinuten,
         ausgabenBonusKommentar: initial.ausgabenBonusKommentar,
         isActive: initial.isActive,
+        istInteressent: initial.istInteressent ?? false,
+        interessentDeinteressiert: initial.interessentDeinteressiert ?? false,
+        interesseTaetigkeiten: initial.interesseTaetigkeiten ? [...initial.interesseTaetigkeiten] : [],
+        interessentKontaktDatum: initial.interessentKontaktDatum,
+        interessentKorrespondenzLink: initial.interessentKorrespondenzLink,
+        interessentMemo: initial.interessentMemo,
         // Cast: Felder, die nicht im DEFAULT_FORM-Typ sind, werden über (form as any) gelesen
         ...(initial.fahrtkostenerstattung ? { fahrtkostenerstattung: true } : {}),
         ...(initial.fahrkostenEurProKm !== undefined ? { fahrkostenEurProKm: initial.fahrkostenEurProKm } : {}),
@@ -541,6 +606,43 @@ function MitarbeiterForm({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!form.name.trim()) { setError('Name ist erforderlich.'); return; }
+
+    // Interessenten: drastisch reduzierte Pflichtfelder.
+    // Wir umgehen Nummer-, Rollen-, Geburtsdatum-, Eltern-, Festgehalt- und
+    // Stundenstunden-Prüfungen komplett. Die Daten werden erst beim Wechsel
+    // zu „echtem Mitarbeiter" verlangt.
+    if (form.istInteressent) {
+      setSaving(true);
+      setError('');
+      try {
+        // Bei Interessent: Rollen leer halten, keine TG-Freigaben, kein Bonus.
+        const payload = {
+          ...form,
+          rollen: [] as Rolle[],
+          teilgebietFreigaben: [],
+          nochNichtAngemeldet: false,
+          abgemeldet: false,
+        };
+        if (initial) {
+          await aktualisiereMitarbeiter(initial.id, payload);
+        } else {
+          await erstelleMitarbeiter(payload);
+        }
+        onSave();
+      } catch (err) {
+        setError('Fehler beim Speichern. Bitte erneut versuchen.');
+        console.error(err);
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
+    // War vorher Interessent, ist es jetzt nicht mehr → wie Neuerfassung
+    // behandeln: nochNichtAngemeldet=true setzen.
+    const warInteressent = initial?.istInteressent === true;
+    const wurdeEntInteressent = warInteressent && !form.istInteressent;
+
     if (!form.nummer.trim()) { setError('Mitarbeiternummer ist erforderlich.'); return; }
     const nummerBelegt = mitarbeiter.some(
       (m) => m.nummer === form.nummer.trim() && m.id !== initial?.id
@@ -550,8 +652,8 @@ function MitarbeiterForm({
 
     // Solange „noch nicht angemeldet": Pflichtprüfungen für Geburtsdatum und
     // Eltern-/Erziehungsberechtigten-Daten aussetzen — die Daten werden noch
-    // per Fragebogen erfasst.
-    const ueberspringePflicht = form.nochNichtAngemeldet === true;
+    // per Fragebogen erfasst. Bei wurdeEntInteressent gilt dies automatisch.
+    const ueberspringePflicht = form.nochNichtAngemeldet === true || wurdeEntInteressent;
 
     if (!form.geburtsdatum) {
       if (!ueberspringePflicht) {
@@ -621,7 +723,13 @@ function MitarbeiterForm({
       // Hinweis: teilgebietBoni am MA wird NICHT mehr aktiv gepflegt — die
       // echte Quelle für TG-bezogene Zuschläge ist die Collection
       // `sondervereinbarungen` (eigener Reiter „Teilgebiet-Boni").
-      const payload = { ...form, teilgebietFreigaben: freigaben };
+      const payload = {
+        ...form,
+        teilgebietFreigaben: freigaben,
+        // Wenn aus Interessent ein „echter" MA wird, automatisch als
+        // „noch nicht angemeldet" markieren — analog zu Neuerfassung.
+        ...(wurdeEntInteressent ? { nochNichtAngemeldet: true } : {}),
+      };
       if (initial) {
         await aktualisiereMitarbeiter(initial.id, payload);
       } else {
@@ -739,13 +847,23 @@ function MitarbeiterForm({
     );
   }
 
-  const TABS: { id: MaFormTab; label: string; count?: number }[] = [
-    { id: 'stammdaten', label: 'Stammdaten' },
-    { id: 'freigaben', label: 'Gebiets-Freigaben', count: freigaben.length },
-    { id: 'boni', label: 'Teilgebiet-Boni', count: sondervereinbarungenCount },
-    { id: 'anmeldung', label: 'Anmeldung / Abmeldung' },
-    ...(isAdmin && initial ? [{ id: 'lohnkonto' as const, label: 'Lohnkonto' }] : []),
-  ];
+  const TABS: { id: MaFormTab; label: string; count?: number }[] = form.istInteressent
+    ? [{ id: 'stammdaten', label: 'Interessent-Daten' }]
+    : [
+      { id: 'stammdaten', label: 'Stammdaten' },
+      { id: 'freigaben', label: 'Gebiets-Freigaben', count: freigaben.length },
+      { id: 'boni', label: 'Teilgebiet-Boni', count: sondervereinbarungenCount },
+      { id: 'anmeldung', label: 'Anmeldung / Abmeldung' },
+      ...(isAdmin && initial ? [{ id: 'lohnkonto' as const, label: 'Lohnkonto' }] : []),
+    ];
+
+  // Wenn Interessent-Modus aktiv ist und ein anderer Tab gewählt war,
+  // automatisch auf Stammdaten zurückspringen.
+  useEffect(() => {
+    if (form.istInteressent && tab !== 'stammdaten') {
+      setTab('stammdaten');
+    }
+  }, [form.istInteressent, tab]);
 
   return (
     <form onSubmit={handleSubmit} className="space-y-0">
@@ -775,6 +893,204 @@ function MitarbeiterForm({
       {/* ---- Tab: Stammdaten ---- */}
       {tab === 'stammdaten' && (
       <div className="space-y-5">
+
+      {/* Interessent-Toggle (zuoberst) */}
+      <div className={`rounded-lg border p-3 ${form.istInteressent ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-gray-50'}`}>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.istInteressent ?? false}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setForm((f) => ({
+                ...f,
+                istInteressent: next,
+                // Beim Aktivieren: aus den operativen Daten erstmal nichts
+                // löschen — der User kann zurückgehen. Beim Deaktivieren
+                // (in der echten Submit-Logik) wird nochNichtAngemeldet
+                // erzwungen.
+              }));
+            }}
+            className="mt-0.5 rounded"
+          />
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-gray-800">
+              💡 Interessent (Bewerber / Lead)
+            </div>
+            <p className="text-xs text-gray-600 mt-0.5">
+              Person ist als potenzieller MA erfasst — noch nicht eingestellt.
+              Reduzierte Pflichtfelder, keine Mitarbeiternummer-Pflicht, keine
+              Altersprüfung, keine Gebiets-/Bonus-Zuordnung, nicht in Auswahl-
+              listen, nicht in der Abrechnung. Wird der Haken später entfernt,
+              wird der Datensatz wie ein neuer Mitarbeiter behandelt
+              („noch nicht angemeldet").
+            </p>
+          </div>
+        </label>
+      </div>
+
+      {/* Interessent-spezifische Felder */}
+      {form.istInteressent && (
+        <div className="space-y-4 rounded-lg border border-amber-200 bg-white p-4">
+          <FormField label="Name *">
+            <input
+              type="text"
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="Vorname Nachname"
+              className={inputClass}
+            />
+          </FormField>
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="col-span-2">
+              <FormField label="Straße & Hausnummer">
+                <input
+                  type="text"
+                  value={form.adresse.strasse}
+                  onChange={(e) => setForm((f) => ({ ...f, adresse: { ...f.adresse, strasse: e.target.value } }))}
+                  placeholder="Musterstraße 1"
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <FormField label="PLZ">
+              <input
+                type="text"
+                value={form.adresse.plz}
+                onChange={(e) => setForm((f) => ({ ...f, adresse: { ...f.adresse, plz: e.target.value } }))}
+                maxLength={5}
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+          <FormField label="Ort">
+            <input
+              type="text"
+              value={form.adresse.ort}
+              onChange={(e) => setForm((f) => ({ ...f, adresse: { ...f.adresse, ort: e.target.value } }))}
+              className={inputClass}
+            />
+          </FormField>
+
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Telefon">
+              <input
+                type="tel"
+                value={form.telefon}
+                onChange={(e) => setForm((f) => ({ ...f, telefon: e.target.value }))}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Mobilnummer">
+              <input
+                type="tel"
+                value={form.mobilnummer ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, mobilnummer: e.target.value || undefined }))}
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+          <FormField label="E-Mail">
+            <input
+              type="email"
+              value={form.email ?? ''}
+              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value || undefined }))}
+              className={inputClass}
+            />
+          </FormField>
+
+          <FormField label="Geburtsdatum (optional)">
+            <input
+              type="date"
+              value={form.geburtsdatum ?? ''}
+              onChange={(e) => setForm((f) => ({ ...f, geburtsdatum: e.target.value }))}
+              className={inputClass}
+            />
+          </FormField>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Tätigkeiten — Interesse besteht für (Mehrfachauswahl)
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {ALLE_INTERESSE_TAETIGKEITEN.map((t) => {
+                const aktiv = (form.interesseTaetigkeiten ?? []).includes(t);
+                return (
+                  <label key={t} className={`flex items-center gap-2 rounded-lg border px-3 py-2 cursor-pointer text-sm ${
+                    aktiv ? 'border-blue-500 bg-blue-50 text-blue-800' : 'border-gray-200 hover:bg-gray-50'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={aktiv}
+                      onChange={() => setForm((f) => {
+                        const cur = f.interesseTaetigkeiten ?? [];
+                        return {
+                          ...f,
+                          interesseTaetigkeiten: cur.includes(t)
+                            ? cur.filter((x) => x !== t)
+                            : [...cur, t],
+                        };
+                      })}
+                      className="rounded"
+                    />
+                    {INTERESSE_TAETIGKEIT_LABELS[t]}
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Datum der Kontaktaufnahme">
+              <input
+                type="date"
+                value={form.interessentKontaktDatum ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, interessentKontaktDatum: e.target.value || undefined }))}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Link zu Korrespondenz (Google Mail / Drive)">
+              <input
+                type="url"
+                value={form.interessentKorrespondenzLink ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, interessentKorrespondenzLink: e.target.value || undefined }))}
+                placeholder="https://mail.google.com/..."
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+
+          <FormField label="Memo (Einschätzung, Eindruck, Notizen)">
+            <textarea
+              value={form.interessentMemo ?? ''}
+              onChange={(e) => setForm((f) => ({ ...f, interessentMemo: e.target.value || undefined }))}
+              rows={4}
+              className={inputClass}
+              placeholder="z. B. ‚Sehr motivierter Bewerber, würde gerne zusätzlich mittwochs aushelfen.‘"
+            />
+          </FormField>
+
+          <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.interessentDeinteressiert ?? false}
+                onChange={(e) => setForm((f) => ({ ...f, interessentDeinteressiert: e.target.checked }))}
+                className="rounded"
+              />
+              <span className="text-sm text-gray-700">
+                <strong>Deinteressiert</strong> — Interessent hat kein Interesse mehr.
+                Datensatz bleibt in den Stammdaten, wird aber nicht mehr in
+                Auswahllisten vorgeschlagen.
+              </span>
+            </label>
+          </div>
+        </div>
+      )}
+
+      {/* Restliche Stammdaten: nur bei „echten" MAs (kein Interessent) */}
+      {!form.istInteressent && (<>
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Mitarbeiternummer *" hint="5-stellig, beginnt mit 9">
           <input
@@ -1440,6 +1756,7 @@ function MitarbeiterForm({
         <AustraegerMeldungsLink mitarbeiterId={initial.id} name={form.name} />
       )}
 
+      </>)}
       </div>
       )}
 

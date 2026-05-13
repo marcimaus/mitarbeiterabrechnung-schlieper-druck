@@ -154,9 +154,48 @@ export interface Mitarbeiter {
   letzteAbrechnungsperiodeId?: string;
   teilgebietFreigaben?: string[];      // IDs der Teilgebiete, die dieser MA austragen darf
   teilgebietBoni?: TeilgebietBonus[];  // Bonus je Teilgebiet und Ausgabe
+  // ---- Interessent (Bewerber / Lead) ------------------------
+  /**
+   * Kennzeichen „Interessent": Person ist als potenzieller MA erfasst, aber
+   * noch nicht eingestellt. Es gelten reduzierte Pflichtfelder (keine
+   * Mitarbeiternummer-Pflicht, keine Altersprüfung, keine Rollen-/
+   * Gebiets-/Bonus-Zuordnung, keine Berücksichtigung in der Abrechnung,
+   * keine Auswahl in Auswahllisten). Wenn der Haken entfernt wird, wird
+   * der Datensatz wie ein neuer MA behandelt (nochNichtAngemeldet=true).
+   */
+  istInteressent?: boolean;
+  /**
+   * „Deinteressiert": Interessent hat kein Interesse mehr. Datensatz bleibt
+   * in den Stammdaten, wird aber nicht mehr in Listen vorgeschlagen.
+   * Wirkung analog zu isActive=false bei normalen MAs.
+   */
+  interessentDeinteressiert?: boolean;
+  /** Tätigkeiten, für die Interesse besteht (Mehrfachauswahl). */
+  interesseTaetigkeiten?: InteresseTaetigkeit[];
+  /** Datum der ersten Kontaktaufnahme (ISO YYYY-MM-DD). */
+  interessentKontaktDatum?: string;
+  /** Link zu weiterer Korrespondenz (z. B. Google-Mail-Thread). */
+  interessentKorrespondenzLink?: string;
+  /** Freitext-Memo: Eindruck, Einschätzung, Notizen zum Interessenten. */
+  interessentMemo?: string;
   erstelltAm: number;     // Unix-Timestamp ms
   aktualisiertAm: number;
 }
+
+export type InteresseTaetigkeit =
+  | 'aushilfeProduktion'
+  | 'auslieferungsfahrer'
+  | 'zusammentragen'
+  | 'austragen'
+  | 'buero';
+
+export const INTERESSE_TAETIGKEIT_LABELS: Record<InteresseTaetigkeit, string> = {
+  aushilfeProduktion: 'Aushilfe in der Produktion',
+  auslieferungsfahrer: 'Auslieferungsfahrer',
+  zusammentragen: 'Zusammentragen',
+  austragen: 'Austragen',
+  buero: 'Büro',
+};
 
 // ---- Tour --------------------------------------------------
 
