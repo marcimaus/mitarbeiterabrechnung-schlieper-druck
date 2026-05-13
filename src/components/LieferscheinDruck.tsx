@@ -18,10 +18,7 @@ import type {
 import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
-  berechneAustraegezeit,
-  formatierStunden,
 } from '../lib/berechnung';
-import { useApp } from '../context/AppContext';
 
 // ---- Typen --------------------------------------------------
 
@@ -488,7 +485,6 @@ function LieferscheinSeite({
   periode: Abrechnungsperiode;
 }) {
   const { teilgebiet: tg, empfaenger: ma, istSpringer, zeilen, meldungsLink, memos } = info;
-  const { parameter } = useApp();
 
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=130x130&margin=4&data=${encodeURIComponent(meldungsLink)}`;
 
@@ -681,7 +677,6 @@ function LieferscheinSeite({
             <th style={{ width: '45px', textAlign: 'center' }}>Stück</th>
             <th style={{ width: '40px', textAlign: 'center' }}>km</th>
             <th style={{ width: '50px', textAlign: 'center' }}>Gewicht<br />(kg)</th>
-            <th style={{ width: '50px', textAlign: 'center' }}>Soll-<br />Zeit</th>
             <th style={{ minWidth: '80px' }}>Beilagen</th>
             <th style={{ width: '55px', textAlign: 'center' }}>Von</th>
             <th style={{ width: '55px', textAlign: 'center' }}>Bis</th>
@@ -697,7 +692,7 @@ function LieferscheinSeite({
                 <tr key={z.kw} className="ausfall-row">
                   <td style={{ textAlign: 'center' }}>{z.kw}</td>
                   <td>{formatDatum(z.mittwoch)}</td>
-                  <td colSpan={9} style={{ textAlign: 'center', color: '#9ca3af' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', color: '#9ca3af' }}>
                     {z.einsatz.typ === 'ausfall' ? '— Ausfall —' : '? Ungeklärt ?'}
                   </td>
                 </tr>
@@ -710,7 +705,7 @@ function LieferscheinSeite({
                 <tr key={z.kw}>
                   <td style={{ textAlign: 'center', color: '#9ca3af' }}>{z.kw}</td>
                   <td style={{ color: '#9ca3af' }}>{formatDatum(z.mittwoch)}</td>
-                  <td colSpan={9} style={{ textAlign: 'center', color: '#d1d5db', fontSize: '10px' }}>
+                  <td colSpan={8} style={{ textAlign: 'center', color: '#d1d5db', fontSize: '10px' }}>
                     (noch nicht angelegt)
                   </td>
                 </tr>
@@ -736,14 +731,6 @@ function LieferscheinSeite({
                 </td>
                 <td style={{ textAlign: 'center', fontWeight: 600 }}>
                   {gewichtKg.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
-                </td>
-                <td style={{ textAlign: 'center', fontWeight: 600 }}>
-                  {(() => {
-                    if (!parameter) return '—';
-                    const extBeilagen = z.beilagen.filter((b) => b.kennzeichen === 'ext').length;
-                    const sollH = berechneAustraegezeit(tg, parameter, extBeilagen);
-                    return sollH > 0 ? formatierStunden(sollH) : '—';
-                  })()}
                 </td>
                 <td style={{ color: beilagenText ? '#1d4ed8' : '#d1d5db', fontSize: '10px' }}>
                   {beilagenText || '—'}
