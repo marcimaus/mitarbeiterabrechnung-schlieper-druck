@@ -23,9 +23,11 @@ import {
   loescheAustraegerwechsel,
   loescheWegstreckeAnpassung,
   entferneAusAbmeldungenSnapshot,
+  ladeFahrten,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
-import type { Abrechnungsperiode, Vorschuss, Mitarbeiter } from '../types';
+import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle } from '../types';
+import { ROLLEN_LABELS } from '../types';
 
 export default function AbrechnungScreen() {
   return (
@@ -48,6 +50,26 @@ function AbrechnungInhalt() {
   const [zeigeWechselDialog, setZeigeWechselDialog] = useState(false);
   const [zeigeAnpassungDialog, setZeigeAnpassungDialog] = useState(false);
   const [suchbegriff, setSuchbegriff] = useState('');
+  const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
+  const [filterMinijob, setFilterMinijob] = useState<'' | 'ja' | 'nein'>('');
+  const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
+  // Warnung: Fahrtkosten-Datensätze, die noch keiner Abrechnungsperiode
+  // zugeordnet sind (abrechnungsperiodeId fehlt).
+  const [unzugeordneteFahrten, setUnzugeordneteFahrten] = useState<number>(0);
+
+  // Beim Mount + nach Periode-Wechsel die Anzahl der nicht zugeordneten
+  // Fahrten holen. Schlank gehalten: nur Anzahl, nicht die Datensätze.
+  useEffect(() => {
+    let cancelled = false;
+    ladeFahrten({})
+      .then((alle) => {
+        if (cancelled) return;
+        const offen = alle.filter((f) => !f.abrechnungsperiodeId).length;
+        setUnzugeordneteFahrten(offen);
+      })
+      .catch((err) => console.error('Fehler beim Laden der Fahrten:', err));
+    return () => { cancelled = true; };
+  }, [selectedPeriodeId, ergebnisse]);
 
   const sortedPerioden = [...abrechnungsperioden].sort((a, b) =>
     b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat
@@ -329,11 +351,18 @@ function AbrechnungInhalt() {
   const suchbegriffNorm = suchbegriff.trim().toLowerCase();
   const gefilterteErgebnisse = ergebnisse
     ? ergebnisse.filter((er) => {
-        if (!suchbegriffNorm) return true;
-        return (
-          er.mitarbeiter.name.toLowerCase().includes(suchbegriffNorm) ||
-          er.mitarbeiter.nummer.toLowerCase().includes(suchbegriffNorm)
-        );
+        if (suchbegriffNorm) {
+          const passt =
+            er.mitarbeiter.name.toLowerCase().includes(suchbegriffNorm) ||
+            er.mitarbeiter.nummer.toLowerCase().includes(suchbegriffNorm);
+          if (!passt) return false;
+        }
+        if (filterRolle && !er.mitarbeiter.rollen.includes(filterRolle)) return false;
+        if (filterMinijob === 'ja' && !er.mitarbeiter.istMinijob) return false;
+        if (filterMinijob === 'nein' && er.mitarbeiter.istMinijob) return false;
+        if (filterSvFrei === 'ja' && !er.mitarbeiter.sozialversicherungsBefreit) return false;
+        if (filterSvFrei === 'nein' && er.mitarbeiter.sozialversicherungsBefreit) return false;
+        return true;
       })
     : [];
 
@@ -518,6 +547,24 @@ function AbrechnungInhalt() {
         )}
       </div>
 
+      {/* Warnung: nicht zugeordnete Fahrtkosten — periodenunabhängig */}
+      {unzugeordneteFahrten > 0 && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm flex items-start gap-2">
+          <span className="text-amber-700">🚗</span>
+          <div className="text-amber-900 flex-1">
+            <div className="font-semibold mb-0.5">
+              {unzugeordneteFahrten} Fahrtkosten-Datensa{unzugeordneteFahrten === 1 ? 'tz' : 'tz '}
+              {unzugeordneteFahrten === 1 ? ' ist' : ' sind'} noch nicht zugeordnet
+            </div>
+            <p className="text-xs text-amber-800">
+              Diese Fahrten haben keinen Periodenbezug („noch nicht zugeordnet")
+              und fließen daher in keine Abrechnung ein. Bitte unter „Fahrtkosten"
+              prüfen und der passenden Abrechnungsperiode zuordnen.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Ergebnisse */}
       {ergebnisse && (
         <>
@@ -554,7 +601,7 @@ function AbrechnungInhalt() {
           )}
 
           {/* Gesamt-Kacheln */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-5">
             <SummaryCard
               label="Mitarbeiter"
               value={ergebnisse.length.toString()}
@@ -572,6 +619,12 @@ function AbrechnungInhalt() {
               value={eur(ergebnisse.reduce((s, e) => s + e.zeitLohn + e.zusammentragenGesamt, 0))}
               farbe="bg-green-50 border-green-100"
               textFarbe="text-green-700"
+            />
+            <SummaryCard
+              label="Fahrtkosten"
+              value={eur(ergebnisse.reduce((s, e) => s + (e.fahrtkostenGesamt ?? 0), 0))}
+              farbe="bg-sky-50 border-sky-100"
+              textFarbe="text-sky-700"
             />
             <SummaryCard
               label="Erbrachte Leistung (brutto)"
@@ -603,13 +656,6 @@ function AbrechnungInhalt() {
                 textFarbe="text-red-700"
               />
             )}
-            <SummaryCard
-              label="Auszahlung (nur SV-befreit)"
-              value={eur(gesamtNetto)}
-              farbe="bg-green-50 border-green-100"
-              textFarbe="text-green-800"
-              gross
-            />
           </div>
 
           {/* Minijob-Warnungen */}
@@ -695,19 +741,64 @@ function AbrechnungInhalt() {
             </div>
           )}
 
-          {/* Mitarbeiter-Suche */}
-          <div className="mb-4">
+          {/* Mitarbeiter-Suche + Filter */}
+          <div className="mb-4 flex flex-wrap items-center gap-3">
             <input
               type="text"
               value={suchbegriff}
               onChange={(e) => setSuchbegriff(e.target.value)}
               placeholder="Mitarbeiter suchen (Name oder Nummer)"
-              className="w-full md:w-80 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full md:w-72 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            {suchbegriff && (
-              <span className="ml-3 text-xs text-gray-500">
-                {gefilterteErgebnisse.length} von {ergebnisse.length}
-              </span>
+            <select
+              value={filterRolle}
+              onChange={(e) => setFilterRolle(e.target.value as Rolle | '')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter nach Rolle"
+            >
+              <option value="">Alle Rollen</option>
+              {(Object.keys(ROLLEN_LABELS) as Rolle[]).map((r) => (
+                <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
+              ))}
+            </select>
+            <select
+              value={filterMinijob}
+              onChange={(e) => setFilterMinijob(e.target.value as '' | 'ja' | 'nein')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter Minijob"
+            >
+              <option value="">Minijob: alle</option>
+              <option value="ja">nur Minijob</option>
+              <option value="nein">nur kein Minijob</option>
+            </select>
+            <select
+              value={filterSvFrei}
+              onChange={(e) => setFilterSvFrei(e.target.value as '' | 'ja' | 'nein')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter SV-Befreiung"
+            >
+              <option value="">SV-Befreiung: alle</option>
+              <option value="ja">nur SV-befreit</option>
+              <option value="nein">nur nicht SV-befreit</option>
+            </select>
+            {(suchbegriff || filterRolle || filterMinijob || filterSvFrei) && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSuchbegriff('');
+                    setFilterRolle('');
+                    setFilterMinijob('');
+                    setFilterSvFrei('');
+                  }}
+                  className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+                >
+                  ✕ Filter zurücksetzen
+                </button>
+                <span className="text-xs text-gray-500">
+                  {gefilterteErgebnisse.length} von {ergebnisse.length}
+                </span>
+              </>
             )}
           </div>
 
@@ -716,7 +807,7 @@ function AbrechnungInhalt() {
             <table className="min-w-[1400px] w-full text-sm whitespace-nowrap">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-600">Mitarbeiter</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-600 sticky left-0 bg-gray-50 z-20 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Mitarbeiter</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600">Austragen</th>
                   <th className="px-4 py-3 text-right font-medium text-amber-700" title="Gewichtszuschlag Anzeigenblatt (in Austragen enthalten)">Gew. AB</th>
                   <th className="px-4 py-3 text-right font-medium text-amber-700" title="Gewichtszuschlag Beilagen (in Austragen enthalten)">Gew. Beil.</th>
@@ -737,14 +828,14 @@ function AbrechnungInhalt() {
                   <>
                     <tr
                       key={er.mitarbeiter.id}
-                      className="hover:bg-gray-50 cursor-pointer transition-colors"
+                      className="group hover:bg-gray-50 cursor-pointer transition-colors"
                       onClick={() =>
                         setExpandedId(
                           expandedId === er.mitarbeiter.id ? null : er.mitarbeiter.id
                         )
                       }
                     >
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-gray-50 z-10 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">
                         <div className="flex items-center gap-2">
                           <span className="text-gray-400 text-xs">
                             {expandedId === er.mitarbeiter.id ? '▼' : '▶'}
@@ -908,7 +999,7 @@ function AbrechnungInhalt() {
 
                 {/* Summenzeile */}
                 <tr className="bg-blue-50 border-t-2 border-blue-200">
-                  <td className="px-4 py-3 font-bold text-gray-900">Gesamt</td>
+                  <td className="px-4 py-3 font-bold text-gray-900 sticky left-0 bg-blue-50 z-10 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Gesamt</td>
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.austraegerGesamt, 0))}
                   </td>
@@ -2181,9 +2272,9 @@ function SummaryCard({
   gross?: boolean;
 }) {
   return (
-    <div className={`rounded-xl border p-4 ${farbe}`}>
-      <div className="text-xs text-gray-500 mb-1">{label}</div>
-      <div className={`font-bold ${textFarbe} ${gross ? 'text-xl' : 'text-base'}`}>{value}</div>
+    <div className={`rounded-lg border px-3 py-2 ${farbe}`}>
+      <div className="text-[10px] text-gray-500 mb-0.5 leading-tight">{label}</div>
+      <div className={`font-semibold ${textFarbe} ${gross ? 'text-sm' : 'text-xs'} leading-tight`}>{value}</div>
     </div>
   );
 }
