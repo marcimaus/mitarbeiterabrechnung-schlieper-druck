@@ -246,11 +246,12 @@ export default function LieferscheinDruck({
       }
 
       result.sort((a, b) => {
-        const byName = a.teilgebiet.name.localeCompare(b.teilgebiet.name);
+        // Natural sort: Uslar1 < Uslar2 < … < Uslar10 (nicht lexikographisch).
+        const byName = a.teilgebiet.name.localeCompare(b.teilgebiet.name, 'de', { numeric: true });
         if (byName !== 0) return byName;
         // Standardausträger zuerst, dann Springer
         if (a.istSpringer !== b.istSpringer) return a.istSpringer ? 1 : -1;
-        return a.empfaenger.name.localeCompare(b.empfaenger.name);
+        return a.empfaenger.name.localeCompare(b.empfaenger.name, 'de');
       });
       setScheine(result);
       // Standardmäßig alle ausgewählt
