@@ -2115,6 +2115,50 @@ function MitarbeiterForm({
       {/* ---- Tab: Freigaben ---- */}
       {tab === 'freigaben' && (
         <div className="space-y-4">
+          {/* Auswertung: aktuell als Standardausträger zugeordnete TGs */}
+          {(() => {
+            if (!initial) return null;
+            const alsStandard = aktiveTeilgebiete
+              .filter((tg) => tg.standardAustraegerId === initial.id)
+              .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+            return (
+              <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-amber-700">⭐</span>
+                  <h4 className="text-sm font-semibold text-amber-900">
+                    Mitarbeiter ist Standardausträger
+                  </h4>
+                  <span className="ml-auto text-xs text-amber-700 font-medium">
+                    {alsStandard.length} Teilgebiet{alsStandard.length === 1 ? '' : 'e'}
+                  </span>
+                </div>
+                {alsStandard.length === 0 ? (
+                  <p className="text-xs text-amber-700/80 italic">
+                    Aktuell keinem Teilgebiet als Standardausträger zugeordnet.
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {alsStandard.map((tg) => (
+                      <span
+                        key={tg.id}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-amber-300 text-xs font-medium text-amber-900"
+                        title={`Standardausträger für ${tg.name}${tg.plz ? ` (${tg.plz})` : ''}`}
+                      >
+                        <span>⭐</span>
+                        <span>{tg.name}</span>
+                        {tg.plz && <span className="text-amber-600/70 font-normal">· {tg.plz}</span>}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[11px] text-amber-700/70 mt-2">
+                  Nur Anzeige — die Zuordnung als Standardausträger wird im
+                  jeweiligen Teilgebiet (Reiter „Teilgebiete") gepflegt.
+                </p>
+              </div>
+            );
+          })()}
+
           <p className="text-sm text-gray-500">
             Wähle die Teilgebiete aus, die dieser Austräger kennt und austragen darf.
             Nur freigegebene Austräger können als Standardausträger eines Teilgebiets hinterlegt werden.
