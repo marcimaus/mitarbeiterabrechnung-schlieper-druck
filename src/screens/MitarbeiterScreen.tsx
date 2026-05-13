@@ -93,6 +93,28 @@ function MitarbeiterInhalt() {
     lohnkontoSaldoMap.set(b.mitarbeiterId, (lohnkontoSaldoMap.get(b.mitarbeiterId) ?? 0) + delta);
   }
 
+  // Aktuelles Alter — funktioniert für Geburtsdatum ODER für die Alters-
+  // Angabe bei Interessenten (interessentAlterBeiErfassung + Kontaktdatum).
+  function aktuellesAlter(m: Mitarbeiter): { jahre: number; quelle: 'geburtsdatum' | 'alterBeiErfassung' } | null {
+    if (m.geburtsdatum) {
+      try {
+        const a = berechneAlter(m.geburtsdatum);
+        if (Number.isFinite(a)) return { jahre: a, quelle: 'geburtsdatum' };
+      } catch { /* ignore */ }
+    }
+    const alterErf = m.interessentAlterBeiErfassung;
+    const datum = m.interessentKontaktDatum;
+    if (alterErf != null && alterErf > 0 && datum) {
+      const erf = new Date(datum);
+      const heute = new Date();
+      let zusatz = heute.getFullYear() - erf.getFullYear();
+      const md = heute.getMonth() - erf.getMonth();
+      if (md < 0 || (md === 0 && heute.getDate() < erf.getDate())) zusatz--;
+      return { jahre: alterErf + zusatz, quelle: 'alterBeiErfassung' };
+    }
+    return null;
+  }
+
   const gefiltert = mitarbeiter.filter((m) => {
     // Interessenten-Filter: 'ohne' (Standard) blendet Interessenten aus,
     // 'nur' zeigt ausschließlich Interessenten, '' zeigt alle.
@@ -135,6 +157,19 @@ function MitarbeiterInhalt() {
     if (filterFahrtkosten === 'nein' && m.fahrtkostenerstattung) return false;
     return true;
   });
+
+  // Bei „nur Interessenten": nach Datum der Kontaktaufnahme absteigend
+  // sortieren (neueste oben). Fehlende Daten ans Ende.
+  if (filterInteressent === 'nur') {
+    gefiltert.sort((a, b) => {
+      const da = a.interessentKontaktDatum ?? '';
+      const db = b.interessentKontaktDatum ?? '';
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return db.localeCompare(da);
+    });
+  }
 
   function oeffneNeu() {
     setEditTarget(null);
@@ -288,7 +323,8 @@ function MitarbeiterInhalt() {
           </div>
         )}
         {gefiltert.map((m) => {
-          const alter = m.geburtsdatum ? berechneAlter(m.geburtsdatum) : null;
+          const alterInfo = aktuellesAlter(m);
+          const alter = alterInfo ? alterInfo.jahre : null;
           const minderjährig = alter !== null && alter < 18;
           return (
             <button
@@ -333,12 +369,50 @@ function MitarbeiterInhalt() {
                     )}
                   </div>
                   <div className="text-xs text-gray-400 font-mono mb-2">{m.nummer}</div>
+                  {filterInteressent === 'nur' && (
+                    <div className="text-xs text-gray-600 mb-2 flex items-center gap-2 flex-wrap">
+                      {m.interessentKontaktDatum && (
+                        <span>
+                          📅 {new Date(m.interessentKontaktDatum).toLocaleDateString('de-DE')}
+                        </span>
+                      )}
+                      {alter !== null && (
+                        <span className={minderjährig ? 'text-orange-600 font-medium' : ''}>
+                          · {alter} J.
+                          {alterInfo?.quelle === 'alterBeiErfassung' && (
+                            <span
+                              className="ml-0.5 text-gray-400"
+                              title={'Berechnet aus „Alter bei Erfassung" + verstrichene Zeit'}
+                            >🧮</span>
+                          )}
+                        </span>
+                      )}
+                      {m.interessentKorrespondenzLink && (
+                        <a
+                          href={m.interessentKorrespondenzLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-blue-600 hover:text-blue-800"
+                          title="Korrespondenz öffnen"
+                        >
+                          ✉ Korrespondenz
+                        </a>
+                      )}
+                    </div>
+                  )}
                   <div className="flex flex-wrap gap-1">
-                    {m.rollen.map((r) => (
-                      <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                        {ROLLEN_LABELS[r]}
-                      </span>
-                    ))}
+                    {m.istInteressent
+                      ? (m.interesseTaetigkeiten ?? []).map((t) => (
+                          <span key={t} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                            {INTERESSE_TAETIGKEIT_LABELS[t]}
+                          </span>
+                        ))
+                      : m.rollen.map((r) => (
+                          <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                            {ROLLEN_LABELS[r]}
+                          </span>
+                        ))}
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
@@ -374,6 +448,9 @@ function MitarbeiterInhalt() {
               <th className="text-left px-4 py-3 font-medium text-gray-600">Name</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Rollen</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Alter</th>
+              {filterInteressent === 'nur' && (
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Kontakt</th>
+              )}
               <th className="text-left px-4 py-3 font-medium text-gray-600">Abrechnung</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
               {isAdmin && (
@@ -385,13 +462,14 @@ function MitarbeiterInhalt() {
           <tbody className="divide-y divide-gray-100">
             {gefiltert.length === 0 && (
               <tr>
-                <td colSpan={isAdmin ? 8 : 7} className="text-center py-8 text-gray-400">
+                <td colSpan={(isAdmin ? 8 : 7) + (filterInteressent === 'nur' ? 1 : 0)} className="text-center py-8 text-gray-400">
                   Keine Mitarbeiter gefunden
                 </td>
               </tr>
             )}
             {gefiltert.map((m) => {
-              const alter = m.geburtsdatum ? berechneAlter(m.geburtsdatum) : null;
+              const alterInfo = aktuellesAlter(m);
+              const alter = alterInfo ? alterInfo.jahre : null;
               const minderjährig = alter !== null && alter < 18;
               return (
                 <tr key={m.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => oeffneBearbeiten(m)}>
@@ -455,20 +533,62 @@ function MitarbeiterInhalt() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
-                      {m.rollen.map((r) => (
-                        <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                          {ROLLEN_LABELS[r]}
-                        </span>
-                      ))}
+                      {m.istInteressent
+                        ? (m.interesseTaetigkeiten ?? []).map((t) => (
+                            <span key={t} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                              {INTERESSE_TAETIGKEIT_LABELS[t]}
+                            </span>
+                          ))
+                        : m.rollen.map((r) => (
+                            <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                              {ROLLEN_LABELS[r]}
+                            </span>
+                          ))}
                     </div>
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     {alter !== null ? (
-                      <span className={minderjährig ? 'text-orange-600 font-medium' : ''}>
+                      <span
+                        className={minderjährig ? 'text-orange-600 font-medium' : ''}
+                        title={
+                          alterInfo?.quelle === 'alterBeiErfassung'
+                            ? 'Berechnet aus „Alter bei Erfassung" + verstrichene Zeit'
+                            : undefined
+                        }
+                      >
                         {alter} J.{minderjährig ? ' ⚠' : ''}
+                        {alterInfo?.quelle === 'alterBeiErfassung' && (
+                          <span className="ml-0.5 text-[10px] text-gray-400">🧮</span>
+                        )}
                       </span>
                     ) : '—'}
                   </td>
+                  {filterInteressent === 'nur' && (
+                    <td className="px-4 py-3 text-gray-600 text-xs" onClick={(e) => {
+                      // Click auf den Link soll nicht das Bearbeiten-Modal öffnen.
+                      if ((e.target as HTMLElement).closest('a')) e.stopPropagation();
+                    }}>
+                      {m.interessentKontaktDatum ? (
+                        <span>
+                          {new Date(m.interessentKontaktDatum).toLocaleDateString('de-DE')}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                      {m.interessentKorrespondenzLink && (
+                        <a
+                          href={m.interessentKorrespondenzLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          title="Korrespondenz öffnen"
+                          className="ml-1.5 text-blue-600 hover:text-blue-800"
+                        >
+                          ✉
+                        </a>
+                      )}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-gray-600">
                     <span className="text-xs bg-gray-100 px-2 py-0.5 rounded">
                       {m.hatFestgehalt ? 'Festgehalt' : 'Variabel'}
@@ -1188,6 +1308,90 @@ function MitarbeiterForm({
               placeholder="z. B. ‚Sehr motivierter Bewerber, würde gerne zusätzlich mittwochs aushelfen.‘"
             />
           </FormField>
+
+          {/* Eltern-Kontaktdaten — nur sichtbar bei (potenziell) Minderjährigen.
+              Alle Felder optional. Berechnung wie im Alters-Info-Banner. */}
+          {(() => {
+            let alterFuerForm: number | null = null;
+            if (form.geburtsdatum) {
+              try {
+                const a = berechneAlter(form.geburtsdatum);
+                if (Number.isFinite(a)) alterFuerForm = a;
+              } catch { /* ignore */ }
+            } else if (form.interessentAlterBeiErfassung != null && form.interessentAlterBeiErfassung > 0) {
+              // Bei der Eingabe als "Alter bei Erfassung" interpretieren wir den
+              // Eingabewert direkt — der ist konservativer (jüngerer Stand).
+              alterFuerForm = form.interessentAlterBeiErfassung;
+            }
+            if (alterFuerForm == null || alterFuerForm >= 18) return null;
+            return (
+              <div className="rounded-lg border border-orange-200 bg-orange-50/40 p-4 space-y-3">
+                <div className="text-sm font-semibold text-orange-800">
+                  👨‍👩‍👧 Erziehungsberechtigte (optional)
+                </div>
+                <p className="text-xs text-orange-700/80">
+                  Interessent ist laut Angabe minderjährig ({alterFuerForm} J.).
+                  Kontaktdaten der Eltern sind optional — falls bereits bekannt,
+                  hier eintragen.
+                </p>
+                <FormField label="Name Erziehungsberechtigte/r">
+                  <input
+                    type="text"
+                    value={form.elternName ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, elternName: e.target.value || undefined }))}
+                    placeholder="z. B. Anna Mustermann"
+                    className={inputClass}
+                  />
+                </FormField>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField label="Telefon (Festnetz)">
+                    <input
+                      type="tel"
+                      value={form.elternTelefon ?? ''}
+                      onChange={(e) => setForm((f) => ({ ...f, elternTelefon: e.target.value || undefined }))}
+                      className={inputClass}
+                    />
+                  </FormField>
+                  <FormField label="Mobil">
+                    <input
+                      type="tel"
+                      value={form.elternMobil ?? ''}
+                      onChange={(e) => setForm((f) => ({ ...f, elternMobil: e.target.value || undefined }))}
+                      className={inputClass}
+                    />
+                  </FormField>
+                </div>
+                <FormField label="E-Mail">
+                  <input
+                    type="email"
+                    value={form.elternEmail ?? ''}
+                    onChange={(e) => setForm((f) => ({ ...f, elternEmail: e.target.value || undefined }))}
+                    className={inputClass}
+                  />
+                </FormField>
+                <div className="flex items-center gap-5 text-sm text-gray-700">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.elternNutztWhatsApp ?? false}
+                      onChange={(e) => setForm((f) => ({ ...f, elternNutztWhatsApp: e.target.checked }))}
+                      className="rounded"
+                    />
+                    WhatsApp
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={form.elternNutztTelegram ?? false}
+                      onChange={(e) => setForm((f) => ({ ...f, elternNutztTelegram: e.target.checked }))}
+                      className="rounded"
+                    />
+                    Telegram
+                  </label>
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
             <label className="flex items-center gap-2 cursor-pointer">
