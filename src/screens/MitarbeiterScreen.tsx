@@ -78,6 +78,7 @@ function MitarbeiterInhalt() {
   const [filterFahrtkosten, setFilterFahrtkosten] = useState<'' | 'ja' | 'nein'>('');
   const [filterInteressent, setFilterInteressent] = useState<'' | 'nur' | 'ohne'>('ohne');
   const [filterInteresseTaetigkeit, setFilterInteresseTaetigkeit] = useState<InteresseTaetigkeit | ''>('');
+  const [filterOrtPlz, setFilterOrtPlz] = useState('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
 
@@ -116,6 +117,12 @@ function MitarbeiterInhalt() {
     }
     if (filterText && !m.name.toLowerCase().includes(filterText.toLowerCase()) &&
         !m.nummer.includes(filterText)) return false;
+    if (filterOrtPlz.trim()) {
+      const q = filterOrtPlz.trim().toLowerCase();
+      const plz = (m.adresse?.plz ?? '').toLowerCase();
+      const ort = (m.adresse?.ort ?? '').toLowerCase();
+      if (!plz.includes(q) && !ort.includes(q)) return false;
+    }
     if (filterRolle && !m.rollen.includes(filterRolle)) return false;
     if (filterMinijob === 'ja' && !m.istMinijob) return false;
     if (filterMinijob === 'nein' && m.istMinijob) return false;
@@ -169,6 +176,14 @@ function MitarbeiterInhalt() {
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-52"
+        />
+        <input
+          type="text"
+          placeholder="Ort oder PLZ..."
+          value={filterOrtPlz}
+          onChange={(e) => setFilterOrtPlz(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-36"
+          title="Filter auf Wohnort oder Postleitzahl des Mitarbeiters"
         />
         <select
           value={filterRolle}
