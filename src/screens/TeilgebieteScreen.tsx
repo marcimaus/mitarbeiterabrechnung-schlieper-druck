@@ -84,6 +84,8 @@ function TeilgebieteInhalt() {
   const [filterText, setFilterText] = useState('');
   const [filterTour, setFilterTour] = useState('');
   const [filterAustraegerId, setFilterAustraegerId] = useState('');
+  const [filterAustraegerSuche, setFilterAustraegerSuche] = useState('');
+  const [filterAustraegerNurMitTG, setFilterAustraegerNurMitTG] = useState(false);
   const [nurAktive, setNurAktive] = useState(true);
   const [historiePeriodeId, setHistoriePeriodeId] = useState('');
 
@@ -111,9 +113,25 @@ function TeilgebieteInhalt() {
     return true;
   });
 
-  // Austräger-Filterliste (alle Mitarbeiter mit Rolle 'austräger'), sortiert
+  // Austräger-Filterliste (alle Mitarbeiter mit Rolle 'austräger'), sortiert.
+  // Optional: nur MAs, die mindestens ein TG als Standardausträger haben;
+  // zusätzlich Volltext-Suche über Name + Mitarbeiternummer.
+  const austraegerMitTG = new Set(
+    teilgebiete
+      .filter((tg) => tg.standardAustraegerId)
+      .map((tg) => tg.standardAustraegerId as string)
+  );
   const austraegerOptionen = mitarbeiter
     .filter((m) => m.rollen.includes('austräger'))
+    .filter((m) => !filterAustraegerNurMitTG || austraegerMitTG.has(m.id))
+    .filter((m) => {
+      if (!filterAustraegerSuche.trim()) return true;
+      const s = filterAustraegerSuche.toLowerCase();
+      return (
+        m.name.toLowerCase().includes(s) ||
+        m.nummer.toLowerCase().includes(s)
+      );
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const getTourName = (id: string | null) => {
@@ -215,20 +233,42 @@ function TeilgebieteInhalt() {
             </option>
           ))}
         </select>
-        <select
-          value={filterAustraegerId}
-          onChange={(e) => setFilterAustraegerId(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          title="Filter auf Standardausträger"
-        >
-          <option value="">Alle Austräger</option>
-          <option value="__keiner__">Ohne Austräger</option>
-          {austraegerOptionen.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-1.5">
+          <input
+            type="text"
+            placeholder="MA-Name/-Nr filtern..."
+            value={filterAustraegerSuche}
+            onChange={(e) => setFilterAustraegerSuche(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-40"
+            title="Filtert die Austräger-Auswahl rechts auf Name oder Mitarbeiternummer"
+          />
+          <select
+            value={filterAustraegerId}
+            onChange={(e) => setFilterAustraegerId(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title="Filter auf Standardausträger"
+          >
+            <option value="">Alle Austräger</option>
+            <option value="__keiner__">Ohne Austräger</option>
+            {austraegerOptionen.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name} ({m.nummer})
+              </option>
+            ))}
+          </select>
+          <label
+            className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer whitespace-nowrap"
+            title="Nur Austräger anzeigen, die mindestens ein Teilgebiet als Standardausträger haben"
+          >
+            <input
+              type="checkbox"
+              checked={filterAustraegerNurMitTG}
+              onChange={(e) => setFilterAustraegerNurMitTG(e.target.checked)}
+              className="rounded"
+            />
+            nur mit TG
+          </label>
+        </div>
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
             type="checkbox"
@@ -238,10 +278,10 @@ function TeilgebieteInhalt() {
           />
           Nur aktive
         </label>
-        {(filterText || filterTour || filterAustraegerId) && (
+        {(filterText || filterTour || filterAustraegerId || filterAustraegerSuche || filterAustraegerNurMitTG) && (
           <button
             type="button"
-            onClick={() => { setFilterText(''); setFilterTour(''); setFilterAustraegerId(''); }}
+            onClick={() => { setFilterText(''); setFilterTour(''); setFilterAustraegerId(''); setFilterAustraegerSuche(''); setFilterAustraegerNurMitTG(false); }}
             className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
           >
             ✕ Filter zurücksetzen
@@ -695,6 +735,7 @@ function TeilgebietForm({
     useState<string[]>(initialFreigabenIds);
   const [freigabeFilter, setFreigabeFilter] = useState('');
   const [freigabeNurAktive, setFreigabeNurAktive] = useState(true);
+  const [freigabeNurMitFreigabe, setFreigabeNurMitFreigabe] = useState(true);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1567,6 +1608,15 @@ function TeilgebietForm({
               />
               nur aktive
             </label>
+            <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={freigabeNurMitFreigabe}
+                onChange={(e) => setFreigabeNurMitFreigabe(e.target.checked)}
+                className="rounded"
+              />
+              nur mit Freigabe
+            </label>
             <span className="ml-auto text-xs text-gray-500">
               {freigegebeneMitarbeiterIds.length} Freigabe
               {freigegebeneMitarbeiterIds.length !== 1 ? 'n' : ''}
@@ -1580,6 +1630,7 @@ function TeilgebietForm({
                 .filter((m) => m.rollen?.includes('austräger'))
                 .filter((m) => !m.abgemeldet)
                 .filter((m) => !freigabeNurAktive || m.isActive)
+                .filter((m) => !freigabeNurMitFreigabe || freigegebeneMitarbeiterIds.includes(m.id))
                 .filter((m) => {
                   if (!freigabeFilter.trim()) return true;
                   const s = freigabeFilter.toLowerCase();

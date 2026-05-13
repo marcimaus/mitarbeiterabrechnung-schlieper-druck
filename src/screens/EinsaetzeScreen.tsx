@@ -335,7 +335,7 @@ function EinsaetzeInhalt() {
         <div className="flex items-center gap-3 flex-wrap">
           <input
             type="text"
-            placeholder="Teilgebiet, PLZ oder Austräger-Name..."
+            placeholder="Teilgebiet, PLZ, Austräger-Name oder MA-Nummer..."
             value={suche}
             onChange={(e) => setSuche(e.target.value)}
             className="flex-1 min-w-[200px] border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -369,15 +369,30 @@ function EinsaetzeInhalt() {
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             title="Nur Teilgebiete anzeigen, auf denen der gewählte Mitarbeiter in dieser Ausgabe austrägt (Standard oder Springer)"
           >
-            <option value="">— alle Austräger —</option>
-            {mitarbeiter
-              .filter((m) => m.rollen.includes('austräger'))
-              .sort((a, b) => a.name.localeCompare(b.name))
-              .map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
+            <option value="">— alle Austräger (dieser Ausgabe) —</option>
+            {(() => {
+              // Nur Austräger anbieten, denen in DIESER Ausgabe ein Gebiet
+              // zugeordnet ist: Standard (über tg.standardAustraegerId, sofern
+              // kein abweichender Einsatz vorliegt) ODER Springer-Einsatz.
+              const ids = new Set<string>();
+              for (const tg of aktiveTeilgebiete) {
+                const e = einsaetze[tg.id];
+                if (e?.typ === 'springer' && e.mitarbeiterId) {
+                  ids.add(e.mitarbeiterId);
+                } else if (!e || e.typ === 'standard') {
+                  if (tg.standardAustraegerId) ids.add(tg.standardAustraegerId);
+                }
+                // ausfall / ungeklärt → kein Austräger
+              }
+              return mitarbeiter
+                .filter((m) => ids.has(m.id))
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} ({m.nummer})
+                  </option>
+                ));
+            })()}
           </select>
           {(suche || filterTourId || filterStatus || filterMitarbeiterId) && (
             <button
