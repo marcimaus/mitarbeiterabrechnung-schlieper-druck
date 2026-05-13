@@ -529,11 +529,6 @@ function LieferscheinSeite({
           }}
         >
           📦 ABHOLUNG — STAPEL BLEIBT IM WERK
-          <div style={{ fontSize: '11px', fontWeight: 600, marginTop: '3px' }}>
-            Tour-Fahrer: diesen Stapel NICHT mitnehmen! Der Austräger holt den
-            Stapel Anzeigenblätter selbst ab — zur Abholung im Werk
-            bereitstellen.
-          </div>
         </div>
       )}
 
