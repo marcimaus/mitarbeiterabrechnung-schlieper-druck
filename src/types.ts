@@ -419,17 +419,18 @@ export interface Austraegerwechsel {
   aktualisiertAm: number;
 }
 
-// ---- Wegstrecken-Anpassung vorbereiten ---------------------
+// ---- Stückzahl-Anpassung vorbereiten -----------------------
 //
-// Vorgemerkte Änderung der Wegstrecke (Laufweg der Austräger) pro
-// Teilgebiet. Wird beim nächsten Monatswechsel zur Einzel-Bestätigung
-// angeboten; nach Übernahme wird tg.wegstreckeM aktualisiert und der
-// Eintrag gelöscht. Upsert auf teilgebietId.
+// Vorgemerkte Änderung der Stückzahl (Anzahl Exemplare) pro Teilgebiet.
+// Wird beim nächsten Monatswechsel zur Einzel-Bestätigung angeboten;
+// nach Übernahme wird tg.stueckzahl aktualisiert (und der manuelle
+// Override-Flag stueckzahlManuell=true gesetzt), der Eintrag gelöscht.
+// Upsert auf teilgebietId.
 
-export interface WegstreckeAnpassung {
+export interface StueckzahlAnpassung {
   id: string;
   teilgebietId: string;
-  neueWegstreckeM: number;
+  neueStueckzahl: number;
   bemerkung?: string;
   erstelltVon?: string;
   erstelltAm: number;

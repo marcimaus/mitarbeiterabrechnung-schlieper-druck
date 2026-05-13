@@ -15,7 +15,7 @@ import type {
   VariablerPeriodenZusatz,
   LohnkontoBuchung,
   Austraegerwechsel,
-  WegstreckeAnpassung,
+  StueckzahlAnpassung,
 } from '../types';
 import {
   mitarbeiterListener,
@@ -26,7 +26,7 @@ import {
   variablePeriodenZusaetzeListener,
   lohnkontoBuchungenListener,
   austraegerwechselListener,
-  wegstreckeAnpassungenListener,
+  stueckzahlAnpassungenListener,
 } from '../lib/db';
 
 // ---- State -------------------------------------------------
@@ -46,7 +46,7 @@ interface AppState {
   variablePeriodenZusaetze: VariablerPeriodenZusatz[];
   lohnkontoBuchungen: LohnkontoBuchung[];
   austraegerwechsel: Austraegerwechsel[];
-  wegstreckeAnpassungen: WegstreckeAnpassung[];
+  stueckzahlAnpassungen: StueckzahlAnpassung[];
   aktivePeriodeId: string | null;
   isOnline: boolean;
   isLoading: boolean;
@@ -64,7 +64,7 @@ const initialState: AppState = {
   variablePeriodenZusaetze: [],
   lohnkontoBuchungen: [],
   austraegerwechsel: [],
-  wegstreckeAnpassungen: [],
+  stueckzahlAnpassungen: [],
   aktivePeriodeId: null,
   isOnline: navigator.onLine,
   isLoading: true,
@@ -82,7 +82,7 @@ type Action =
   | { type: 'SET_VARIABLE_PERIODEN_ZUSAETZE'; payload: VariablerPeriodenZusatz[] }
   | { type: 'SET_LOHNKONTO_BUCHUNGEN'; payload: LohnkontoBuchung[] }
   | { type: 'SET_AUSTRAEGERWECHSEL'; payload: Austraegerwechsel[] }
-  | { type: 'SET_WEGSTRECKE_ANPASSUNGEN'; payload: WegstreckeAnpassung[] }
+  | { type: 'SET_STUECKZAHL_ANPASSUNGEN'; payload: StueckzahlAnpassung[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_LOADING'; payload: boolean };
@@ -114,8 +114,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, lohnkontoBuchungen: action.payload };
     case 'SET_AUSTRAEGERWECHSEL':
       return { ...state, austraegerwechsel: action.payload };
-    case 'SET_WEGSTRECKE_ANPASSUNGEN':
-      return { ...state, wegstreckeAnpassungen: action.payload };
+    case 'SET_STUECKZAHL_ANPASSUNGEN':
+      return { ...state, stueckzahlAnpassungen: action.payload };
     case 'SET_AKTIVE_PERIODE':
       return { ...state, aktivePeriodeId: action.payload };
     case 'SET_ONLINE':
@@ -204,8 +204,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubWechsel = austraegerwechselListener((list) => {
       dispatch({ type: 'SET_AUSTRAEGERWECHSEL', payload: list });
     });
-    const unsubWegstrecke = wegstreckeAnpassungenListener((list) => {
-      dispatch({ type: 'SET_WEGSTRECKE_ANPASSUNGEN', payload: list });
+    const unsubStueckzahl = stueckzahlAnpassungenListener((list) => {
+      dispatch({ type: 'SET_STUECKZAHL_ANPASSUNGEN', payload: list });
     });
 
     return () => {
@@ -217,7 +217,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubZusaetze();
       unsubLohnkonto();
       unsubWechsel();
-      unsubWegstrecke();
+      unsubStueckzahl();
     };
   }, []);
 

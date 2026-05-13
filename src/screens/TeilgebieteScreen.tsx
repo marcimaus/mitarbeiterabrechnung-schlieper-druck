@@ -9,8 +9,8 @@ import {
   aktualisiereMitarbeiter,
   setzeAustraegerwechsel,
   loescheAustraegerwechsel,
-  setzeWegstreckeAnpassung,
-  loescheWegstreckeAnpassung,
+  setzeStueckzahlAnpassung,
+  loescheStueckzahlAnpassung,
   ladeAusgaben,
   ladeEinsaetze,
 } from '../lib/db';
@@ -21,7 +21,7 @@ import type {
   NichtBeliefen,
   Mitarbeiter,
   Austraegerwechsel,
-  WegstreckeAnpassung,
+  StueckzahlAnpassung,
 } from '../types';
 
 // ---- Hilfsfunktionen -------------------------------------------------------
@@ -61,7 +61,7 @@ export default function TeilgebieteScreen() {
 }
 
 function TeilgebieteInhalt() {
-  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, austraegerwechsel, wegstreckeAnpassungen, adminName } = useApp();
+  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, austraegerwechsel, stueckzahlAnpassungen, adminName } = useApp();
   // Abrechnung-Rolle: nur lesender Zugriff (keine Bearbeitung).
   const isAdmin = userRole === 'admin';
   const [hauptview, setHauptview] = useState<'liste' | 'wechsel' | 'anpassung'>('liste');
@@ -226,9 +226,9 @@ function TeilgebieteInhalt() {
           }`}
         >
           Teilgebietsanpassung vorbereiten
-          {wegstreckeAnpassungen.length > 0 && (
+          {stueckzahlAnpassungen.length > 0 && (
             <span className="ml-1.5 bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded-full">
-              {wegstreckeAnpassungen.length}
+              {stueckzahlAnpassungen.length}
             </span>
           )}
         </button>
@@ -247,7 +247,7 @@ function TeilgebieteInhalt() {
         <TeilgebietsanpassungReiter
           teilgebiete={teilgebiete}
           mitarbeiter={mitarbeiter}
-          wegstreckeAnpassungen={wegstreckeAnpassungen}
+          stueckzahlAnpassungen={stueckzahlAnpassungen}
           adminName={adminName}
           isAdmin={isAdmin}
         />
@@ -2014,24 +2014,24 @@ function AustraegerwechselReiter({
 }
 
 // =====================================================================
-// Reiter: Teilgebietsanpassung (Wegstrecke) vorbereiten
+// Reiter: Teilgebietsanpassung (Stückzahl) vorbereiten
 // =====================================================================
 
 function TeilgebietsanpassungReiter({
   teilgebiete,
   mitarbeiter,
-  wegstreckeAnpassungen,
+  stueckzahlAnpassungen,
   adminName,
   isAdmin,
 }: {
   teilgebiete: Teilgebiet[];
   mitarbeiter: Mitarbeiter[];
-  wegstreckeAnpassungen: WegstreckeAnpassung[];
+  stueckzahlAnpassungen: StueckzahlAnpassung[];
   adminName: string;
   isAdmin: boolean;
 }) {
   const [tgId, setTgId] = useState('');
-  const [neueStrecke, setNeueStrecke] = useState('');
+  const [neueStueckzahl, setNeueStueckzahl] = useState('');
   const [bemerkung, setBemerkung] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -2046,7 +2046,7 @@ function TeilgebietsanpassungReiter({
 
   function reset() {
     setTgId('');
-    setNeueStrecke('');
+    setNeueStueckzahl('');
     setBemerkung('');
     setError('');
   }
@@ -2057,16 +2057,16 @@ function TeilgebietsanpassungReiter({
       setError('Bitte ein Teilgebiet wählen.');
       return;
     }
-    const n = parseInt(neueStrecke.trim(), 10);
+    const n = parseInt(neueStueckzahl.trim(), 10);
     if (!Number.isFinite(n) || n < 0) {
-      setError('Bitte eine gültige Wegstrecke in Metern (≥ 0) angeben.');
+      setError('Bitte eine gültige Stückzahl (≥ 0) angeben.');
       return;
     }
     setSaving(true);
     try {
-      await setzeWegstreckeAnpassung({
+      await setzeStueckzahlAnpassung({
         teilgebietId: tgId,
-        neueWegstreckeM: n,
+        neueStueckzahl: n,
         bemerkung: bemerkung.trim() || undefined,
         erstelltVon: adminName || undefined,
       });
@@ -2079,28 +2079,28 @@ function TeilgebietsanpassungReiter({
     }
   }
 
-  async function handleEntfernen(w: WegstreckeAnpassung) {
+  async function handleEntfernen(w: StueckzahlAnpassung) {
     if (!confirm('Diese vorbereitete Anpassung wirklich entfernen?')) return;
-    await loescheWegstreckeAnpassung(w.id);
+    await loescheStueckzahlAnpassung(w.id);
   }
 
-  const sortiert = [...wegstreckeAnpassungen].sort((a, b) => {
+  const sortiert = [...stueckzahlAnpassungen].sort((a, b) => {
     const na = tgMap.get(a.teilgebietId)?.name ?? '';
     const nb = tgMap.get(b.teilgebietId)?.name ?? '';
     return na.localeCompare(nb, 'de', { numeric: true });
   });
 
-  const fmtKm = (m: number) =>
-    m >= 1000 ? `${(m / 1000).toFixed(2).replace('.', ',')} km` : `${m} m`;
+  const fmtStk = (n: number) => `${n.toLocaleString('de-DE')} Stk`;
 
   return (
     <div className="space-y-8">
       <div className="text-sm text-gray-600">
-        Liste vorbereiteter Wegstrecken-Anpassungen (Laufweg der Austräger) pro
-        Teilgebiet. Beim Klick auf „Monatswechsel" in der Abrechnung werden die
-        Vorschläge zur Einzel-Bestätigung angeboten — der neue Wert wird dann
-        als Wegstrecke des Teilgebiets eingetragen, der Eintrag verschwindet
-        aus dieser Liste.
+        Liste vorbereiteter Stückzahl-Anpassungen pro Teilgebiet. Beim Klick
+        auf „Monatswechsel" in der Abrechnung werden die Vorschläge zur
+        Einzel-Bestätigung angeboten — der neue Wert wird dann als Stückzahl
+        des Teilgebiets eingetragen (mit manuellem Override, damit die
+        automatische Berechnung aus der Straßenliste nicht erneut überschreibt),
+        der Eintrag verschwindet aus dieser Liste.
       </div>
 
       {/* Eingabe */}
@@ -2124,21 +2124,24 @@ function TeilgebietsanpassungReiter({
               </select>
               {aktuellesTg && (
                 <p className="text-[11px] text-gray-500 mt-1">
-                  Bisherige Wegstrecke: <strong>{fmtKm(aktuellesTg.wegstreckeM)}</strong>
+                  Bisherige Stückzahl: <strong>{fmtStk(aktuellesTg.stueckzahl)}</strong>
+                  {!aktuellesTg.stueckzahlManuell && aktuellesTg.strassen?.length > 0 && (
+                    <span className="ml-1 text-gray-400">(aus Straßenliste berechnet)</span>
+                  )}
                 </p>
               )}
             </div>
             <div>
               <label className="block text-xs text-gray-600 mb-1">
-                Neue Wegstrecke (in m) *
+                Neue Stückzahl *
               </label>
               <input
                 type="number"
                 min="0"
                 step="1"
-                value={neueStrecke}
-                onChange={(e) => setNeueStrecke(e.target.value)}
-                placeholder="z. B. 4200"
+                value={neueStueckzahl}
+                onChange={(e) => setNeueStueckzahl(e.target.value)}
+                placeholder="z. B. 420"
                 className={inputClass}
               />
             </div>
@@ -2170,7 +2173,7 @@ function TeilgebietsanpassungReiter({
       {/* Liste */}
       {sortiert.length === 0 ? (
         <div className="rounded-lg border border-gray-200 bg-white py-10 text-center text-sm text-gray-500">
-          Keine vorbereiteten Wegstrecken-Anpassungen.
+          Keine vorbereiteten Stückzahl-Anpassungen.
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200">
@@ -2189,8 +2192,8 @@ function TeilgebietsanpassungReiter({
             <tbody className="divide-y divide-gray-100">
               {sortiert.map((w) => {
                 const tg = tgMap.get(w.teilgebietId);
-                const alt = tg?.wegstreckeM ?? 0;
-                const neu = w.neueWegstreckeM;
+                const alt = tg?.stueckzahl ?? 0;
+                const neu = w.neueStueckzahl;
                 const delta = neu - alt;
                 const erstellerName = w.erstelltVon || '—';
                 return (
@@ -2200,15 +2203,15 @@ function TeilgebietsanpassungReiter({
                       {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
                     </td>
                     <td className="px-3 py-2 text-right text-gray-600 font-mono text-xs">
-                      {tg ? fmtKm(alt) : '—'}
+                      {tg ? fmtStk(alt) : '—'}
                     </td>
                     <td className="px-3 py-2 text-right text-gray-900 font-mono text-xs font-semibold">
-                      {fmtKm(neu)}
+                      {fmtStk(neu)}
                     </td>
                     <td className={`px-3 py-2 text-right font-mono text-xs ${
                       delta > 0 ? 'text-amber-700' : delta < 0 ? 'text-green-700' : 'text-gray-400'
                     }`}>
-                      {delta > 0 ? '+' : ''}{fmtKm(delta).replace(/^-/, '−')}
+                      {delta > 0 ? '+' : ''}{fmtStk(delta).replace(/^-/, '−')}
                     </td>
                     <td className="px-3 py-2 text-gray-600 text-xs">
                       {w.bemerkung || <span className="text-gray-300">—</span>}

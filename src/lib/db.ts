@@ -38,7 +38,7 @@ import type {
   AuslieferungsMemo,
   LohnkontoBuchung,
   Austraegerwechsel,
-  WegstreckeAnpassung,
+  StueckzahlAnpassung,
 } from '../types';
 import { berechneStapel } from './berechnung';
 import { normalisiereRollen } from '../types';
@@ -1216,48 +1216,48 @@ export async function loescheAustraegerwechsel(id: string): Promise<void> {
   await deleteDoc(doc(db, 'austraegerwechsel', id));
 }
 
-// ---- Wegstrecken-Anpassung (Vorbereitung) ------------------
+// ---- Stückzahl-Anpassung (Vorbereitung) --------------------
 
-export async function ladeWegstreckeAnpassungen(): Promise<WegstreckeAnpassung[]> {
-  const snap = await getDocs(collection(db, 'wegstreckeAnpassungen'));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as WegstreckeAnpassung));
+export async function ladeStueckzahlAnpassungen(): Promise<StueckzahlAnpassung[]> {
+  const snap = await getDocs(collection(db, 'stueckzahlAnpassungen'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as StueckzahlAnpassung));
 }
 
-export function wegstreckeAnpassungenListener(
-  cb: (list: WegstreckeAnpassung[]) => void
+export function stueckzahlAnpassungenListener(
+  cb: (list: StueckzahlAnpassung[]) => void
 ): Unsubscribe {
-  return onSnapshot(collection(db, 'wegstreckeAnpassungen'), (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as WegstreckeAnpassung)));
+  return onSnapshot(collection(db, 'stueckzahlAnpassungen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as StueckzahlAnpassung)));
   });
 }
 
 /**
  * Upsert pro Teilgebiet: jeder TG kann nur einen offenen
- * Wegstrecken-Anpassungs-Eintrag haben.
+ * Stückzahl-Anpassungs-Eintrag haben.
  */
-export async function setzeWegstreckeAnpassung(
-  data: Omit<WegstreckeAnpassung, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+export async function setzeStueckzahlAnpassung(
+  data: Omit<StueckzahlAnpassung, 'id' | 'erstelltAm' | 'aktualisiertAm'>
 ): Promise<string> {
   const ts = now();
   const existing = await getDocs(query(
-    collection(db, 'wegstreckeAnpassungen'),
+    collection(db, 'stueckzahlAnpassungen'),
     where('teilgebietId', '==', data.teilgebietId)
   ));
   const payload = { ...stripUndef(data as Record<string, unknown>), aktualisiertAm: ts };
   if (!existing.empty) {
     const id = existing.docs[0].id;
     await Promise.all(
-      existing.docs.slice(1).map((d) => deleteDoc(doc(db, 'wegstreckeAnpassungen', d.id)))
+      existing.docs.slice(1).map((d) => deleteDoc(doc(db, 'stueckzahlAnpassungen', d.id)))
     );
-    await updateDoc(doc(db, 'wegstreckeAnpassungen', id), payload);
+    await updateDoc(doc(db, 'stueckzahlAnpassungen', id), payload);
     return id;
   }
-  const ref = await addDoc(collection(db, 'wegstreckeAnpassungen'), { ...payload, erstelltAm: ts });
+  const ref = await addDoc(collection(db, 'stueckzahlAnpassungen'), { ...payload, erstelltAm: ts });
   return ref.id;
 }
 
-export async function loescheWegstreckeAnpassung(id: string): Promise<void> {
-  await deleteDoc(doc(db, 'wegstreckeAnpassungen', id));
+export async function loescheStueckzahlAnpassung(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'stueckzahlAnpassungen', id));
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

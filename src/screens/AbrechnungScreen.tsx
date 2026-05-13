@@ -21,7 +21,7 @@ import {
   aktualisiereMitarbeiter,
   aktualisiereTeilgebiet,
   loescheAustraegerwechsel,
-  loescheWegstreckeAnpassung,
+  loescheStueckzahlAnpassung,
   entferneAusAbmeldungenSnapshot,
   ladeFahrten,
 } from '../lib/db';
@@ -38,7 +38,7 @@ export default function AbrechnungScreen() {
 }
 
 function AbrechnungInhalt() {
-  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, austraegerwechsel, wegstreckeAnpassungen } = useApp();
+  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, austraegerwechsel, stueckzahlAnpassungen } = useApp();
   const [selectedPeriodeId, setSelectedPeriodeId] = useState('');
   const [ergebnisse, setErgebnisse] = useState<MitarbeiterAbrechnung[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -288,8 +288,8 @@ function AbrechnungInhalt() {
       if (austraegerwechsel.length > 0) {
         setZeigeWechselDialog(true);
       }
-      // Vorgemerkte Wegstrecken-Anpassungen ebenfalls anbieten.
-      if (wegstreckeAnpassungen.length > 0) {
+      // Vorgemerkte Stückzahl-Anpassungen ebenfalls anbieten.
+      if (stueckzahlAnpassungen.length > 0) {
         setZeigeAnpassungDialog(true);
       }
     } catch (e: any) {
@@ -1073,8 +1073,8 @@ function AbrechnungInhalt() {
       )}
 
       {zeigeAnpassungDialog && (
-        <WegstreckeAnpassungDialog
-          anpassungen={wegstreckeAnpassungen}
+        <StueckzahlAnpassungDialog
+          anpassungen={stueckzahlAnpassungen}
           teilgebiete={teilgebiete}
           onClose={() => setZeigeAnpassungDialog(false)}
         />
@@ -1213,14 +1213,14 @@ function AustraegerwechselDialog({
   );
 }
 
-// ---- Modal: Wegstrecken-Anpassung-Bestätigung -------------
+// ---- Modal: Stückzahl-Anpassung-Bestätigung ---------------
 
-function WegstreckeAnpassungDialog({
+function StueckzahlAnpassungDialog({
   anpassungen,
   teilgebiete,
   onClose,
 }: {
-  anpassungen: import('../types').WegstreckeAnpassung[];
+  anpassungen: import('../types').StueckzahlAnpassung[];
   teilgebiete: import('../types').Teilgebiet[];
   onClose: () => void;
 }) {
@@ -1233,20 +1233,25 @@ function WegstreckeAnpassungDialog({
     return na.localeCompare(nb, 'de', { numeric: true });
   });
 
-  const fmtKm = (m: number) =>
-    m >= 1000 ? `${(m / 1000).toFixed(2).replace('.', ',')} km` : `${m} m`;
+  const fmtStk = (n: number) => `${n.toLocaleString('de-DE')} Stk`;
 
-  async function handleUebernehmen(w: import('../types').WegstreckeAnpassung) {
+  async function handleUebernehmen(w: import('../types').StueckzahlAnpassung) {
     const tg = tgMap.get(w.teilgebietId);
     if (!tg) {
       alert('Teilgebiet nicht mehr vorhanden — Eintrag wird verworfen.');
-      await loescheWegstreckeAnpassung(w.id);
+      await loescheStueckzahlAnpassung(w.id);
       return;
     }
     setBusyId(w.id);
     try {
-      await aktualisiereTeilgebiet(tg.id, { wegstreckeM: w.neueWegstreckeM });
-      await loescheWegstreckeAnpassung(w.id);
+      // Manueller Override-Flag mitschreiben, damit die automatische
+      // Berechnung aus der Straßenliste den neuen Wert nicht wieder
+      // überschreibt.
+      await aktualisiereTeilgebiet(tg.id, {
+        stueckzahl: w.neueStueckzahl,
+        stueckzahlManuell: true,
+      });
+      await loescheStueckzahlAnpassung(w.id);
     } catch (e: any) {
       alert('Fehler beim Übernehmen: ' + (e.message ?? e));
     } finally {
@@ -1262,12 +1267,12 @@ function WegstreckeAnpassungDialog({
       <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
         <div className="px-5 py-3 border-b border-gray-200">
           <h3 className="text-base font-semibold text-gray-900">
-            Vorbereitete Wegstrecken-Anpassungen ({offen.length})
+            Vorbereitete Stückzahl-Anpassungen ({offen.length})
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Bitte einzeln bestätigen: der neue Wert wird als Wegstrecke
-            (Laufweg) des Teilgebiets eingetragen, der Eintrag verschwindet
-            anschließend aus der Vorbereitungsliste.
+            Bitte einzeln bestätigen: der neue Wert wird als Stückzahl
+            des Teilgebiets eingetragen (mit manuellem Override-Flag), der
+            Eintrag verschwindet anschließend aus der Vorbereitungsliste.
           </p>
         </div>
         <div className="overflow-y-auto flex-1">
@@ -1296,10 +1301,10 @@ function WegstreckeAnpassungDialog({
                         {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
                       </td>
                       <td className="px-3 py-2 text-right text-gray-700 font-mono text-xs">
-                        {tg ? fmtKm(tg.wegstreckeM) : '—'}
+                        {tg ? fmtStk(tg.stueckzahl) : '—'}
                       </td>
                       <td className="px-3 py-2 text-right text-gray-900 font-mono text-xs font-semibold">
-                        {fmtKm(w.neueWegstreckeM)}
+                        {fmtStk(w.neueStueckzahl)}
                       </td>
                       <td className="px-3 py-2 text-xs text-gray-600">
                         {w.bemerkung || <span className="text-gray-300">—</span>}
@@ -1317,7 +1322,7 @@ function WegstreckeAnpassungDialog({
                           type="button"
                           onClick={async () => {
                             if (!confirm('Diese vorbereitete Anpassung verwerfen?')) return;
-                            await loescheWegstreckeAnpassung(w.id);
+                            await loescheStueckzahlAnpassung(w.id);
                           }}
                           className="text-xs text-red-500 hover:text-red-700"
                           title="Anpassung verwerfen"
