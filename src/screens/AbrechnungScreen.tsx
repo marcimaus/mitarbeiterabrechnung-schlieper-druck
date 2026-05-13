@@ -21,6 +21,7 @@ import {
   aktualisiereMitarbeiter,
   aktualisiereTeilgebiet,
   loescheAustraegerwechsel,
+  loescheWegstreckeAnpassung,
   entferneAusAbmeldungenSnapshot,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
@@ -35,7 +36,7 @@ export default function AbrechnungScreen() {
 }
 
 function AbrechnungInhalt() {
-  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, austraegerwechsel } = useApp();
+  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, austraegerwechsel, wegstreckeAnpassungen } = useApp();
   const [selectedPeriodeId, setSelectedPeriodeId] = useState('');
   const [ergebnisse, setErgebnisse] = useState<MitarbeiterAbrechnung[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -45,6 +46,7 @@ function AbrechnungInhalt() {
   const [abschliessenBestaetigt, setAbschliessenBestaetigt] = useState(false);
   const [monatswechselBestaetigt, setMonatswechselBestaetigt] = useState(false);
   const [zeigeWechselDialog, setZeigeWechselDialog] = useState(false);
+  const [zeigeAnpassungDialog, setZeigeAnpassungDialog] = useState(false);
   const [suchbegriff, setSuchbegriff] = useState('');
 
   const sortedPerioden = [...abrechnungsperioden].sort((a, b) =>
@@ -263,6 +265,10 @@ function AbrechnungInhalt() {
       // Vorgemerkte Austrägerwechsel zur Einzel-Bestätigung anbieten.
       if (austraegerwechsel.length > 0) {
         setZeigeWechselDialog(true);
+      }
+      // Vorgemerkte Wegstrecken-Anpassungen ebenfalls anbieten.
+      if (wegstreckeAnpassungen.length > 0) {
+        setZeigeAnpassungDialog(true);
       }
     } catch (e: any) {
       alert('Fehler beim Monatswechsel: ' + (e.message ?? e));
@@ -974,6 +980,14 @@ function AbrechnungInhalt() {
           onClose={() => setZeigeWechselDialog(false)}
         />
       )}
+
+      {zeigeAnpassungDialog && (
+        <WegstreckeAnpassungDialog
+          anpassungen={wegstreckeAnpassungen}
+          teilgebiete={teilgebiete}
+          onClose={() => setZeigeAnpassungDialog(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1083,6 +1097,139 @@ function AustraegerwechselDialog({
                           }}
                           className="text-xs text-red-500 hover:text-red-700"
                           title="Wechsel verwerfen"
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-200 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700"
+          >
+            Schließen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Modal: Wegstrecken-Anpassung-Bestätigung -------------
+
+function WegstreckeAnpassungDialog({
+  anpassungen,
+  teilgebiete,
+  onClose,
+}: {
+  anpassungen: import('../types').WegstreckeAnpassung[];
+  teilgebiete: import('../types').Teilgebiet[];
+  onClose: () => void;
+}) {
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const offen = [...anpassungen].sort((a, b) => {
+    const na = tgMap.get(a.teilgebietId)?.name ?? '';
+    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
+    return na.localeCompare(nb, 'de', { numeric: true });
+  });
+
+  const fmtKm = (m: number) =>
+    m >= 1000 ? `${(m / 1000).toFixed(2).replace('.', ',')} km` : `${m} m`;
+
+  async function handleUebernehmen(w: import('../types').WegstreckeAnpassung) {
+    const tg = tgMap.get(w.teilgebietId);
+    if (!tg) {
+      alert('Teilgebiet nicht mehr vorhanden — Eintrag wird verworfen.');
+      await loescheWegstreckeAnpassung(w.id);
+      return;
+    }
+    setBusyId(w.id);
+    try {
+      await aktualisiereTeilgebiet(tg.id, { wegstreckeM: w.neueWegstreckeM });
+      await loescheWegstreckeAnpassung(w.id);
+    } catch (e: any) {
+      alert('Fehler beim Übernehmen: ' + (e.message ?? e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+        <div className="px-5 py-3 border-b border-gray-200">
+          <h3 className="text-base font-semibold text-gray-900">
+            Vorbereitete Wegstrecken-Anpassungen ({offen.length})
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Bitte einzeln bestätigen: der neue Wert wird als Wegstrecke
+            (Laufweg) des Teilgebiets eingetragen, der Eintrag verschwindet
+            anschließend aus der Vorbereitungsliste.
+          </p>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {offen.length === 0 ? (
+            <div className="px-5 py-10 text-center text-sm text-gray-500">
+              Keine offenen Anpassungen mehr.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
+                  <th className="px-3 py-2 text-right font-medium">Bisher</th>
+                  <th className="px-3 py-2 text-right font-medium">Neu</th>
+                  <th className="px-3 py-2 text-left font-medium">Bemerkung</th>
+                  <th className="px-3 py-2 text-right font-medium">Aktion</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {offen.map((w) => {
+                  const tg = tgMap.get(w.teilgebietId);
+                  return (
+                    <tr key={w.id} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 font-medium text-gray-900">
+                        {tg?.name ?? '— gelöscht —'}
+                        {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-700 font-mono text-xs">
+                        {tg ? fmtKm(tg.wegstreckeM) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-right text-gray-900 font-mono text-xs font-semibold">
+                        {fmtKm(w.neueWegstreckeM)}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-600">
+                        {w.bemerkung || <span className="text-gray-300">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => handleUebernehmen(w)}
+                          disabled={busyId === w.id}
+                          className="text-xs bg-green-600 text-white px-2.5 py-1 rounded hover:bg-green-700 disabled:opacity-50 mr-1.5"
+                        >
+                          {busyId === w.id ? '…' : '✓ Übernehmen'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!confirm('Diese vorbereitete Anpassung verwerfen?')) return;
+                            await loescheWegstreckeAnpassung(w.id);
+                          }}
+                          className="text-xs text-red-500 hover:text-red-700"
+                          title="Anpassung verwerfen"
                         >
                           ✕
                         </button>

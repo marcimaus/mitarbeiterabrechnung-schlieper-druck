@@ -374,6 +374,23 @@ export interface Austraegerwechsel {
   aktualisiertAm: number;
 }
 
+// ---- Wegstrecken-Anpassung vorbereiten ---------------------
+//
+// Vorgemerkte Änderung der Wegstrecke (Laufweg der Austräger) pro
+// Teilgebiet. Wird beim nächsten Monatswechsel zur Einzel-Bestätigung
+// angeboten; nach Übernahme wird tg.wegstreckeM aktualisiert und der
+// Eintrag gelöscht. Upsert auf teilgebietId.
+
+export interface WegstreckeAnpassung {
+  id: string;
+  teilgebietId: string;
+  neueWegstreckeM: number;
+  bemerkung?: string;
+  erstelltVon?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
 // ---- Einsatz (wer trägt welches Gebiet aus) ----------------
 
 export type EinsatzTyp = 'standard' | 'springer' | 'ausfall' | 'ungeklärt';

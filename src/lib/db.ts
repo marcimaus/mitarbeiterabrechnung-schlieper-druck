@@ -38,6 +38,7 @@ import type {
   AuslieferungsMemo,
   LohnkontoBuchung,
   Austraegerwechsel,
+  WegstreckeAnpassung,
 } from '../types';
 import { berechneStapel } from './berechnung';
 import { normalisiereRollen } from '../types';
@@ -1213,6 +1214,50 @@ export async function setzeAustraegerwechsel(
 
 export async function loescheAustraegerwechsel(id: string): Promise<void> {
   await deleteDoc(doc(db, 'austraegerwechsel', id));
+}
+
+// ---- Wegstrecken-Anpassung (Vorbereitung) ------------------
+
+export async function ladeWegstreckeAnpassungen(): Promise<WegstreckeAnpassung[]> {
+  const snap = await getDocs(collection(db, 'wegstreckeAnpassungen'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as WegstreckeAnpassung));
+}
+
+export function wegstreckeAnpassungenListener(
+  cb: (list: WegstreckeAnpassung[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'wegstreckeAnpassungen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as WegstreckeAnpassung)));
+  });
+}
+
+/**
+ * Upsert pro Teilgebiet: jeder TG kann nur einen offenen
+ * Wegstrecken-Anpassungs-Eintrag haben.
+ */
+export async function setzeWegstreckeAnpassung(
+  data: Omit<WegstreckeAnpassung, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const existing = await getDocs(query(
+    collection(db, 'wegstreckeAnpassungen'),
+    where('teilgebietId', '==', data.teilgebietId)
+  ));
+  const payload = { ...stripUndef(data as Record<string, unknown>), aktualisiertAm: ts };
+  if (!existing.empty) {
+    const id = existing.docs[0].id;
+    await Promise.all(
+      existing.docs.slice(1).map((d) => deleteDoc(doc(db, 'wegstreckeAnpassungen', d.id)))
+    );
+    await updateDoc(doc(db, 'wegstreckeAnpassungen', id), payload);
+    return id;
+  }
+  const ref = await addDoc(collection(db, 'wegstreckeAnpassungen'), { ...payload, erstelltAm: ts });
+  return ref.id;
+}
+
+export async function loescheWegstreckeAnpassung(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'wegstreckeAnpassungen', id));
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

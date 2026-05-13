@@ -11,8 +11,8 @@ import {
   formatierDauer,
   korrigiereSession,
 } from '../lib/zeiterfassung';
-import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit } from '../lib/db';
-import { MONATSNAMEN } from '../lib/kalender';
+import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit, ladeEinsaetze } from '../lib/db';
+import { MONATSNAMEN, donnerstagDerKW, kwLabel } from '../lib/kalender';
 import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
 import { istEinsatzbereit } from '../utils';
@@ -30,8 +30,19 @@ export default function ZeitübersichtScreen() {
   );
 }
 
+interface RestmengeMeldung {
+  einsatzId: string;
+  teilgebietId: string;
+  ausgabeId: string;
+  kw: number;
+  jahr: number;
+  mitarbeiterId: string;
+  restmenge: number;
+  eingereichtAm?: number;
+}
+
 function ZeitübersichtInhalt() {
-  const { mitarbeiter, parameter, adminName, userRole, mitarbeiterId } = useApp();
+  const { mitarbeiter, parameter, adminName, userRole, mitarbeiterId, teilgebiete } = useApp();
   const isAdmin = userRole === 'admin';
   const istMitarbeiter = userRole === 'mitarbeiter';
   const heute = new Date();
@@ -49,6 +60,7 @@ function ZeitübersichtInhalt() {
   const [showNeueZeit, setShowNeueZeit] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
+  const [restmengen, setRestmengen] = useState<RestmengeMeldung[]>([]);
 
   // Ausgaben einmalig laden (für Ausgabe-Auswahl bei Vorarbeit)
   useEffect(() => {
@@ -61,6 +73,52 @@ function ZeitübersichtInhalt() {
       })
       .catch((err) => console.error('Fehler beim Laden der Ausgaben:', err));
   }, []);
+
+  // Restmengen-Meldungen für den gewählten Monat/Jahr laden.
+  // Quellen: Einsätze aller Ausgaben, deren Erscheinungstag (Donnerstag der KW)
+  // in den gewählten Monat/Jahr fällt, mit restmenge > 0 und mitarbeiterId gesetzt.
+  useEffect(() => {
+    if (ausgaben.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const relevante = ausgaben.filter((a) => {
+        const d = donnerstagDerKW(a.kw, a.jahr);
+        return d.getUTCFullYear() === jahr && d.getUTCMonth() + 1 === monat;
+      });
+      if (relevante.length === 0) {
+        if (!cancelled) setRestmengen([]);
+        return;
+      }
+      try {
+        const listen = await Promise.all(relevante.map((a) => ladeEinsaetze(a.id)));
+        if (cancelled) return;
+        const result: RestmengeMeldung[] = [];
+        for (let i = 0; i < relevante.length; i++) {
+          const a = relevante[i];
+          for (const e of listen[i]) {
+            if (e.restmenge && e.restmenge > 0 && e.mitarbeiterId) {
+              result.push({
+                einsatzId: e.id,
+                teilgebietId: e.teilgebietId,
+                ausgabeId: a.id,
+                kw: a.kw,
+                jahr: a.jahr,
+                mitarbeiterId: e.mitarbeiterId,
+                restmenge: e.restmenge,
+                eingereichtAm: e.meldungEingereichtAm,
+              });
+            }
+          }
+        }
+        setRestmengen(result);
+      } catch (err) {
+        console.error('Fehler beim Laden der Restmengen:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ausgaben, jahr, monat, reloadKey]);
 
   // Suche / Filter
   const [suchText, setSuchText] = useState('');
@@ -291,6 +349,14 @@ function ZeitübersichtInhalt() {
           arr.push(s);
           zeitenJeMa.set(s.mitarbeiterId, arr);
         }
+        // Restmengen pro MA aggregieren (aus Selbstmeldung / QR-Code).
+        const restmengeJeMa = new Map<string, { summe: number; count: number }>();
+        for (const r of restmengen) {
+          const cur = restmengeJeMa.get(r.mitarbeiterId) ?? { summe: 0, count: 0 };
+          cur.summe += r.restmenge;
+          cur.count += 1;
+          restmengeJeMa.set(r.mitarbeiterId, cur);
+        }
         // MA-Liste auf Such-/Rollen-Filter anwenden
         let liste = suchKandidaten;
         if (filterZeiten === 'mit') {
@@ -355,6 +421,7 @@ function ZeitübersichtInhalt() {
                     const minutenSum = minutenJeMa.get(m.id) ?? 0;
                     const sessions = zeitenJeMa.get(m.id) ?? [];
                     const istLeer = minutenSum === 0;
+                    const rest = restmengeJeMa.get(m.id);
                     return (
                       <li key={m.id}>
                         <button
@@ -372,19 +439,34 @@ function ZeitübersichtInhalt() {
                               {m.rollen.map((r) => ROLLEN_LABELS[r]).join(', ') || 'ohne Rolle'}
                             </div>
                           </div>
-                          <div className="text-right shrink-0">
-                            {istLeer ? (
-                              <span className="text-xs text-gray-400 italic">keine Zeiten</span>
-                            ) : (
-                              <>
-                                <div className="text-sm font-semibold text-gray-800">
-                                  {formatierDauer(minutenSum)}
+                          <div className="text-right shrink-0 flex items-start gap-4">
+                            {rest && rest.summe > 0 && (
+                              <div
+                                className="text-right"
+                                title={`Σ Restmenge (von Austrägern via QR-Code gemeldet) — ${rest.count} Meldung${rest.count === 1 ? '' : 'en'}`}
+                              >
+                                <div className="text-xs font-semibold text-amber-700 whitespace-nowrap">
+                                  📦 {rest.summe.toLocaleString('de-DE')}
                                 </div>
-                                <div className="text-xs text-gray-500">
-                                  {sessions.length} {sessions.length === 1 ? 'Session' : 'Sessions'}
+                                <div className="text-[10px] text-amber-600">
+                                  Restmenge ({rest.count})
                                 </div>
-                              </>
+                              </div>
                             )}
+                            <div>
+                              {istLeer ? (
+                                <span className="text-xs text-gray-400 italic">keine Zeiten</span>
+                              ) : (
+                                <>
+                                  <div className="text-sm font-semibold text-gray-800">
+                                    {formatierDauer(minutenSum)}
+                                  </div>
+                                  <div className="text-xs text-gray-500">
+                                    {sessions.length} {sessions.length === 1 ? 'Session' : 'Sessions'}
+                                  </div>
+                                </>
+                              )}
+                            </div>
                           </div>
                         </button>
                       </li>
@@ -591,6 +673,12 @@ function ZeitübersichtInhalt() {
             })()}
           </div>
 
+          {/* Restmengen (vom Austräger via QR-Code gemeldete nicht ausgetragene Stücke) */}
+          <RestmengenAustraegerÜbersicht
+            meldungen={restmengen.filter((r) => r.mitarbeiterId === selectedMaId)}
+            teilgebiete={teilgebiete}
+          />
+
           {/* Fahrten (read-only — Erfassung über Fahrtkosten-Screen) */}
           <FahrtenÜbersicht fahrten={fahrten} fahrtSatz={fahrtSatz} />
         </>
@@ -651,6 +739,87 @@ function SummaryCard({ label, value, sub }: { label: string; value: string; sub?
       <div className="text-xs text-gray-500 mb-1">{label}</div>
       <div className="font-bold text-gray-900">{value}</div>
       {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+// ---- Restmengen-Übersicht (vom Austräger gemeldet) ---------
+
+function RestmengenAustraegerÜbersicht({
+  meldungen,
+  teilgebiete,
+}: {
+  meldungen: RestmengeMeldung[];
+  teilgebiete: import('../types').Teilgebiet[];
+}) {
+  if (meldungen.length === 0) return null;
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const summe = meldungen.reduce((s, m) => s + m.restmenge, 0);
+  const sortiert = [...meldungen].sort((a, b) =>
+    b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
+  );
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+      <div className="px-4 py-3 border-b border-gray-200 bg-amber-50 flex items-center gap-2">
+        <span className="text-amber-700">📦</span>
+        <span className="font-medium text-sm text-amber-900">
+          Restmengen (nicht ausgetragen) — vom Austräger via QR-Code gemeldet
+        </span>
+        <span className="ml-auto text-xs text-amber-700">
+          Σ {summe.toLocaleString('de-DE')} Stk in {meldungen.length} Meldung
+          {meldungen.length === 1 ? '' : 'en'}
+        </span>
+      </div>
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 border-b border-gray-100">
+          <tr>
+            <th className="text-left px-4 py-2 font-medium text-gray-600">KW/Jahr</th>
+            <th className="text-left px-4 py-2 font-medium text-gray-600">Teilgebiet</th>
+            <th className="text-right px-4 py-2 font-medium text-gray-600">Restmenge</th>
+            <th className="text-right px-4 py-2 font-medium text-gray-600">Stückzahl TG</th>
+            <th className="text-right px-4 py-2 font-medium text-gray-600">Anteil</th>
+            <th className="text-right px-4 py-2 font-medium text-gray-600">Gemeldet am</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {sortiert.map((m) => {
+            const tg = tgMap.get(m.teilgebietId);
+            const anteil = tg && tg.stueckzahl > 0
+              ? (m.restmenge / tg.stueckzahl) * 100
+              : null;
+            return (
+              <tr key={m.einsatzId} className="hover:bg-gray-50">
+                <td className="px-4 py-2 text-gray-700 font-mono text-xs">
+                  {kwLabel(m.kw, m.jahr)}
+                </td>
+                <td className="px-4 py-2 text-gray-700">
+                  {tg?.name ?? <span className="text-gray-400 italic">— gelöscht —</span>}
+                  {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                </td>
+                <td className="px-4 py-2 text-right font-semibold text-amber-700 font-mono text-xs">
+                  {m.restmenge.toLocaleString('de-DE')}
+                </td>
+                <td className="px-4 py-2 text-right text-gray-500 font-mono text-xs">
+                  {tg ? tg.stueckzahl.toLocaleString('de-DE') : '—'}
+                </td>
+                <td className={`px-4 py-2 text-right font-mono text-xs ${
+                  anteil != null && anteil >= 5 ? 'text-red-700 font-semibold'
+                    : anteil != null && anteil >= 2 ? 'text-amber-700'
+                    : 'text-gray-500'
+                }`}>
+                  {anteil != null ? `${anteil.toFixed(1).replace('.', ',')} %` : '—'}
+                </td>
+                <td className="px-4 py-2 text-right text-xs text-gray-500">
+                  {m.eingereichtAm
+                    ? new Date(m.eingereichtAm).toLocaleDateString('de-DE')
+                    : '—'}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

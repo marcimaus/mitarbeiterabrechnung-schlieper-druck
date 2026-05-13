@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, useEffect, Fragment, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -9,6 +9,10 @@ import {
   aktualisiereMitarbeiter,
   setzeAustraegerwechsel,
   loescheAustraegerwechsel,
+  setzeWegstreckeAnpassung,
+  loescheWegstreckeAnpassung,
+  ladeAusgaben,
+  ladeEinsaetze,
 } from '../lib/db';
 import type {
   Teilgebiet,
@@ -17,6 +21,7 @@ import type {
   NichtBeliefen,
   Mitarbeiter,
   Austraegerwechsel,
+  WegstreckeAnpassung,
 } from '../types';
 
 // ---- Hilfsfunktionen -------------------------------------------------------
@@ -56,10 +61,10 @@ export default function TeilgebieteScreen() {
 }
 
 function TeilgebieteInhalt() {
-  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, austraegerwechsel, adminName } = useApp();
+  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, austraegerwechsel, wegstreckeAnpassungen, adminName } = useApp();
   // Abrechnung-Rolle: nur lesender Zugriff (keine Bearbeitung).
   const isAdmin = userRole === 'admin';
-  const [hauptview, setHauptview] = useState<'liste' | 'wechsel'>('liste');
+  const [hauptview, setHauptview] = useState<'liste' | 'wechsel' | 'anpassung'>('liste');
 
   // Zeitwert (Stunden) aus Wegstrecke + Stückzahl
   const zeitwertStunden = (tg: Teilgebiet): number => {
@@ -211,6 +216,22 @@ function TeilgebieteInhalt() {
             </span>
           )}
         </button>
+        <button
+          type="button"
+          onClick={() => setHauptview('anpassung')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            hauptview === 'anpassung'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Teilgebietsanpassung vorbereiten
+          {wegstreckeAnpassungen.length > 0 && (
+            <span className="ml-1.5 bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded-full">
+              {wegstreckeAnpassungen.length}
+            </span>
+          )}
+        </button>
       </div>
 
       {hauptview === 'wechsel' && (
@@ -219,6 +240,16 @@ function TeilgebieteInhalt() {
           mitarbeiter={mitarbeiter}
           austraegerwechsel={austraegerwechsel}
           adminName={adminName}
+        />
+      )}
+
+      {hauptview === 'anpassung' && (
+        <TeilgebietsanpassungReiter
+          teilgebiete={teilgebiete}
+          mitarbeiter={mitarbeiter}
+          wegstreckeAnpassungen={wegstreckeAnpassungen}
+          adminName={adminName}
+          isAdmin={isAdmin}
         />
       )}
 
@@ -1972,6 +2003,471 @@ function AustraegerwechselReiter({
                       </button>
                     </td>
                   </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Reiter: Teilgebietsanpassung (Wegstrecke) vorbereiten
+// =====================================================================
+
+function TeilgebietsanpassungReiter({
+  teilgebiete,
+  mitarbeiter,
+  wegstreckeAnpassungen,
+  adminName,
+  isAdmin,
+}: {
+  teilgebiete: Teilgebiet[];
+  mitarbeiter: Mitarbeiter[];
+  wegstreckeAnpassungen: WegstreckeAnpassung[];
+  adminName: string;
+  isAdmin: boolean;
+}) {
+  const [tgId, setTgId] = useState('');
+  const [neueStrecke, setNeueStrecke] = useState('');
+  const [bemerkung, setBemerkung] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const aktiveTg = [...teilgebiete]
+    .filter((t) => t.isActive && !t.istAuslagestelle)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+
+  const aktuellesTg = tgId ? tgMap.get(tgId) : undefined;
+
+  function reset() {
+    setTgId('');
+    setNeueStrecke('');
+    setBemerkung('');
+    setError('');
+  }
+
+  async function handleSpeichern() {
+    setError('');
+    if (!tgId) {
+      setError('Bitte ein Teilgebiet wählen.');
+      return;
+    }
+    const n = parseInt(neueStrecke.trim(), 10);
+    if (!Number.isFinite(n) || n < 0) {
+      setError('Bitte eine gültige Wegstrecke in Metern (≥ 0) angeben.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await setzeWegstreckeAnpassung({
+        teilgebietId: tgId,
+        neueWegstreckeM: n,
+        bemerkung: bemerkung.trim() || undefined,
+        erstelltVon: adminName || undefined,
+      });
+      reset();
+    } catch (e) {
+      console.error(e);
+      setError('Fehler beim Speichern.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleEntfernen(w: WegstreckeAnpassung) {
+    if (!confirm('Diese vorbereitete Anpassung wirklich entfernen?')) return;
+    await loescheWegstreckeAnpassung(w.id);
+  }
+
+  const sortiert = [...wegstreckeAnpassungen].sort((a, b) => {
+    const na = tgMap.get(a.teilgebietId)?.name ?? '';
+    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
+    return na.localeCompare(nb, 'de', { numeric: true });
+  });
+
+  const fmtKm = (m: number) =>
+    m >= 1000 ? `${(m / 1000).toFixed(2).replace('.', ',')} km` : `${m} m`;
+
+  return (
+    <div className="space-y-8">
+      <div className="text-sm text-gray-600">
+        Liste vorbereiteter Wegstrecken-Anpassungen (Laufweg der Austräger) pro
+        Teilgebiet. Beim Klick auf „Monatswechsel" in der Abrechnung werden die
+        Vorschläge zur Einzel-Bestätigung angeboten — der neue Wert wird dann
+        als Wegstrecke des Teilgebiets eingetragen, der Eintrag verschwindet
+        aus dieser Liste.
+      </div>
+
+      {/* Eingabe */}
+      {isAdmin && (
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-800">Neue Anpassung vormerken</h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Teilgebiet *</label>
+              <select
+                value={tgId}
+                onChange={(e) => setTgId(e.target.value)}
+                className={inputClass}
+              >
+                <option value="">— Teilgebiet wählen —</option>
+                {aktiveTg.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} {t.plz && `(${t.plz})`}
+                  </option>
+                ))}
+              </select>
+              {aktuellesTg && (
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Bisherige Wegstrecke: <strong>{fmtKm(aktuellesTg.wegstreckeM)}</strong>
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">
+                Neue Wegstrecke (in m) *
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={neueStrecke}
+                onChange={(e) => setNeueStrecke(e.target.value)}
+                placeholder="z. B. 4200"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">Bemerkung</label>
+              <input
+                type="text"
+                value={bemerkung}
+                onChange={(e) => setBemerkung(e.target.value)}
+                placeholder="optional: Grund für die Anpassung"
+                className={inputClass}
+              />
+            </div>
+          </div>
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleSpeichern}
+              disabled={saving}
+              className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? '…' : 'Anpassung vormerken'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Liste */}
+      {sortiert.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 bg-white py-10 text-center text-sm text-gray-500">
+          Keine vorbereiteten Wegstrecken-Anpassungen.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
+                <th className="px-3 py-2 text-right font-medium">Bisher</th>
+                <th className="px-3 py-2 text-right font-medium">Neu</th>
+                <th className="px-3 py-2 text-right font-medium">Δ</th>
+                <th className="px-3 py-2 text-left font-medium">Bemerkung</th>
+                <th className="px-3 py-2 text-right font-medium">Vorgemerkt</th>
+                <th className="px-3 py-2 text-right font-medium">Aktion</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sortiert.map((w) => {
+                const tg = tgMap.get(w.teilgebietId);
+                const alt = tg?.wegstreckeM ?? 0;
+                const neu = w.neueWegstreckeM;
+                const delta = neu - alt;
+                const erstellerName = w.erstelltVon || '—';
+                return (
+                  <tr key={w.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-2 font-medium text-gray-900">
+                      {tg?.name ?? '— gelöscht —'}
+                      {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-600 font-mono text-xs">
+                      {tg ? fmtKm(alt) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-900 font-mono text-xs font-semibold">
+                      {fmtKm(neu)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-mono text-xs ${
+                      delta > 0 ? 'text-amber-700' : delta < 0 ? 'text-green-700' : 'text-gray-400'
+                    }`}>
+                      {delta > 0 ? '+' : ''}{fmtKm(delta).replace(/^-/, '−')}
+                    </td>
+                    <td className="px-3 py-2 text-gray-600 text-xs">
+                      {w.bemerkung || <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="px-3 py-2 text-right text-xs text-gray-500">
+                      {new Date(w.erstelltAm).toLocaleDateString('de-DE')}<br />
+                      <span className="text-gray-400">{erstellerName}</span>
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => handleEntfernen(w)}
+                          className="text-xs text-red-500 hover:text-red-700"
+                          title="Anpassung verwerfen"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Restmengen-Auswertung */}
+      <RestmengenAuswertung
+        teilgebiete={teilgebiete}
+        maMap={maMap}
+      />
+    </div>
+  );
+}
+
+// =====================================================================
+// Restmengen-Auswertung pro Teilgebiet
+// =====================================================================
+
+interface RestmengeAggregat {
+  teilgebietId: string;
+  meldungen: {
+    einsatzId: string;
+    ausgabeId: string;
+    kw: number;
+    jahr: number;
+    mitarbeiterId: string | null;
+    restmenge: number;
+    eingereichtAm?: number;
+  }[];
+  summe: number;
+  letzteMeldungAm: number;
+}
+
+function RestmengenAuswertung({
+  teilgebiete,
+  maMap,
+}: {
+  teilgebiete: Teilgebiet[];
+  maMap: Map<string, Mitarbeiter>;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [aggregate, setAggregate] = useState<RestmengeAggregat[]>([]);
+  const [expandedTg, setExpandedTg] = useState<string | null>(null);
+  const [anzahlAusgaben, setAnzahlAusgaben] = useState(12);
+
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const allAusgaben = await ladeAusgaben();
+        const sorted = [...allAusgaben].sort((a, b) =>
+          b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
+        );
+        const window = sorted.slice(0, anzahlAusgaben);
+        const einsatzListen = await Promise.all(
+          window.map((a) => ladeEinsaetze(a.id))
+        );
+        if (cancelled) return;
+        const byTg = new Map<string, RestmengeAggregat>();
+        for (let i = 0; i < window.length; i++) {
+          const a = window[i];
+          for (const e of einsatzListen[i]) {
+            if (!e.restmenge || e.restmenge <= 0) continue;
+            let agg = byTg.get(e.teilgebietId);
+            if (!agg) {
+              agg = {
+                teilgebietId: e.teilgebietId,
+                meldungen: [],
+                summe: 0,
+                letzteMeldungAm: 0,
+              };
+              byTg.set(e.teilgebietId, agg);
+            }
+            agg.meldungen.push({
+              einsatzId: e.id,
+              ausgabeId: a.id,
+              kw: a.kw,
+              jahr: a.jahr,
+              mitarbeiterId: e.mitarbeiterId,
+              restmenge: e.restmenge,
+              eingereichtAm: e.meldungEingereichtAm,
+            });
+            agg.summe += e.restmenge;
+            if ((e.meldungEingereichtAm ?? 0) > agg.letzteMeldungAm) {
+              agg.letzteMeldungAm = e.meldungEingereichtAm ?? 0;
+            }
+          }
+        }
+        const list = [...byTg.values()].sort((a, b) => b.summe - a.summe);
+        setAggregate(list);
+      } catch (err) {
+        console.error('Fehler beim Laden Restmengen:', err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [anzahlAusgaben]);
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-800">
+            Restmengen je Teilgebiet (von Austrägern gemeldet)
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Nicht ausgetragene Stücke, gemeldet via Selbstmeldung (QR-Code) oder Lieferschein.
+            Sortiert nach Summe — Gebiete mit hohen Restmengen zuerst.
+          </p>
+        </div>
+        <label className="text-xs text-gray-600 flex items-center gap-2">
+          Zeitraum:
+          <select
+            value={anzahlAusgaben}
+            onChange={(e) => setAnzahlAusgaben(parseInt(e.target.value, 10))}
+            className="border border-gray-300 rounded px-2 py-1 text-xs"
+          >
+            <option value={4}>letzte 4 Ausgaben</option>
+            <option value={8}>letzte 8 Ausgaben</option>
+            <option value={12}>letzte 12 Ausgaben</option>
+            <option value={26}>letzte 26 Ausgaben</option>
+            <option value={52}>letzte 52 Ausgaben</option>
+          </select>
+        </label>
+      </div>
+
+      {loading ? (
+        <div className="rounded-lg border border-gray-200 bg-white py-8 text-center text-sm text-gray-400">
+          Lade Restmengen…
+        </div>
+      ) : aggregate.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 bg-white py-8 text-center text-sm text-gray-500">
+          Keine gemeldeten Restmengen im gewählten Zeitraum.
+        </div>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
+                <th className="px-3 py-2 text-right font-medium">Σ Restmenge</th>
+                <th className="px-3 py-2 text-right font-medium" title="Anzahl der Meldungen mit Restmenge > 0">Meldungen</th>
+                <th className="px-3 py-2 text-right font-medium">Ø je Meldung</th>
+                <th className="px-3 py-2 text-right font-medium">Stückzahl TG</th>
+                <th className="px-3 py-2 text-right font-medium">Σ in %</th>
+                <th className="px-3 py-2 text-right font-medium">Zuletzt</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {aggregate.map((agg) => {
+                const tg = tgMap.get(agg.teilgebietId);
+                const tgStk = tg?.stueckzahl ?? 0;
+                const prozent = tgStk > 0 ? (agg.summe / (tgStk * agg.meldungen.length)) * 100 : 0;
+                const open = expandedTg === agg.teilgebietId;
+                return (
+                  <Fragment key={agg.teilgebietId}>
+                    <tr
+                      className="hover:bg-gray-50 cursor-pointer"
+                      onClick={() => setExpandedTg(open ? null : agg.teilgebietId)}
+                    >
+                      <td className="px-3 py-2 font-medium text-gray-900">
+                        <span className="inline-block w-3 text-gray-400">{open ? '▾' : '▸'}</span>{' '}
+                        {tg?.name ?? '— gelöscht —'}
+                        {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-xs font-semibold text-amber-700">
+                        {agg.summe.toLocaleString('de-DE')}
+                      </td>
+                      <td className="px-3 py-2 text-right text-xs text-gray-600">{agg.meldungen.length}</td>
+                      <td className="px-3 py-2 text-right font-mono text-xs text-gray-600">
+                        {Math.round(agg.summe / agg.meldungen.length).toLocaleString('de-DE')}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-xs text-gray-500">
+                        {tgStk.toLocaleString('de-DE')}
+                      </td>
+                      <td className={`px-3 py-2 text-right font-mono text-xs ${
+                        prozent >= 5 ? 'text-red-700 font-semibold'
+                          : prozent >= 2 ? 'text-amber-700'
+                          : 'text-gray-500'
+                      }`}>
+                        {prozent.toFixed(1).replace('.', ',')} %
+                      </td>
+                      <td className="px-3 py-2 text-right text-xs text-gray-500">
+                        {agg.letzteMeldungAm
+                          ? new Date(agg.letzteMeldungAm).toLocaleDateString('de-DE')
+                          : '—'}
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="bg-gray-50/50">
+                        <td colSpan={7} className="px-3 py-3">
+                          <table className="w-full text-xs">
+                            <thead className="text-gray-500">
+                              <tr>
+                                <th className="text-left py-1 font-medium">KW/Jahr</th>
+                                <th className="text-left py-1 font-medium">Austräger</th>
+                                <th className="text-right py-1 font-medium">Restmenge</th>
+                                <th className="text-right py-1 font-medium">Gemeldet am</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[...agg.meldungen]
+                                .sort((a, b) =>
+                                  b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
+                                )
+                                .map((m) => {
+                                  const ma = m.mitarbeiterId ? maMap.get(m.mitarbeiterId) : undefined;
+                                  return (
+                                    <tr key={m.einsatzId} className="border-t border-gray-200">
+                                      <td className="py-1 font-mono">KW {m.kw}/{m.jahr}</td>
+                                      <td className="py-1">
+                                        {ma ? `${ma.name} (${ma.nummer})` : <span className="text-gray-400">—</span>}
+                                      </td>
+                                      <td className="py-1 text-right font-mono font-semibold text-amber-700">
+                                        {m.restmenge.toLocaleString('de-DE')}
+                                      </td>
+                                      <td className="py-1 text-right text-gray-500">
+                                        {m.eingereichtAm
+                                          ? new Date(m.eingereichtAm).toLocaleDateString('de-DE')
+                                          : '—'}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
