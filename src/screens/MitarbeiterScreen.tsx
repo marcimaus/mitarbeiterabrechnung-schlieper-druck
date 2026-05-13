@@ -751,6 +751,7 @@ function MitarbeiterForm({
         // Cast: Felder, die nicht im DEFAULT_FORM-Typ sind, werden über (form as any) gelesen
         ...(initial.fahrtkostenerstattung ? { fahrtkostenerstattung: true } : {}),
         ...(initial.fahrkostenEurProKm !== undefined ? { fahrkostenEurProKm: initial.fahrkostenEurProKm } : {}),
+        ...(initial.istAbholer ? { istAbholer: true } : {}),
       } as typeof DEFAULT_FORM;
     }
     return { ...DEFAULT_FORM, adresse: { strasse: '', plz: '', ort: '' }, rollen: [] };
@@ -2049,6 +2050,26 @@ function MitarbeiterForm({
           />
         </FormField>
       )}
+
+      <FormField
+        label="Abholer"
+        hint="Markiert Austräger, die ihren Stapel Anzeigenblätter selbst im Werk abholen. Auf dem Lieferschein erscheint dann ein deutlicher Hinweis 📦 ‚Stapel bleibt im Werk — Abholung durch Austräger‘ — der Tour-Fahrer nimmt diesen Stapel NICHT mit."
+      >
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={(form as any).istAbholer ?? false}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              istAbholer: e.target.checked ? true : undefined,
+            } as any))}
+            className="w-4 h-4"
+          />
+          <span className="text-sm text-gray-700">
+            📦 Abholer — holt den Stapel selbst im Werk ab
+          </span>
+        </label>
+      </FormField>
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
 

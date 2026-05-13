@@ -504,6 +504,10 @@ function LieferscheinSeite({
   const boxBg = istSpringer ? '#fef2f2' : '#f9fafb';
   const boxBorder = istSpringer ? '#fca5a5' : '#d1d5db';
 
+  // „Abholer": Austräger holt den Stapel selbst im Werk ab — der Tour-Fahrer
+  // soll diesen Stapel NICHT mitnehmen.
+  const istAbholer = ma.istAbholer === true;
+
   // Prüfe ob es bereits Online-Meldungen gibt
   const mitMeldung = zeilen.filter((z) => z.einsatz?.meldungEingereichtAm).length;
 
@@ -512,6 +516,31 @@ function LieferscheinSeite({
       className="lieferschein-seite p-6 text-gray-900"
       style={{ fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px' }}
     >
+      {/* ---- Abholer-Banner (groß, oben) ---- */}
+      {istAbholer && (
+        <div
+          style={{
+            border: '3px solid #c2410c',
+            background: '#fff7ed',
+            color: '#9a3412',
+            borderRadius: '8px',
+            padding: '10px 14px',
+            marginBottom: '12px',
+            fontSize: '14px',
+            fontWeight: 800,
+            textAlign: 'center',
+            letterSpacing: '0.02em',
+          }}
+        >
+          📦 ABHOLUNG — STAPEL BLEIBT IM WERK
+          <div style={{ fontSize: '11px', fontWeight: 600, marginTop: '3px' }}>
+            Tour-Fahrer: diesen Stapel NICHT mitnehmen! Der Austräger holt den
+            Stapel Anzeigenblätter selbst ab — zur Abholung im Werk
+            bereitstellen.
+          </div>
+        </div>
+      )}
+
       {/* ---- Kopfzeile ---- */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
         <div style={{ flex: 1 }}>
@@ -581,7 +610,27 @@ function LieferscheinSeite({
             fontSize: '14px',
             marginBottom: '2px',
             color: istSpringer ? '#b91c1c' : '#111827',
-          }}>{ma.name}</div>
+          }}>
+            {ma.name}
+            {istAbholer && (
+              <span
+                style={{
+                  marginLeft: '6px',
+                  display: 'inline-block',
+                  padding: '1px 6px',
+                  borderRadius: '4px',
+                  background: '#c2410c',
+                  color: '#fff',
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  letterSpacing: '0.04em',
+                  verticalAlign: 'middle',
+                }}
+              >
+                📦 ABHOLER
+              </span>
+            )}
+          </div>
           {ma.adresse.strasse && (
             <div style={{ color: istSpringer ? '#b91c1c' : '#374151' }}>{ma.adresse.strasse}</div>
           )}

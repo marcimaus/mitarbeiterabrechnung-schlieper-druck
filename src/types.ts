@@ -78,6 +78,12 @@ export interface Mitarbeiter {
    * Admins und Abrechnung sehen die Maske unabhängig davon.
    */
   fahrtkostenerstattung?: boolean;
+  /**
+   * „Abholer": Austräger holt seinen Stapel Anzeigenblätter selbst im Werk
+   * ab. Auf Lieferscheinen wird das deutlich markiert, damit der Tour-Fahrer
+   * den Stapel NICHT mitnimmt — er bleibt zur Abholung im Werk liegen.
+   */
+  istAbholer?: boolean;
   fahrkostenEurProKm?: number;   // Überschreibt den globalen Kilomtersatz
   /** Wenn true: Mitarbeiter bekommt fixes Monatsgehalt statt variabler Abrechnung. */
   hatFestgehalt: boolean;
