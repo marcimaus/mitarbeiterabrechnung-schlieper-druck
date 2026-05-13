@@ -145,16 +145,21 @@ function MitarbeiterInhalt() {
       const ort = (m.adresse?.ort ?? '').toLowerCase();
       if (!plz.includes(q) && !ort.includes(q)) return false;
     }
-    if (filterRolle && !m.rollen.includes(filterRolle)) return false;
-    if (filterMinijob === 'ja' && !m.istMinijob) return false;
-    if (filterMinijob === 'nein' && m.istMinijob) return false;
-    if (filterSvFrei === 'ja' && !m.sozialversicherungsBefreit) return false;
-    if (filterSvFrei === 'nein' && m.sozialversicherungsBefreit) return false;
-    if (filterAnmeldung === 'offen' && !m.nochNichtAngemeldet) return false;
-    if (filterAnmeldung === 'angemeldet' && (m.nochNichtAngemeldet || m.abgemeldet)) return false;
-    if (filterAnmeldung === 'abgemeldet' && !m.abgemeldet) return false;
-    if (filterFahrtkosten === 'ja' && !m.fahrtkostenerstattung) return false;
-    if (filterFahrtkosten === 'nein' && m.fahrtkostenerstattung) return false;
+    // Bei „nur Interessenten" werden Rolle/Minijob/SV/Anmeldung/Fahrtkosten
+    // ausgeblendet und auch nicht angewendet — sie sind für Interessenten
+    // bedeutungslos und würden die Liste sonst leeren.
+    if (filterInteressent !== 'nur') {
+      if (filterRolle && !m.rollen.includes(filterRolle)) return false;
+      if (filterMinijob === 'ja' && !m.istMinijob) return false;
+      if (filterMinijob === 'nein' && m.istMinijob) return false;
+      if (filterSvFrei === 'ja' && !m.sozialversicherungsBefreit) return false;
+      if (filterSvFrei === 'nein' && m.sozialversicherungsBefreit) return false;
+      if (filterAnmeldung === 'offen' && !m.nochNichtAngemeldet) return false;
+      if (filterAnmeldung === 'angemeldet' && (m.nochNichtAngemeldet || m.abgemeldet)) return false;
+      if (filterAnmeldung === 'abgemeldet' && !m.abgemeldet) return false;
+      if (filterFahrtkosten === 'ja' && !m.fahrtkostenerstattung) return false;
+      if (filterFahrtkosten === 'nein' && m.fahrtkostenerstattung) return false;
+    }
     return true;
   });
 
@@ -220,57 +225,61 @@ function MitarbeiterInhalt() {
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-36"
           title="Filter auf Wohnort oder Postleitzahl des Mitarbeiters"
         />
-        <select
-          value={filterRolle}
-          onChange={(e) => setFilterRolle(e.target.value as Rolle | '')}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Alle Rollen</option>
-          {ALLE_ROLLEN.map((r) => (
-            <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
-          ))}
-        </select>
-        <select
-          value={filterMinijob}
-          onChange={(e) => setFilterMinijob(e.target.value as '' | 'ja' | 'nein')}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          title="Filter Minijob"
-        >
-          <option value="">Minijob: alle</option>
-          <option value="ja">nur Minijob</option>
-          <option value="nein">nur kein Minijob</option>
-        </select>
-        <select
-          value={filterSvFrei}
-          onChange={(e) => setFilterSvFrei(e.target.value as '' | 'ja' | 'nein')}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          title="Filter Befreiung von Sozialversicherung"
-        >
-          <option value="">SV-Befreiung: alle</option>
-          <option value="ja">nur SV-befreit</option>
-          <option value="nein">nur nicht SV-befreit</option>
-        </select>
-        <select
-          value={filterAnmeldung}
-          onChange={(e) => setFilterAnmeldung(e.target.value as '' | 'offen' | 'angemeldet' | 'abgemeldet')}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          title="Filter Anmeldung"
-        >
-          <option value="">Anmeldung: alle</option>
-          <option value="offen">⏳ noch nicht angemeldet</option>
-          <option value="angemeldet">✓ angemeldet</option>
-          <option value="abgemeldet">🚪 abgemeldet</option>
-        </select>
-        <select
-          value={filterFahrtkosten}
-          onChange={(e) => setFilterFahrtkosten(e.target.value as '' | 'ja' | 'nein')}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          title="Filter Fahrtkosten-Erstattung"
-        >
-          <option value="">Fahrtkosten: alle</option>
-          <option value="ja">🚗 nur erlaubt</option>
-          <option value="nein">nur nicht erlaubt</option>
-        </select>
+        {filterInteressent !== 'nur' && (
+          <>
+            <select
+              value={filterRolle}
+              onChange={(e) => setFilterRolle(e.target.value as Rolle | '')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Alle Rollen</option>
+              {ALLE_ROLLEN.map((r) => (
+                <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
+              ))}
+            </select>
+            <select
+              value={filterMinijob}
+              onChange={(e) => setFilterMinijob(e.target.value as '' | 'ja' | 'nein')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter Minijob"
+            >
+              <option value="">Minijob: alle</option>
+              <option value="ja">nur Minijob</option>
+              <option value="nein">nur kein Minijob</option>
+            </select>
+            <select
+              value={filterSvFrei}
+              onChange={(e) => setFilterSvFrei(e.target.value as '' | 'ja' | 'nein')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter Befreiung von Sozialversicherung"
+            >
+              <option value="">SV-Befreiung: alle</option>
+              <option value="ja">nur SV-befreit</option>
+              <option value="nein">nur nicht SV-befreit</option>
+            </select>
+            <select
+              value={filterAnmeldung}
+              onChange={(e) => setFilterAnmeldung(e.target.value as '' | 'offen' | 'angemeldet' | 'abgemeldet')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter Anmeldung"
+            >
+              <option value="">Anmeldung: alle</option>
+              <option value="offen">⏳ noch nicht angemeldet</option>
+              <option value="angemeldet">✓ angemeldet</option>
+              <option value="abgemeldet">🚪 abgemeldet</option>
+            </select>
+            <select
+              value={filterFahrtkosten}
+              onChange={(e) => setFilterFahrtkosten(e.target.value as '' | 'ja' | 'nein')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter Fahrtkosten-Erstattung"
+            >
+              <option value="">Fahrtkosten: alle</option>
+              <option value="ja">🚗 nur erlaubt</option>
+              <option value="nein">nur nicht erlaubt</option>
+            </select>
+          </>
+        )}
         <select
           value={filterInteressent}
           onChange={(e) => {
