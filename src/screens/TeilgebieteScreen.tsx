@@ -110,6 +110,19 @@ function TeilgebieteInhalt() {
         return false;
       }
     }
+    // Volltextsuche über Standardausträger (Name + MA-Nummer)
+    if (filterAustraegerSuche.trim()) {
+      const s = filterAustraegerSuche.toLowerCase();
+      if (!tg.standardAustraegerId) return false;
+      const ma = mitarbeiter.find((m) => m.id === tg.standardAustraegerId);
+      if (!ma) return false;
+      if (
+        !ma.name.toLowerCase().includes(s) &&
+        !ma.nummer.toLowerCase().includes(s)
+      ) {
+        return false;
+      }
+    }
     return true;
   });
 
@@ -236,11 +249,11 @@ function TeilgebieteInhalt() {
         <div className="flex items-center gap-1.5">
           <input
             type="text"
-            placeholder="MA-Name/-Nr filtern..."
+            placeholder="Standardausträger (Name/Nr)..."
             value={filterAustraegerSuche}
             onChange={(e) => setFilterAustraegerSuche(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-40"
-            title="Filtert die Austräger-Auswahl rechts auf Name oder Mitarbeiternummer"
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-44"
+            title="Volltextsuche: zeigt Teilgebiete, deren Standardausträger im Namen oder in der Mitarbeiternummer übereinstimmen"
           />
           <select
             value={filterAustraegerId}
