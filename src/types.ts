@@ -164,6 +164,14 @@ export interface Tour {
   id: string;
   name: string;
   farbe: string;          // CSS-Farbe, z.B. '#ef4444'
+  /**
+   * Regelmäßig gefahrene Strecke in ganzen Kilometern, wenn ein Fahrer
+   * diese Tour übernimmt (wöchentliche Auslieferungsfahrt). Wird in der
+   * Fahrtkosten-Erfassung als Vorschlag für die Strecke summiert, sobald
+   * der Nutzer Touren statt eines Ziels wählt. Nur Admin darf den Wert
+   * setzen.
+   */
+  streckeFahrkostenKm?: number;
   erstelltAm: number;
 }
 
@@ -481,7 +489,17 @@ export interface Fahrt {
   mitarbeiterId: string;
   datum: string;               // ISO-Date YYYY-MM-DD
   streckKm: number;
+  /**
+   * Frei eingegebenes Ziel — leer, wenn die Fahrt über `tourIds`
+   * dokumentiert wurde. Mindestens eines von beiden ist erforderlich.
+   */
   ziel: string;
+  /**
+   * Liste der gefahrenen Touren (z. B. wöchentliche Verteilung). Wenn
+   * gesetzt, wird die Default-Strecke aus den Tour-Daten summiert, kann
+   * aber im Form überschrieben werden (Umwege, Mehrfachfahrten).
+   */
+  tourIds?: string[];
   bemerkung?: string;
   abrechnungsperiodeId?: string;  // gesetzt wenn der Abrechnungsperiode zugeordnet
   erstelltAm: number;

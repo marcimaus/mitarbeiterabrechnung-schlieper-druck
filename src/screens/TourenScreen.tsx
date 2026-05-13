@@ -140,6 +140,13 @@ function TourenInhalt() {
                 )}
               </div>
 
+              {selectedTour.streckeFahrkostenKm != null && (
+                <div className="mb-4 rounded-lg bg-blue-50 border border-blue-200 px-3 py-2 text-sm text-blue-900">
+                  🚗 <span className="font-medium">Strecke (Fahrkosten):</span>{' '}
+                  {selectedTour.streckeFahrkostenKm} km regelmäßig pro Auslieferung
+                </div>
+              )}
+
               <h3 className="text-sm font-medium text-gray-600 mb-3">
                 Teilgebiete dieser Tour ({teilgebieteDerTour.length})
               </h3>
@@ -199,21 +206,35 @@ function TourForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
+  const { userRole } = useApp();
+  const isAdmin = userRole === 'admin';
   const [name, setName] = useState(initial?.name ?? '');
   const [farbe, setFarbe] = useState(initial?.farbe ?? '#3b82f6');
+  const [streckeKm, setStreckeKm] = useState<string>(
+    initial?.streckeFahrkostenKm != null ? String(initial.streckeFahrkostenKm) : ''
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!name.trim()) { setError('Name ist erforderlich.'); return; }
+    let streckeFahrkostenKm: number | undefined;
+    if (streckeKm.trim()) {
+      const n = parseInt(streckeKm.trim(), 10);
+      if (!Number.isFinite(n) || n < 0) {
+        setError('Strecke muss eine positive ganze Zahl sein.');
+        return;
+      }
+      streckeFahrkostenKm = n;
+    }
     setSaving(true);
     setError('');
     try {
       if (initial) {
-        await aktualisiereTour(initial.id, { name, farbe });
+        await aktualisiereTour(initial.id, { name, farbe, streckeFahrkostenKm });
       } else {
-        await erstelleTour({ name, farbe });
+        await erstelleTour({ name, farbe, streckeFahrkostenKm });
       }
       onSave();
     } catch (err) {
@@ -253,6 +274,30 @@ function TourForm({
             className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
           />
         </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Strecke (Fahrkosten) in km
+          {!isAdmin && (
+            <span className="ml-1 text-xs text-gray-400 font-normal">— nur Admin</span>
+          )}
+        </label>
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={streckeKm}
+          onChange={(e) => setStreckeKm(e.target.value)}
+          placeholder="z. B. 45"
+          readOnly={!isAdmin}
+          className={`w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            !isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''
+          }`}
+        />
+        <p className="text-xs text-gray-400 mt-1">
+          Regelmäßig gefahrene Strecke pro Tour. Wird in der Fahrtkosten-
+          Erfassung summiert, sobald der Fahrer Touren statt Ziel auswählt.
+        </p>
       </div>
 
       {error && <p className="text-red-600 text-sm">{error}</p>}

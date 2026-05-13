@@ -60,8 +60,20 @@ function FahrtenInhalt() {
 
   useEffect(() => { reload(); }, []);
 
+  // Set der MA-IDs mit Fahrtkosten-Erstattungs-Flag — für Admin/Abrechnung
+  // wird die Fahrtenliste darauf eingeschränkt. Im Mitarbeiter-Login ist
+  // die eigene Id implizit erlaubt (Selbst-Zugriff auf eigene Fahrten).
+  const fahrtkostenMaIds = new Set(
+    mitarbeiter.filter((m) => m.fahrtkostenerstattung).map((m) => m.id)
+  );
+
   const gefiltert = fahrten.filter((f) => {
     if (filterMaId && f.mitarbeiterId !== filterMaId) return false;
+    // Globaler Filter: nur Fahrten zu MA mit fahrtkostenerstattung —
+    // im Mitarbeiter-Login wird das durch den filterMaId-Vergleich oben
+    // bereits abgedeckt; für Admin/Abrechnung schneidet er Altdaten von
+    // MAs ab, denen das Flag inzwischen entzogen wurde.
+    if (!isMitarbeiter && !fahrtkostenMaIds.has(f.mitarbeiterId)) return false;
     if (filterPeriodeId === '__offen__' && f.abrechnungsperiodeId) return false;
     if (filterPeriodeId && filterPeriodeId !== '__offen__' && f.abrechnungsperiodeId !== filterPeriodeId) return false;
     return true;
@@ -151,10 +163,13 @@ function FahrtenInhalt() {
             onChange={(e) => setFilterMaId(e.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="">Alle Mitarbeiter</option>
-            {mitarbeiter.filter((m) => istEinsatzbereit(m)).map((m) => (
-              <option key={m.id} value={m.id}>{m.name}</option>
-            ))}
+            <option value="">Alle (Fahrtkosten-MA)</option>
+            {mitarbeiter
+              .filter((m) => istEinsatzbereit(m) && m.fahrtkostenerstattung)
+              .sort((a, b) => a.name.localeCompare(b.name, 'de'))
+              .map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
           </select>
         )}
         <select
@@ -525,27 +540,88 @@ function FahrtForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
+  const { touren } = useApp();
   const heute = new Date().toISOString().slice(0, 10);
   const [mitarbeiterId, setMitarbeiterId] = useState(initial?.mitarbeiterId ?? fixedMaId ?? '');
   const [datum, setDatum] = useState(initial?.datum ?? heute);
   const [streckKm, setStreckKm] = useState(initial?.streckKm ?? 0);
+  const [streckKmManuell, setStreckKmManuell] = useState(
+    initial != null
+      ? // Wenn bei Bearbeitung die gespeicherte Strecke != Summe der TourIds → manuell
+        (() => {
+          const ids = initial.tourIds ?? [];
+          const summe = touren
+            .filter((t) => ids.includes(t.id))
+            .reduce((s, t) => s + (t.streckeFahrkostenKm ?? 0), 0);
+          return summe !== initial.streckKm;
+        })()
+      : false
+  );
   const [ziel, setZiel] = useState(initial?.ziel ?? '');
+  const [tourIds, setTourIds] = useState<string[]>(initial?.tourIds ?? []);
+  // Modus „Ziel oder Touren": initial je nach vorhandenen Daten
+  const [modus, setModus] = useState<'ziel' | 'touren'>(
+    (initial?.tourIds && initial.tourIds.length > 0) ? 'touren' : 'ziel'
+  );
   const [bemerkung, setBemerkung] = useState(initial?.bemerkung ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // Auswahl der MAs für das Dropdown: nur einsatzbereit + fahrtkostenerstattung
+  const verfuegbareMaListe = mitarbeiter
+    .filter((m) => istEinsatzbereit(m) && m.fahrtkostenerstattung)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
+  // Summe der km aus den ausgewählten Touren
+  const tourKmSumme = touren
+    .filter((t) => tourIds.includes(t.id))
+    .reduce((s, t) => s + (t.streckeFahrkostenKm ?? 0), 0);
+
+  // Auto-Vorschlag: solange der User die Strecke nicht manuell überschrieben
+  // hat, übernimmt das Feld die Summe aus den gewählten Touren.
+  useEffect(() => {
+    if (modus === 'touren' && !streckKmManuell) {
+      setStreckKm(tourKmSumme);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tourKmSumme, modus, streckKmManuell]);
+
+  function toggleTour(id: string) {
+    setTourIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!mitarbeiterId) { setError('Bitte Mitarbeiter auswählen.'); return; }
-    if (!ziel.trim()) { setError('Bitte Ziel angeben.'); return; }
+    if (modus === 'ziel') {
+      if (!ziel.trim()) { setError('Bitte Ziel angeben.'); return; }
+    } else {
+      if (tourIds.length === 0) { setError('Bitte mindestens eine Tour wählen.'); return; }
+    }
     if (streckKm <= 0) { setError('Strecke muss größer 0 sein.'); return; }
     setSaving(true);
     setError('');
     try {
+      const effektivesZiel = modus === 'touren'
+        ? touren.filter((t) => tourIds.includes(t.id)).map((t) => t.name).join(', ')
+        : ziel.trim();
+      const effektiveTourIds = modus === 'touren' ? tourIds : undefined;
       if (initial) {
-        await aktualisiereFahrt(initial.id, { mitarbeiterId, datum, streckKm, ziel, bemerkung: bemerkung || undefined });
+        await aktualisiereFahrt(initial.id, {
+          mitarbeiterId, datum, streckKm,
+          ziel: effektivesZiel,
+          tourIds: effektiveTourIds,
+          bemerkung: bemerkung || undefined,
+        });
       } else {
-        await erstelleFahrt({ mitarbeiterId, datum, streckKm, ziel, bemerkung: bemerkung || undefined });
+        await erstelleFahrt({
+          mitarbeiterId, datum, streckKm,
+          ziel: effektivesZiel,
+          tourIds: effektiveTourIds,
+          bemerkung: bemerkung || undefined,
+        });
       }
       onSave();
     } catch (err) {
@@ -567,16 +643,94 @@ function FahrtForm({
             {mitarbeiter.find((m) => m.id === fixedMaId)?.name ?? fixedMaId}
           </div>
         ) : (
-          <select
-            value={mitarbeiterId}
-            onChange={(e) => setMitarbeiterId(e.target.value)}
-            className={inputClass}
+          <>
+            <select
+              value={mitarbeiterId}
+              onChange={(e) => setMitarbeiterId(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">— Mitarbeiter wählen —</option>
+              {verfuegbareMaListe.map((m) => (
+                <option key={m.id} value={m.id}>{m.name}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-gray-400 mt-1">
+              Nur Mitarbeiter mit gesetzter „Fahrtkostenerstattung" wählbar.
+            </p>
+          </>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Ziel der Fahrt *</label>
+        <div className="flex gap-2 mb-2">
+          <button
+            type="button"
+            onClick={() => setModus('ziel')}
+            className={`px-3 py-1.5 rounded-lg text-sm border ${
+              modus === 'ziel'
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+            }`}
           >
-            <option value="">— Mitarbeiter wählen —</option>
-            {mitarbeiter.map((m) => (
-              <option key={m.id} value={m.id}>{m.name}</option>
-            ))}
-          </select>
+            🏁 Freies Ziel
+          </button>
+          <button
+            type="button"
+            onClick={() => setModus('touren')}
+            className={`px-3 py-1.5 rounded-lg text-sm border ${
+              modus === 'touren'
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+            }`}
+          >
+            🗺 Tour(en) auswählen
+          </button>
+        </div>
+        {modus === 'ziel' ? (
+          <input
+            type="text"
+            value={ziel}
+            onChange={(e) => setZiel(e.target.value)}
+            placeholder="z.B. Lieferant GmbH, Hannover"
+            className={inputClass}
+          />
+        ) : (
+          <div className="border border-gray-200 rounded-lg p-3 space-y-1.5">
+            {touren.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">Keine Touren angelegt.</p>
+            ) : (
+              touren
+                .slice()
+                .sort((a, b) => a.name.localeCompare(b.name, 'de'))
+                .map((t) => (
+                  <label key={t.id} className="flex items-center gap-2 cursor-pointer text-sm">
+                    <input
+                      type="checkbox"
+                      checked={tourIds.includes(t.id)}
+                      onChange={() => toggleTour(t.id)}
+                      className="rounded"
+                    />
+                    <span
+                      className="inline-block w-3 h-3 rounded-full"
+                      style={{ backgroundColor: t.farbe }}
+                    />
+                    <span className="text-gray-800">{t.name}</span>
+                    <span className="ml-auto text-xs text-gray-500">
+                      {t.streckeFahrkostenKm != null ? `${t.streckeFahrkostenKm} km` : '— km'}
+                    </span>
+                  </label>
+                ))
+            )}
+            {tourIds.length > 0 && (
+              <div className="border-t border-gray-200 pt-1.5 mt-1.5 flex items-center justify-between text-xs">
+                <span className="text-gray-600">
+                  Vorschlag aus {tourIds.length} {tourIds.length === 1 ? 'Tour' : 'Touren'}:
+                </span>
+                <span className="font-medium text-gray-900">{tourKmSumme} km</span>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -591,29 +745,38 @@ function FahrtForm({
           />
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Strecke (km) *</label>
-          <input
-            type="number"
-            min={1}
-            max={9999}
-            step={1}
-            value={streckKm || ''}
-            onChange={(e) => setStreckKm(Math.max(0, Number(e.target.value)))}
-            placeholder="0"
-            className={inputClass}
-          />
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Strecke (km) *
+            {modus === 'touren' && streckKmManuell && (
+              <span className="ml-1 text-xs text-amber-700 font-normal">manuell überschrieben</span>
+            )}
+          </label>
+          <div className="flex gap-1">
+            <input
+              type="number"
+              min={1}
+              max={9999}
+              step={1}
+              value={streckKm || ''}
+              onChange={(e) => {
+                setStreckKm(Math.max(0, Number(e.target.value)));
+                if (modus === 'touren') setStreckKmManuell(true);
+              }}
+              placeholder="0"
+              className={inputClass}
+            />
+            {modus === 'touren' && streckKmManuell && (
+              <button
+                type="button"
+                onClick={() => { setStreckKmManuell(false); setStreckKm(tourKmSumme); }}
+                className="shrink-0 text-xs text-blue-600 hover:text-blue-800 underline px-2"
+                title="Auf Touren-Summe zurücksetzen"
+              >
+                ↺ Auto
+              </button>
+            )}
+          </div>
         </div>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Ziel *</label>
-        <input
-          type="text"
-          value={ziel}
-          onChange={(e) => setZiel(e.target.value)}
-          placeholder="z.B. Lieferant GmbH, Hannover"
-          className={inputClass}
-        />
       </div>
 
       <div>

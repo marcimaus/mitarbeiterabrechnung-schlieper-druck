@@ -66,6 +66,7 @@ function MitarbeiterInhalt() {
   const [filterMinijob, setFilterMinijob] = useState<'' | 'ja' | 'nein'>('');
   const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
   const [filterAnmeldung, setFilterAnmeldung] = useState<'' | 'offen' | 'angemeldet' | 'abgemeldet'>('');
+  const [filterFahrtkosten, setFilterFahrtkosten] = useState<'' | 'ja' | 'nein'>('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
 
@@ -92,6 +93,8 @@ function MitarbeiterInhalt() {
     if (filterAnmeldung === 'offen' && !m.nochNichtAngemeldet) return false;
     if (filterAnmeldung === 'angemeldet' && (m.nochNichtAngemeldet || m.abgemeldet)) return false;
     if (filterAnmeldung === 'abgemeldet' && !m.abgemeldet) return false;
+    if (filterFahrtkosten === 'ja' && !m.fahrtkostenerstattung) return false;
+    if (filterFahrtkosten === 'nein' && m.fahrtkostenerstattung) return false;
     return true;
   });
 
@@ -169,6 +172,16 @@ function MitarbeiterInhalt() {
           <option value="offen">⏳ noch nicht angemeldet</option>
           <option value="angemeldet">✓ angemeldet</option>
           <option value="abgemeldet">🚪 abgemeldet</option>
+        </select>
+        <select
+          value={filterFahrtkosten}
+          onChange={(e) => setFilterFahrtkosten(e.target.value as '' | 'ja' | 'nein')}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          title="Filter Fahrtkosten-Erstattung"
+        >
+          <option value="">Fahrtkosten: alle</option>
+          <option value="ja">🚗 nur erlaubt</option>
+          <option value="nein">nur nicht erlaubt</option>
         </select>
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
