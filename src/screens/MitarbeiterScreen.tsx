@@ -77,6 +77,7 @@ function MitarbeiterInhalt() {
   const [filterAnmeldung, setFilterAnmeldung] = useState<'' | 'offen' | 'angemeldet' | 'abgemeldet'>('');
   const [filterFahrtkosten, setFilterFahrtkosten] = useState<'' | 'ja' | 'nein'>('');
   const [filterInteressent, setFilterInteressent] = useState<'' | 'nur' | 'ohne'>('ohne');
+  const [filterInteresseTaetigkeit, setFilterInteresseTaetigkeit] = useState<InteresseTaetigkeit | ''>('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
 
@@ -96,6 +97,14 @@ function MitarbeiterInhalt() {
     // 'nur' zeigt ausschließlich Interessenten, '' zeigt alle.
     if (filterInteressent === 'ohne' && m.istInteressent) return false;
     if (filterInteressent === 'nur' && !m.istInteressent) return false;
+    // Tätigkeits-Filter: nur sinnvoll bei Interessenten — wird auch nur dort
+    // angewendet. Andere MAs (kein istInteressent) bleiben unberührt, außer
+    // der Filter ist aktiv UND wir suchen explizit nach Tätigkeit.
+    if (filterInteresseTaetigkeit) {
+      if (!m.istInteressent) return false;
+      const list = m.interesseTaetigkeiten ?? [];
+      if (!list.includes(filterInteresseTaetigkeit)) return false;
+    }
     // „Nur aktive" gilt sowohl für normale MAs (isActive) als auch für
     // Interessenten (interessentDeinteressiert).
     if (nurAktive) {
@@ -214,7 +223,12 @@ function MitarbeiterInhalt() {
         </select>
         <select
           value={filterInteressent}
-          onChange={(e) => setFilterInteressent(e.target.value as '' | 'nur' | 'ohne')}
+          onChange={(e) => {
+            const v = e.target.value as '' | 'nur' | 'ohne';
+            setFilterInteressent(v);
+            // Tätigkeits-Filter zurücksetzen, wenn Interessenten ausgeblendet sind.
+            if (v === 'ohne') setFilterInteresseTaetigkeit('');
+          }}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           title="Filter Interessenten"
         >
@@ -222,6 +236,19 @@ function MitarbeiterInhalt() {
           <option value="nur">💡 nur Interessenten</option>
           <option value="">alle (inkl. Interessenten)</option>
         </select>
+        {filterInteressent !== 'ohne' && (
+          <select
+            value={filterInteresseTaetigkeit}
+            onChange={(e) => setFilterInteresseTaetigkeit(e.target.value as InteresseTaetigkeit | '')}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title="Interessenten nach Tätigkeit filtern, für die sie sich interessieren"
+          >
+            <option value="">Interesse: alle Tätigkeiten</option>
+            {ALLE_INTERESSE_TAETIGKEITEN.map((t) => (
+              <option key={t} value={t}>{INTERESSE_TAETIGKEIT_LABELS[t]}</option>
+            ))}
+          </select>
+        )}
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
           <input
             type="checkbox"
@@ -576,6 +603,7 @@ function MitarbeiterForm({
         interessentKontaktDatum: initial.interessentKontaktDatum,
         interessentKorrespondenzLink: initial.interessentKorrespondenzLink,
         interessentMemo: initial.interessentMemo,
+        interessentAlterBeiErfassung: initial.interessentAlterBeiErfassung,
         // Cast: Felder, die nicht im DEFAULT_FORM-Typ sind, werden über (form as any) gelesen
         ...(initial.fahrtkostenerstattung ? { fahrtkostenerstattung: true } : {}),
         ...(initial.fahrkostenEurProKm !== undefined ? { fahrkostenEurProKm: initial.fahrkostenEurProKm } : {}),
@@ -906,9 +934,11 @@ function MitarbeiterForm({
                 ...f,
                 istInteressent: next,
                 // Beim Aktivieren: aus den operativen Daten erstmal nichts
-                // löschen — der User kann zurückgehen. Beim Deaktivieren
-                // (in der echten Submit-Logik) wird nochNichtAngemeldet
-                // erzwungen.
+                // löschen. Wenn noch kein Kontaktdatum gesetzt ist, mit
+                // dem heutigen Datum vorbelegen — der User kann ändern.
+                ...(next && !f.interessentKontaktDatum
+                  ? { interessentKontaktDatum: new Date().toISOString().slice(0, 10) }
+                  : {}),
               }));
             }}
             className="mt-0.5 rounded"
@@ -1000,14 +1030,87 @@ function MitarbeiterForm({
             />
           </FormField>
 
-          <FormField label="Geburtsdatum (optional)">
-            <input
-              type="date"
-              value={form.geburtsdatum ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, geburtsdatum: e.target.value }))}
-              className={inputClass}
-            />
-          </FormField>
+          {/* Alter: entweder Geburtsdatum ODER Alter bei Erfassung */}
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Geburtsdatum (optional)">
+              <input
+                type="date"
+                value={form.geburtsdatum ?? ''}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  geburtsdatum: e.target.value,
+                  // Wenn ein Geburtsdatum gesetzt ist, das Alter-Feld leeren
+                  // (Geburtsdatum ist die präzisere Angabe).
+                  ...(e.target.value ? { interessentAlterBeiErfassung: undefined } : {}),
+                }))}
+                disabled={form.interessentAlterBeiErfassung != null && form.interessentAlterBeiErfassung > 0}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField
+              label="… oder: Alter in Jahren"
+              hint="Alternative wenn das Geburtsdatum unbekannt ist. Das aktuelle Alter wird dann anhand des Kontaktdatums fortlaufend berechnet."
+            >
+              <input
+                type="number"
+                min={10}
+                max={99}
+                step={1}
+                value={form.interessentAlterBeiErfassung ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setForm((f) => ({
+                    ...f,
+                    interessentAlterBeiErfassung: v === '' ? undefined : parseInt(v, 10),
+                    // Wenn Alter eingetragen wird: Geburtsdatum leeren.
+                    ...(v !== '' ? { geburtsdatum: '' } : {}),
+                  }));
+                }}
+                disabled={!!form.geburtsdatum}
+                placeholder="z. B. 22"
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+
+          {/* Berechnetes aktuelles Alter — sichtbar, wenn eine Angabe vorliegt */}
+          {(() => {
+            const heute = new Date();
+            // Aus Geburtsdatum:
+            if (form.geburtsdatum) {
+              try {
+                const a = berechneAlter(form.geburtsdatum);
+                if (Number.isFinite(a)) {
+                  return (
+                    <div className="rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800">
+                      🧮 Aktuelles Alter: <strong>{a} Jahre</strong>
+                      <span className="text-blue-600/80"> — berechnet aus dem Geburtsdatum.</span>
+                    </div>
+                  );
+                }
+              } catch { /* ignore */ }
+            }
+            // Aus Alter bei Erfassung + Kontaktdatum:
+            const alterErf = form.interessentAlterBeiErfassung;
+            const datum = form.interessentKontaktDatum;
+            if (alterErf != null && alterErf > 0 && datum) {
+              const erf = new Date(datum);
+              let zusatz = heute.getFullYear() - erf.getFullYear();
+              const md = heute.getMonth() - erf.getMonth();
+              if (md < 0 || (md === 0 && heute.getDate() < erf.getDate())) zusatz--;
+              const aktuell = alterErf + zusatz;
+              return (
+                <div className="rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800">
+                  🧮 Aktuelles Alter: <strong>{aktuell} Jahre</strong>
+                  <span className="text-blue-600/80">
+                    {' '}— berechnet aus „Alter bei Erfassung" ({alterErf} J. am{' '}
+                    {erf.toLocaleDateString('de-DE')}) + verstrichene Zeit.
+                  </span>
+                </div>
+              );
+            }
+            return null;
+          })()}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">

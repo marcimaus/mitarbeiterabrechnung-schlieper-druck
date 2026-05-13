@@ -178,6 +178,12 @@ export interface Mitarbeiter {
   interessentKorrespondenzLink?: string;
   /** Freitext-Memo: Eindruck, Einschätzung, Notizen zum Interessenten. */
   interessentMemo?: string;
+  /**
+   * Alternativ zum Geburtsdatum: Alter in Jahren zum Zeitpunkt der
+   * Erfassung (= `interessentKontaktDatum`). Das aktuelle Alter wird
+   * dann fortlaufend berechnet (kontaktDatum + n Jahre).
+   */
+  interessentAlterBeiErfassung?: number;
   erstelltAm: number;     // Unix-Timestamp ms
   aktualisiertAm: number;
 }
