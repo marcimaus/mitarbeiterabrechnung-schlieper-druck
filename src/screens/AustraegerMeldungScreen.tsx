@@ -7,6 +7,8 @@ import { getDoc, doc, collection, getDocs, query, where } from 'firebase/firesto
 import { db } from '../lib/firebase';
 import { aktualisiereEinsatzMeldung, setzeEinsatz, setzeArbeitszeitFuerEinsatz } from '../lib/db';
 import type { Mitarbeiter, Einsatz, Ausgabe, Teilgebiet, AustraegerArbeitszeit } from '../types';
+import { useApp } from '../context/AppContext';
+import { berechneAustraegezeit } from '../lib/berechnung';
 
 // ---- Hilfsfunktionen ----------------------------------------
 
@@ -14,14 +16,31 @@ function kwLabel(kw: number, jahr: number): string {
   return `KW ${kw}/${jahr}`;
 }
 
-/** Montag der ISO-Woche als YYYY-MM-DD */
-function montagDerKW(kw: number, jahr: number): string {
-  // 4. Januar liegt immer in KW 1
+/** Donnerstag der ISO-Woche als YYYY-MM-DD (Auslieferungs-Deadline). */
+function donnerstagDerKW(kw: number, jahr: number): string {
   const jan4 = new Date(jahr, 0, 4);
-  const wochentag = jan4.getDay() || 7; // 1 = Mo
+  const wochentag = jan4.getDay() || 7;
   const mo = new Date(jan4);
-  mo.setDate(jan4.getDate() - (wochentag - 1) + (kw - 1) * 7);
+  mo.setDate(jan4.getDate() - (wochentag - 1) + (kw - 1) * 7 + 3); // +3 = Donnerstag
   return mo.toISOString().slice(0, 10);
+}
+
+/** Liefert die Deadline Donnerstag 12:00 als JS-Date in lokaler Zeit. */
+function donnerstagMittag(kw: number, jahr: number): Date {
+  const iso = donnerstagDerKW(kw, jahr); // YYYY-MM-DD
+  return new Date(`${iso}T12:00:00`);
+}
+
+/** Sekunden zwischen Beginn (HH:MM) + Soll-Stunden als HH:MM. */
+function plusStunden(von: string, sollStunden: number): string {
+  const [h, m] = von.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return '';
+  const totalMin = h * 60 + m + Math.round(sollStunden * 60);
+  // Clamp auf 23:59
+  const clamped = Math.min(totalMin, 23 * 60 + 59);
+  const hh = String(Math.floor(clamped / 60)).padStart(2, '0');
+  const mm = String(clamped % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 function heuteStr(): string {
@@ -340,14 +359,25 @@ interface KarteProps {
 }
 
 function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KarteProps) {
+  const { parameter } = useApp();
+
+  // Default-Datum: Donnerstag der KW (Auslieferungs-Deadline laut Vertrag).
   const defaultDatum = ausgabe
-    ? montagDerKW(ausgabe.kw, ausgabe.jahr)
+    ? donnerstagDerKW(ausgabe.kw, ausgabe.jahr)
     : heuteStr();
+
+  // Soll-Zeit (Stunden) anhand TG + Parameter. Externe Beilagen werden hier
+  // nicht mitgerechnet (Beilagen-Daten liegen im Selbstmeldungs-Screen nicht
+  // vor) — die Vorbelegung ist daher konservativ und vom User editierbar.
+  const sollStunden = teilgebiet && parameter
+    ? berechneAustraegezeit(teilgebiet, parameter, 0)
+    : 0;
 
   const [offen, setOffen] = useState(true);
   const [datum, setDatum] = useState(defaultDatum);
   const [von, setVon] = useState('');
   const [bis, setBis] = useState('');
+  const [bisManuell, setBisManuell] = useState(false);
   const [pausenMin, setPausenMin] = useState('0');
   const [restmenge, setRestmenge] = useState('0');
   const [busy, setBusy] = useState(false);
@@ -355,6 +385,30 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
 
   const netto = von && bis ? nettoMinuten(von, bis, Number(pausenMin) || 0) : null;
   const formValid = datum && von && bis && von < bis;
+
+  // „Verspätung"-Hinweis: Datum/Endzeit liegt nach Do 12:00 der Ausgabe-KW.
+  const verspaetung = (() => {
+    if (!ausgabe || !datum) return false;
+    if (!bis) {
+      // Nur Datum prüfen
+      return new Date(`${datum}T23:59:59`) > donnerstagMittag(ausgabe.kw, ausgabe.jahr);
+    }
+    return new Date(`${datum}T${bis}:00`) > donnerstagMittag(ausgabe.kw, ausgabe.jahr);
+  })();
+
+  function handleVonChange(neuerVon: string) {
+    setVon(neuerVon);
+    // Auto-fill Endzeit, solange der User sie nicht manuell überschrieben hat.
+    if (!bisManuell && neuerVon && sollStunden > 0) {
+      const vorschlag = plusStunden(neuerVon, sollStunden);
+      if (vorschlag) setBis(vorschlag);
+    }
+  }
+
+  function handleBisChange(neuerBis: string) {
+    setBis(neuerBis);
+    setBisManuell(true);
+  }
 
   async function handleSpeichern() {
     if (!formValid) return;
@@ -470,7 +524,7 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
               <input
                 type="time"
                 value={von}
-                onChange={(e) => setVon(e.target.value)}
+                onChange={(e) => handleVonChange(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-green-500"
               />
             </div>
@@ -481,15 +535,28 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
               <input
                 type="time"
                 value={bis}
-                onChange={(e) => setBis(e.target.value)}
+                onChange={(e) => handleBisChange(e.target.value)}
                 className={`w-full border rounded-lg px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-green-500 ${
                   von && bis && bis <= von ? 'border-red-400 bg-red-50' : 'border-gray-300'
                 }`}
               />
+              {sollStunden > 0 && von && !bisManuell && (
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Vorbelegt mit Soll-Zeit ({formatDauer(Math.round(sollStunden * 60))}) — bei Bedarf anpassen.
+                </p>
+              )}
             </div>
           </div>
           {von && bis && bis <= von && (
             <p className="text-red-600 text-sm -mt-2">Ende muss nach Beginn liegen.</p>
+          )}
+
+          {/* Verspätungs-Hinweis: Auslieferung nach Donnerstag 12:00 */}
+          {verspaetung && (
+            <div className="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              <strong>⏰ Hinweis:</strong> Bitte regelmäßig bis spätestens
+              Donnerstag 12 Uhr ausliefern. Danke!
+            </div>
           )}
 
           {/* Pausen */}
