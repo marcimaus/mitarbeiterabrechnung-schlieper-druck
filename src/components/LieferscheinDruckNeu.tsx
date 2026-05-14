@@ -295,20 +295,10 @@ export default function LieferscheinDruckNeu({
   // selbst werden dann auch nur die KW-passenden Zeilen + Memos behalten.
   // → Damit erscheint Scherbarths Schein nicht im KW-18-Druck, wenn KW18
   //   ein Springer austrägt.
-  const [filterKw, setFilterKw] = useState<number | null>(null);
-  const sichtbareScheine = useMemo(() => {
-    const ausgewaehlt = scheine.filter((s) => selectedIds.has(s.schluessel));
-    if (filterKw === null) return ausgewaehlt;
-    return ausgewaehlt.flatMap((s) => {
-      const zeilen = s.zeilen.filter((z) => z.kw === filterKw);
-      if (zeilen.length === 0) return [];
-      const memos = s.memos.filter((m) => m.kw === filterKw);
-      return [{ ...s, zeilen, memos }];
-    });
-  }, [scheine, selectedIds, filterKw]);
-  const kwListe = useMemo(
-    () => [...periode.kalenderwochen].sort((a, b) => a - b),
-    [periode.kalenderwochen]
+  // Neue Variante: keine Chip-Auswahl, immer alle (gefilterten) Scheine.
+  const sichtbareScheine = useMemo(
+    () => scheine.filter((s) => selectedIds.has(s.schluessel)),
+    [scheine, selectedIds]
   );
 
   // ---- Render -----------------------------------------------
@@ -379,21 +369,9 @@ export default function LieferscheinDruckNeu({
             Lieferscheine — {periode.bezeichnung}
           </span>
           <span className="text-gray-500 text-sm">
-            ({sichtbareScheine.length} von {scheine.length} Lieferscheinen)
+            ({sichtbareScheine.length} Lieferschein{sichtbareScheine.length === 1 ? '' : 'e'} · KW {selectedKw})
           </span>
           <div className="ml-auto flex gap-2">
-            <button
-              onClick={() => setSelectedIds(new Set(scheine.map((s) => s.schluessel)))}
-              className="text-xs text-blue-600 hover:underline"
-            >
-              Alle
-            </button>
-            <button
-              onClick={() => setSelectedIds(new Set())}
-              className="text-xs text-blue-600 hover:underline"
-            >
-              Keine
-            </button>
             <button
               onClick={() => window.print()}
               disabled={sichtbareScheine.length === 0}
@@ -403,76 +381,6 @@ export default function LieferscheinDruckNeu({
             </button>
           </div>
         </div>
-
-        {/* KW-Filter — beschränkt die Lieferscheine auf eine bestimmte Ausgabe */}
-        {!loading && scheine.length > 0 && kwListe.length > 1 && (
-          <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 flex flex-wrap items-center gap-2 shrink-0">
-            <span className="text-xs font-semibold text-blue-900">Ausgabe (KW):</span>
-            <button
-              type="button"
-              onClick={() => setFilterKw(null)}
-              className={`text-xs px-2.5 py-1 rounded-full border ${
-                filterKw === null
-                  ? 'bg-blue-700 text-white border-blue-700'
-                  : 'bg-white text-blue-700 border-blue-300 hover:border-blue-400'
-              }`}
-            >
-              Alle ({kwListe.length})
-            </button>
-            {kwListe.map((kw) => (
-              <button
-                key={kw}
-                type="button"
-                onClick={() => setFilterKw(kw)}
-                className={`text-xs px-2.5 py-1 rounded-full border ${
-                  filterKw === kw
-                    ? 'bg-blue-700 text-white border-blue-700'
-                    : 'bg-white text-blue-700 border-blue-300 hover:border-blue-400'
-                }`}
-                title={`Nur Lieferscheine für KW ${kw}`}
-              >
-                KW {kw}
-              </button>
-            ))}
-            {filterKw !== null && (
-              <span className="text-[11px] text-blue-700 italic ml-1">
-                Filter aktiv — nur die Empfänger der KW {filterKw} werden gedruckt.
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Auswahl-Leiste */}
-        {!loading && scheine.length > 0 && (
-          <div className="bg-gray-50 border-b border-gray-200 px-4 py-2 flex flex-wrap gap-2 shrink-0">
-            {scheine.map((s) => (
-              <button
-                key={s.schluessel}
-                type="button"
-                onClick={() =>
-                  setSelectedIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(s.schluessel)) next.delete(s.schluessel);
-                    else next.add(s.schluessel);
-                    return next;
-                  })
-                }
-                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                  selectedIds.has(s.schluessel)
-                    ? s.istSpringer
-                      ? 'bg-red-600 text-white border-red-600'
-                      : 'bg-blue-600 text-white border-blue-600'
-                    : s.istSpringer
-                      ? 'bg-white text-red-600 border-red-300'
-                      : 'bg-white text-gray-600 border-gray-300'
-                }`}
-              >
-                {s.teilgebiet.name}
-                {s.istSpringer && ' 🔄'}
-              </button>
-            ))}
-          </div>
-        )}
 
         {/* Vorschau */}
         <div className="flex-1 overflow-y-auto p-6 bg-gray-200">
