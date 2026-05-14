@@ -54,10 +54,16 @@ interface ErfassungEintrag {
   hatZeit: boolean;
   hatRestmenge: boolean;
   hatMeldung: boolean;
+  // Für das Bearbeiten-Modal: aktuelle Werte (falls Einsatz-Doc bereits existiert).
+  einsatzId?: string;
+  restmenge?: number;
+  fehlmenge?: number;
+  kommentar?: string;
+  eingereichtAm?: number;
 }
 
 function ZeitübersichtInhalt() {
-  const { mitarbeiter, parameter, adminName, userRole, mitarbeiterId, teilgebiete } = useApp();
+  const { mitarbeiter, parameter, adminName, userRole, mitarbeiterId, teilgebiete, abrechnungsperioden } = useApp();
   const isAdmin = userRole === 'admin';
   const istMitarbeiter = userRole === 'mitarbeiter';
   const heute = new Date();
@@ -203,6 +209,11 @@ function ZeitübersichtInhalt() {
               hatZeit,
               hatRestmenge,
               hatMeldung,
+              einsatzId: e?.id,
+              restmenge: e?.restmenge,
+              fehlmenge: e?.fehlmenge,
+              kommentar: e?.meldungKommentar,
+              eingereichtAm: e?.meldungEingereichtAm,
             });
           }
         }
@@ -772,6 +783,31 @@ function ZeitübersichtInhalt() {
             eintraege={erfassungStatusListe}
             teilgebiete={teilgebiete}
             bonusEur={parameter?.bonusZeiterfassungEur ?? 0}
+            isPeriodeOffen={(kw, jahrV) => {
+              const periode = abrechnungsperioden.find(
+                (p) => p.jahr === jahrV && p.kalenderwochen.includes(kw)
+              );
+              // Wenn keine Periode zugeordnet → als 'offen' behandeln
+              // (Erfassung möglich, sobald Periode angelegt wird).
+              return !periode || periode.status !== 'abgeschlossen';
+            }}
+            onEdit={(e) => {
+              if (!selectedMaId) return;
+              setNacherfassen({
+                initial: {
+                  einsatzId: e.einsatzId ?? '',
+                  teilgebietId: e.teilgebietId,
+                  ausgabeId: e.ausgabeId,
+                  kw: e.kw,
+                  jahr: e.jahr,
+                  mitarbeiterId: selectedMaId,
+                  restmenge: e.restmenge ?? 0,
+                  fehlmenge: e.fehlmenge ?? 0,
+                  kommentar: e.kommentar,
+                  eingereichtAm: e.eingereichtAm,
+                },
+              });
+            }}
           />
 
           {/* Rest- und Fehlmengen (vom Austräger via QR-Code gemeldet
@@ -875,10 +911,14 @@ function ErfassungStatusÜbersicht({
   eintraege,
   teilgebiete,
   bonusEur,
+  isPeriodeOffen,
+  onEdit,
 }: {
   eintraege: ErfassungEintrag[];
   teilgebiete: import('../types').Teilgebiet[];
   bonusEur: number;
+  isPeriodeOffen?: (kw: number, jahr: number) => boolean;
+  onEdit?: (e: ErfassungEintrag) => void;
 }) {
   if (eintraege.length === 0) return null;
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
@@ -924,6 +964,7 @@ function ErfassungStatusÜbersicht({
             <th className="text-center px-4 py-2 font-medium text-gray-600">Restmenge</th>
             <th className="text-center px-4 py-2 font-medium text-gray-600">Eingereicht</th>
             <th className="text-left px-4 py-2 font-medium text-gray-600">Status</th>
+            {onEdit && <th className="px-4 py-2"></th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
@@ -933,6 +974,13 @@ function ErfassungStatusÜbersicht({
               e.status === 'vollstaendig' ? 'bg-green-50/40'
                 : e.status === 'unvollstaendig' ? 'bg-amber-50/60'
                 : 'bg-gray-50/40';
+            const periodeOffen = isPeriodeOffen ? isPeriodeOffen(e.kw, e.jahr) : true;
+            // Bearbeiten: nur sinnvoll, wenn Erfassung unvollständig oder
+            // gar nicht erfasst ist UND die Periode noch offen ist.
+            const editBar =
+              onEdit !== undefined &&
+              periodeOffen &&
+              e.status !== 'vollstaendig';
             return (
               <tr key={`${e.ausgabeId}-${e.teilgebietId}`} className={rowBg}>
                 <td className="px-4 py-1.5 text-gray-700 font-mono text-xs whitespace-nowrap">
@@ -968,6 +1016,28 @@ function ErfassungStatusÜbersicht({
                     </span>
                   )}
                 </td>
+                {onEdit && (
+                  <td className="px-4 py-1.5 text-right whitespace-nowrap">
+                    {editBar ? (
+                      <button
+                        type="button"
+                        onClick={() => onEdit(e)}
+                        className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700"
+                        title={
+                          e.status === 'nicht_erfasst'
+                            ? 'Daten nacherfassen (Papier-Meldung)'
+                            : 'Fehlende Daten ergänzen'
+                        }
+                      >
+                        ✏️ Bearbeiten
+                      </button>
+                    ) : !periodeOffen && e.status !== 'vollstaendig' ? (
+                      <span className="text-[11px] text-gray-400" title="Periode abgeschlossen — Erfassung gesperrt">
+                        🔒 gesperrt
+                      </span>
+                    ) : null}
+                  </td>
+                )}
               </tr>
             );
           })}
