@@ -382,6 +382,9 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
   const [bisManuell, setBisManuell] = useState(false);
   const [pausenMin, setPausenMin] = useState('0');
   const [restmenge, setRestmenge] = useState('0');
+  const [fehlmengeAn, setFehlmengeAn] = useState(false);
+  const [fehlmenge, setFehlmenge] = useState('0');
+  const [kommentar, setKommentar] = useState('');
   const [busy, setBusy] = useState(false);
   const [meldung, setMeldung] = useState('');
 
@@ -436,6 +439,8 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
       await aktualisiereEinsatzMeldung(echteId, {
         arbeitszeit: az,
         restmenge: Number(restmenge) || 0,
+        fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
+        meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,
       });
       // Selbstgemeldete Arbeitszeit zusätzlich in der zentralen
@@ -453,6 +458,8 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
         id: echteId,
         arbeitszeit: az,
         restmenge: Number(restmenge) || 0,
+        fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
+        meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,
       });
       setMeldung('✅ Gespeichert!');
@@ -601,6 +608,56 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
             </p>
           </div>
 
+          {/* Fehlmenge (zu wenig erhalten) */}
+          <div className="rounded-lg border border-red-200 bg-red-50/40 p-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={fehlmengeAn}
+                onChange={(e) => setFehlmengeAn(e.target.checked)}
+                className="w-4 h-4"
+              />
+              <span className="text-sm font-medium text-red-800">
+                ⚠ Fehlmenge melden — ich habe zu wenige Exemplare erhalten
+              </span>
+            </label>
+            {fehlmengeAn && (
+              <div className="mt-3">
+                <label className="block text-xs font-medium text-red-800 mb-1">
+                  Fehlmenge (fehlende Exemplare)
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min="0"
+                    value={fehlmenge}
+                    onChange={(e) => setFehlmenge(e.target.value)}
+                    className="w-28 border border-red-300 rounded-lg px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                  <span className="text-red-700 text-sm">Stück fehlen</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Kommentar */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Kommentar (optional)
+            </label>
+            <textarea
+              value={kommentar}
+              onChange={(e) => setKommentar(e.target.value)}
+              rows={3}
+              placeholder={
+                fehlmengeAn
+                  ? 'z. B. „Neue Wohnungen in der Schulstraße 5 dazugekommen"'
+                  : 'z. B. „Briefkasten an Hausnr. 12 defekt"'
+              }
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base focus:outline-none focus:ring-2 focus:ring-green-500"
+            />
+          </div>
+
           {/* Meldung */}
           {meldung && (
             <p className={`text-sm font-medium ${meldung.startsWith('✅') ? 'text-green-700' : 'text-red-600'}`}>
@@ -642,6 +699,9 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
   const [bis, setBis] = useState(einsatz.arbeitszeit?.bis ?? '');
   const [pausenMin, setPausenMin] = useState(String(einsatz.arbeitszeit?.pausenMinuten ?? 0));
   const [restmenge, setRestmenge] = useState(String(einsatz.restmenge ?? 0));
+  const [fehlmengeAn, setFehlmengeAn] = useState((einsatz.fehlmenge ?? 0) > 0);
+  const [fehlmenge, setFehlmenge] = useState(String(einsatz.fehlmenge ?? 0));
+  const [kommentar, setKommentar] = useState(einsatz.meldungKommentar ?? '');
   const [busy, setBusy] = useState(false);
   const [meldung, setMeldung] = useState('');
 
@@ -663,6 +723,8 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
       await aktualisiereEinsatzMeldung(einsatz.id, {
         arbeitszeit: az,
         restmenge: Number(restmenge) || 0,
+        fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
+        meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,
       });
       // Selbstgemeldete Arbeitszeit auch bei nachträglicher Bearbeitung
@@ -676,6 +738,8 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
         ...einsatz,
         arbeitszeit: az,
         restmenge: Number(restmenge) || 0,
+        fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
+        meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,
       });
       setBearbeiten(false);
@@ -730,6 +794,22 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
             <dd className={`font-medium ${(einsatz.restmenge ?? 0) > 0 ? 'text-orange-600' : 'text-gray-700'}`}>
               {einsatz.restmenge ?? 0} Stk.
             </dd>
+            {(einsatz.fehlmenge ?? 0) > 0 && (
+              <>
+                <dt className="text-gray-500">Fehlmenge</dt>
+                <dd className="font-medium text-red-700">
+                  ⚠ {einsatz.fehlmenge} Stk. zu wenig
+                </dd>
+              </>
+            )}
+            {einsatz.meldungKommentar && (
+              <>
+                <dt className="text-gray-500">Kommentar</dt>
+                <dd className="col-span-1 text-gray-800 italic">
+                  „{einsatz.meldungKommentar}"
+                </dd>
+              </>
+            )}
           </dl>
           {einsatz.meldungEingereichtAm && (
             <p className="text-xs text-gray-400 mt-3">
@@ -780,6 +860,32 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
               <input type="number" min="0" value={restmenge} onChange={(e) => setRestmenge(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base" />
             </div>
+          </div>
+
+          {/* Fehlmenge */}
+          <div className="rounded-lg border border-red-200 bg-red-50/40 p-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={fehlmengeAn}
+                onChange={(e) => setFehlmengeAn(e.target.checked)} className="w-4 h-4" />
+              <span className="text-sm font-medium text-red-800">
+                ⚠ Fehlmenge — zu wenige Exemplare erhalten
+              </span>
+            </label>
+            {fehlmengeAn && (
+              <div className="mt-2 flex items-center gap-3">
+                <input type="number" min="0" value={fehlmenge}
+                  onChange={(e) => setFehlmenge(e.target.value)}
+                  className="w-28 border border-red-300 rounded-lg px-3 py-2 text-base" />
+                <span className="text-red-700 text-sm">Stück fehlen</span>
+              </div>
+            )}
+          </div>
+
+          {/* Kommentar */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Kommentar (optional)</label>
+            <textarea value={kommentar} onChange={(e) => setKommentar(e.target.value)} rows={2}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base" />
           </div>
 
           {netto !== null && netto > 0 && (

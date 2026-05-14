@@ -11,7 +11,7 @@ import {
   formatierDauer,
   korrigiereSession,
 } from '../lib/zeiterfassung';
-import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit, ladeEinsaetze } from '../lib/db';
+import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit, ladeEinsaetze, setzeEinsatz, aktualisiereEinsatzMeldung } from '../lib/db';
 import { MONATSNAMEN, donnerstagDerKW, kwLabel } from '../lib/kalender';
 import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
@@ -38,6 +38,8 @@ interface RestmengeMeldung {
   jahr: number;
   mitarbeiterId: string;
   restmenge: number;
+  fehlmenge: number;
+  kommentar?: string;
   eingereichtAm?: number;
 }
 
@@ -61,6 +63,10 @@ function ZeitübersichtInhalt() {
   const [reloadKey, setReloadKey] = useState(0);
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [restmengen, setRestmengen] = useState<RestmengeMeldung[]>([]);
+  /** Nacherfassungs-Modal: initial-meldung gesetzt → bearbeiten, sonst neu. */
+  const [nacherfassen, setNacherfassen] = useState<{
+    initial: RestmengeMeldung | null;
+  } | null>(null);
 
   // Ausgaben einmalig laden (für Ausgabe-Auswahl bei Vorarbeit)
   useEffect(() => {
@@ -96,18 +102,23 @@ function ZeitübersichtInhalt() {
         for (let i = 0; i < relevante.length; i++) {
           const a = relevante[i];
           for (const e of listen[i]) {
-            if (e.restmenge && e.restmenge > 0 && e.mitarbeiterId) {
-              result.push({
-                einsatzId: e.id,
-                teilgebietId: e.teilgebietId,
-                ausgabeId: a.id,
-                kw: a.kw,
-                jahr: a.jahr,
-                mitarbeiterId: e.mitarbeiterId,
-                restmenge: e.restmenge,
-                eingereichtAm: e.meldungEingereichtAm,
-              });
-            }
+            const rest = e.restmenge ?? 0;
+            const fehl = e.fehlmenge ?? 0;
+            const komm = e.meldungKommentar;
+            if (!e.mitarbeiterId) continue;
+            if (rest <= 0 && fehl <= 0 && !komm) continue;
+            result.push({
+              einsatzId: e.id,
+              teilgebietId: e.teilgebietId,
+              ausgabeId: a.id,
+              kw: a.kw,
+              jahr: a.jahr,
+              mitarbeiterId: e.mitarbeiterId,
+              restmenge: rest,
+              fehlmenge: fehl,
+              kommentar: komm,
+              eingereichtAm: e.meldungEingereichtAm,
+            });
           }
         }
         setRestmengen(result);
@@ -673,10 +684,14 @@ function ZeitübersichtInhalt() {
             })()}
           </div>
 
-          {/* Restmengen (vom Austräger via QR-Code gemeldete nicht ausgetragene Stücke) */}
+          {/* Rest- und Fehlmengen (vom Austräger via QR-Code gemeldet
+              oder vom Admin per Nacherfassung eingetragen) */}
           <RestmengenAustraegerÜbersicht
             meldungen={restmengen.filter((r) => r.mitarbeiterId === selectedMaId)}
             teilgebiete={teilgebiete}
+            isAdmin={!istMitarbeiter}
+            onNeu={() => setNacherfassen({ initial: null })}
+            onEdit={(m) => setNacherfassen({ initial: m })}
           />
 
           {/* Fahrten (read-only — Erfassung über Fahrtkosten-Screen) */}
@@ -727,6 +742,28 @@ function ZeitübersichtInhalt() {
           />
         )}
       </Modal>
+
+      {/* Nacherfassungs-Modal für Rest-/Fehlmengen */}
+      <Modal
+        isOpen={nacherfassen !== null}
+        onClose={() => setNacherfassen(null)}
+        title={nacherfassen?.initial ? 'Rest- / Fehlmenge bearbeiten' : 'Rest- / Fehlmenge nacherfassen'}
+        size="md"
+      >
+        {nacherfassen && (
+          <RestmengeNacherfassenForm
+            initial={nacherfassen.initial}
+            mitarbeiterId={selectedMaId}
+            teilgebiete={teilgebiete}
+            ausgaben={ausgaben}
+            onSaved={() => {
+              setNacherfassen(null);
+              setReloadKey((k) => k + 1);
+            }}
+            onCancel={() => setNacherfassen(null)}
+          />
+        )}
+      </Modal>
     </div>
   );
 }
@@ -743,84 +780,311 @@ function SummaryCard({ label, value, sub }: { label: string; value: string; sub?
   );
 }
 
-// ---- Restmengen-Übersicht (vom Austräger gemeldet) ---------
+// ---- Rest-/Fehlmengen-Übersicht (vom Austräger gemeldet) ---
 
 function RestmengenAustraegerÜbersicht({
   meldungen,
   teilgebiete,
+  isAdmin,
+  onNeu,
+  onEdit,
 }: {
   meldungen: RestmengeMeldung[];
   teilgebiete: import('../types').Teilgebiet[];
+  isAdmin: boolean;
+  onNeu: () => void;
+  onEdit: (m: RestmengeMeldung) => void;
 }) {
-  if (meldungen.length === 0) return null;
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
-  const summe = meldungen.reduce((s, m) => s + m.restmenge, 0);
-  const sortiert = [...meldungen].sort((a, b) =>
-    b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
-  );
+  const summeRest = meldungen.reduce((s, m) => s + m.restmenge, 0);
+  const summeFehl = meldungen.reduce((s, m) => s + m.fehlmenge, 0);
+  // Fehlmengen oben, dann nach KW/Jahr absteigend
+  const sortiert = [...meldungen].sort((a, b) => {
+    const af = a.fehlmenge > 0 ? 1 : 0;
+    const bf = b.fehlmenge > 0 ? 1 : 0;
+    if (af !== bf) return bf - af;
+    return b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw;
+  });
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
-      <div className="px-4 py-3 border-b border-gray-200 bg-amber-50 flex items-center gap-2">
+      <div className="px-4 py-3 border-b border-gray-200 bg-amber-50 flex items-center gap-2 flex-wrap">
         <span className="text-amber-700">📦</span>
         <span className="font-medium text-sm text-amber-900">
-          Restmengen (nicht ausgetragen) — vom Austräger via QR-Code gemeldet
+          Rest- &amp; Fehlmengen
         </span>
-        <span className="ml-auto text-xs text-amber-700">
-          Σ {summe.toLocaleString('de-DE')} Stk in {meldungen.length} Meldung
-          {meldungen.length === 1 ? '' : 'en'}
+        <span className="text-xs text-amber-700">
+          {summeFehl > 0 && <span className="text-red-700 font-semibold mr-2">⚠ Σ Fehl: {summeFehl.toLocaleString('de-DE')}</span>}
+          Σ Rest: {summeRest.toLocaleString('de-DE')} Stk in {meldungen.length} Meldung{meldungen.length === 1 ? '' : 'en'}
         </span>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={onNeu}
+            className="ml-auto text-xs bg-amber-600 text-white px-3 py-1 rounded hover:bg-amber-700"
+            title="Rest-/Fehlmenge nacherfassen (z. B. wenn MA auf Papier gemeldet hat)"
+          >
+            + Nacherfassen
+          </button>
+        )}
       </div>
-      <table className="w-full text-sm">
-        <thead className="bg-gray-50 border-b border-gray-100">
-          <tr>
-            <th className="text-left px-4 py-2 font-medium text-gray-600">KW/Jahr</th>
-            <th className="text-left px-4 py-2 font-medium text-gray-600">Teilgebiet</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-600">Restmenge</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-600">Stückzahl TG</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-600">Anteil</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-600">Gemeldet am</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {sortiert.map((m) => {
-            const tg = tgMap.get(m.teilgebietId);
-            const anteil = tg && tg.stueckzahl > 0
-              ? (m.restmenge / tg.stueckzahl) * 100
-              : null;
-            return (
-              <tr key={m.einsatzId} className="hover:bg-gray-50">
-                <td className="px-4 py-2 text-gray-700 font-mono text-xs">
-                  {kwLabel(m.kw, m.jahr)}
-                </td>
-                <td className="px-4 py-2 text-gray-700">
-                  {tg?.name ?? <span className="text-gray-400 italic">— gelöscht —</span>}
-                  {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
-                </td>
-                <td className="px-4 py-2 text-right font-semibold text-amber-700 font-mono text-xs">
-                  {m.restmenge.toLocaleString('de-DE')}
-                </td>
-                <td className="px-4 py-2 text-right text-gray-500 font-mono text-xs">
-                  {tg ? tg.stueckzahl.toLocaleString('de-DE') : '—'}
-                </td>
-                <td className={`px-4 py-2 text-right font-mono text-xs ${
-                  anteil != null && anteil >= 5 ? 'text-red-700 font-semibold'
-                    : anteil != null && anteil >= 2 ? 'text-amber-700'
-                    : 'text-gray-500'
-                }`}>
-                  {anteil != null ? `${anteil.toFixed(1).replace('.', ',')} %` : '—'}
-                </td>
-                <td className="px-4 py-2 text-right text-xs text-gray-500">
-                  {m.eingereichtAm
-                    ? new Date(m.eingereichtAm).toLocaleDateString('de-DE')
-                    : '—'}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      {meldungen.length === 0 ? (
+        <div className="px-4 py-6 text-center text-sm text-gray-400">
+          Keine Meldungen im gewählten Monat.
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-100">
+            <tr>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">KW/Jahr</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">Teilgebiet</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Fehlmenge</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Restmenge</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Anteil</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">Kommentar</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Gemeldet</th>
+              {isAdmin && <th className="px-4 py-2"></th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {sortiert.map((m) => {
+              const tg = tgMap.get(m.teilgebietId);
+              const anteil = tg && tg.stueckzahl > 0 && m.restmenge > 0
+                ? (m.restmenge / tg.stueckzahl) * 100
+                : null;
+              const hatFehl = m.fehlmenge > 0;
+              return (
+                <tr key={m.einsatzId} className={`align-top ${hatFehl ? 'bg-red-50/60 hover:bg-red-100/60' : 'hover:bg-gray-50'}`}>
+                  <td className="px-4 py-2 text-gray-700 font-mono text-xs whitespace-nowrap">
+                    {hatFehl && <span className="mr-1 text-red-600">⚠</span>}
+                    {kwLabel(m.kw, m.jahr)}
+                  </td>
+                  <td className="px-4 py-2 text-gray-700">
+                    {tg?.name ?? <span className="text-gray-400 italic">— gelöscht —</span>}
+                    {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                  </td>
+                  <td className={`px-4 py-2 text-right font-mono text-xs ${hatFehl ? 'font-bold text-red-700' : 'text-gray-300'}`}>
+                    {hatFehl ? m.fehlmenge.toLocaleString('de-DE') : '—'}
+                  </td>
+                  <td className={`px-4 py-2 text-right font-mono text-xs ${m.restmenge > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}>
+                    {m.restmenge > 0 ? m.restmenge.toLocaleString('de-DE') : '—'}
+                  </td>
+                  <td className={`px-4 py-2 text-right font-mono text-xs ${
+                    anteil != null && anteil >= 5 ? 'text-red-700 font-semibold'
+                      : anteil != null && anteil >= 2 ? 'text-amber-700'
+                      : 'text-gray-500'
+                  }`}>
+                    {anteil != null ? `${anteil.toFixed(1).replace('.', ',')} %` : '—'}
+                  </td>
+                  <td className="px-4 py-2 text-gray-700 text-xs">
+                    {m.kommentar
+                      ? <span className="italic">„{m.kommentar}"</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="px-4 py-2 text-right text-xs text-gray-500 whitespace-nowrap">
+                    {m.eingereichtAm
+                      ? new Date(m.eingereichtAm).toLocaleDateString('de-DE')
+                      : '—'}
+                  </td>
+                  {isAdmin && (
+                    <td className="px-4 py-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onEdit(m)}
+                        className="text-xs text-blue-600 hover:text-blue-800"
+                        title="Meldung bearbeiten"
+                      >
+                        ✏️
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
+  );
+}
+
+// ---- Rest-/Fehlmenge Nacherfassungs-Form ------------------
+
+function RestmengeNacherfassenForm({
+  initial,
+  mitarbeiterId,
+  teilgebiete,
+  ausgaben,
+  onSaved,
+  onCancel,
+}: {
+  initial: RestmengeMeldung | null;
+  mitarbeiterId: string;
+  teilgebiete: import('../types').Teilgebiet[];
+  ausgaben: Ausgabe[];
+  onSaved: () => void;
+  onCancel: () => void;
+}) {
+  const [tgId, setTgId] = useState(initial?.teilgebietId ?? '');
+  const [ausgabeId, setAusgabeId] = useState(initial?.ausgabeId ?? '');
+  const [restmenge, setRestmenge] = useState(String(initial?.restmenge ?? 0));
+  const [fehlmengeAn, setFehlmengeAn] = useState((initial?.fehlmenge ?? 0) > 0);
+  const [fehlmenge, setFehlmenge] = useState(String(initial?.fehlmenge ?? 0));
+  const [kommentar, setKommentar] = useState(initial?.kommentar ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const aktiveTeilgebiete = [...teilgebiete]
+    .filter((t) => t.isActive && !t.istAuslagestelle)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  const sortierteAusgaben = [...ausgaben].sort(
+    (a, b) => b.jahr - a.jahr || b.kw - a.kw
+  );
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!tgId || !ausgabeId) {
+      setError('Bitte Teilgebiet und Ausgabe wählen.');
+      return;
+    }
+    if (!mitarbeiterId) {
+      setError('Kein Mitarbeiter gewählt.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const ausgabe = ausgaben.find((a) => a.id === ausgabeId);
+      if (!ausgabe) throw new Error('Ausgabe nicht gefunden.');
+      // Beim Bearbeiten existierender Meldung: einsatzId vorhanden — direkt
+      // updaten. Beim Nacherfassen: einsatz finden oder neu anlegen.
+      let einsatzId = initial?.einsatzId;
+      if (!einsatzId) {
+        einsatzId = await setzeEinsatz({
+          ausgabeId,
+          kw: ausgabe.kw,
+          jahr: ausgabe.jahr,
+          teilgebietId: tgId,
+          mitarbeiterId,
+          typ: 'standard',
+        });
+      }
+      await aktualisiereEinsatzMeldung(einsatzId, {
+        restmenge: Number(restmenge) || 0,
+        fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
+        meldungKommentar: kommentar.trim() || undefined,
+        meldungEingereichtAm: Date.now(),
+      });
+      onSaved();
+    } catch (err: any) {
+      console.error(err);
+      setError('Fehler beim Speichern: ' + (err.message ?? err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Teilgebiet *</label>
+        <select
+          value={tgId}
+          onChange={(e) => setTgId(e.target.value)}
+          disabled={!!initial}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="">— wählen —</option>
+          {aktiveTeilgebiete.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.name} {t.plz && `(${t.plz})`}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Ausgabe (KW) *</label>
+        <select
+          value={ausgabeId}
+          onChange={(e) => setAusgabeId(e.target.value)}
+          disabled={!!initial}
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="">— wählen —</option>
+          {sortierteAusgaben.slice(0, 30).map((a) => (
+            <option key={a.id} value={a.id}>{kwLabel(a.kw, a.jahr)}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Restmenge (nicht ausgetragene Stücke)
+        </label>
+        <input
+          type="number"
+          min="0"
+          value={restmenge}
+          onChange={(e) => setRestmenge(e.target.value)}
+          className="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm"
+        />
+      </div>
+      <div className="rounded-lg border border-red-200 bg-red-50/40 p-3">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={fehlmengeAn}
+            onChange={(e) => setFehlmengeAn(e.target.checked)}
+            className="w-4 h-4"
+          />
+          <span className="text-sm font-medium text-red-800">
+            ⚠ Fehlmenge — Austräger hat zu wenige Exemplare erhalten
+          </span>
+        </label>
+        {fehlmengeAn && (
+          <div className="mt-2 flex items-center gap-3">
+            <input
+              type="number"
+              min="0"
+              value={fehlmenge}
+              onChange={(e) => setFehlmenge(e.target.value)}
+              className="w-32 border border-red-300 rounded-lg px-3 py-2 text-sm"
+            />
+            <span className="text-red-700 text-sm">Stück fehlen</span>
+          </div>
+        )}
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Kommentar (optional)
+        </label>
+        <textarea
+          value={kommentar}
+          onChange={(e) => setKommentar(e.target.value)}
+          rows={3}
+          placeholder="z. B. ‚Neue Wohnungen in der Schulstraße 5 dazugekommen‘"
+          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+        />
+      </div>
+
+      {error && <p className="text-red-600 text-sm">{error}</p>}
+
+      <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+        >
+          Abbrechen
+        </button>
+        <button
+          type="submit"
+          disabled={saving}
+          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? 'Speichere…' : initial ? 'Aktualisieren' : 'Speichern'}
+        </button>
+      </div>
+    </form>
   );
 }
 

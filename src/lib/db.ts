@@ -573,13 +573,15 @@ export async function ladeEinsaetzeFuerMitarbeiter(
 export async function aktualisiereEinsatzMeldung(
   id: string,
   data: {
-    arbeitszeit: import('../types').AustraegerArbeitszeit;
-    restmenge: number;
+    arbeitszeit?: import('../types').AustraegerArbeitszeit;
+    restmenge?: number;
+    fehlmenge?: number;
+    meldungKommentar?: string;
     meldungEingereichtAm: number;
   }
 ): Promise<void> {
   await updateDoc(doc(db, 'einsaetze', id), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
     aktualisiertAm: now(),
   });
 }

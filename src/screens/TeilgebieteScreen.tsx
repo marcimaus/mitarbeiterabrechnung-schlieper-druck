@@ -2262,9 +2262,12 @@ interface RestmengeAggregat {
     jahr: number;
     mitarbeiterId: string | null;
     restmenge: number;
+    fehlmenge: number;
+    kommentar?: string;
     eingereichtAm?: number;
   }[];
-  summe: number;
+  summeRest: number;
+  summeFehl: number;
   letzteMeldungAm: number;
 }
 
@@ -2300,13 +2303,18 @@ function RestmengenAuswertung({
         for (let i = 0; i < window.length; i++) {
           const a = window[i];
           for (const e of einsatzListen[i]) {
-            if (!e.restmenge || e.restmenge <= 0) continue;
+            const rest = e.restmenge ?? 0;
+            const fehl = e.fehlmenge ?? 0;
+            const komm = e.meldungKommentar;
+            // Aufnehmen, sobald irgendetwas davon vorliegt.
+            if (rest <= 0 && fehl <= 0 && !komm) continue;
             let agg = byTg.get(e.teilgebietId);
             if (!agg) {
               agg = {
                 teilgebietId: e.teilgebietId,
                 meldungen: [],
-                summe: 0,
+                summeRest: 0,
+                summeFehl: 0,
                 letzteMeldungAm: 0,
               };
               byTg.set(e.teilgebietId, agg);
@@ -2317,16 +2325,24 @@ function RestmengenAuswertung({
               kw: a.kw,
               jahr: a.jahr,
               mitarbeiterId: e.mitarbeiterId,
-              restmenge: e.restmenge,
+              restmenge: rest,
+              fehlmenge: fehl,
+              kommentar: komm,
               eingereichtAm: e.meldungEingereichtAm,
             });
-            agg.summe += e.restmenge;
+            agg.summeRest += rest;
+            agg.summeFehl += fehl;
             if ((e.meldungEingereichtAm ?? 0) > agg.letzteMeldungAm) {
               agg.letzteMeldungAm = e.meldungEingereichtAm ?? 0;
             }
           }
         }
-        const list = [...byTg.values()].sort((a, b) => b.summe - a.summe);
+        // Sortierung: Fehlmengen-Gruppen zuerst (nach Σ Fehlmenge desc),
+        // danach Restmengen-Gruppen (nach Σ Restmenge desc).
+        const list = [...byTg.values()].sort((a, b) => {
+          if (a.summeFehl !== b.summeFehl) return b.summeFehl - a.summeFehl;
+          return b.summeRest - a.summeRest;
+        });
         setAggregate(list);
       } catch (err) {
         console.error('Fehler beim Laden Restmengen:', err);
@@ -2344,11 +2360,13 @@ function RestmengenAuswertung({
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="text-sm font-semibold text-gray-800">
-            Restmengen je Teilgebiet (von Austrägern gemeldet)
+            Rest- &amp; Fehlmengen je Teilgebiet (von Austrägern gemeldet)
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Nicht ausgetragene Stücke, gemeldet via Selbstmeldung (QR-Code) oder Lieferschein.
-            Sortiert nach Summe — Gebiete mit hohen Restmengen zuerst.
+            Restmenge = nicht ausgetragene Stücke (Überschuss). Fehlmenge = zu
+            wenig erhalten (z. B. weil neue Häuser dazukamen). Gemeldet via
+            Selbstmeldung (QR-Code) oder Lieferschein. Fehlmengen-Meldungen
+            stehen oben.
           </p>
         </div>
         <label className="text-xs text-gray-600 flex items-center gap-2">
@@ -2373,7 +2391,7 @@ function RestmengenAuswertung({
         </div>
       ) : aggregate.length === 0 ? (
         <div className="rounded-lg border border-gray-200 bg-white py-8 text-center text-sm text-gray-500">
-          Keine gemeldeten Restmengen im gewählten Zeitraum.
+          Keine Meldungen im gewählten Zeitraum.
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200">
@@ -2381,11 +2399,11 @@ function RestmengenAuswertung({
             <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
               <tr>
                 <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
+                <th className="px-3 py-2 text-right font-medium" title="Summe fehlender Exemplare (zu wenig erhalten)">Σ Fehlmenge</th>
                 <th className="px-3 py-2 text-right font-medium">Σ Restmenge</th>
-                <th className="px-3 py-2 text-right font-medium" title="Anzahl der Meldungen mit Restmenge > 0">Meldungen</th>
-                <th className="px-3 py-2 text-right font-medium">Ø je Meldung</th>
+                <th className="px-3 py-2 text-right font-medium" title="Anzahl Meldungen mit Rest oder Fehlmenge">Meldungen</th>
                 <th className="px-3 py-2 text-right font-medium">Stückzahl TG</th>
-                <th className="px-3 py-2 text-right font-medium">Σ in %</th>
+                <th className="px-3 py-2 text-right font-medium" title="Rest in % der ausgelieferten Exemplare (Schnitt)">Rest %</th>
                 <th className="px-3 py-2 text-right font-medium">Zuletzt</th>
               </tr>
             </thead>
@@ -2393,26 +2411,30 @@ function RestmengenAuswertung({
               {aggregate.map((agg) => {
                 const tg = tgMap.get(agg.teilgebietId);
                 const tgStk = tg?.stueckzahl ?? 0;
-                const prozent = tgStk > 0 ? (agg.summe / (tgStk * agg.meldungen.length)) * 100 : 0;
+                const prozent = tgStk > 0 && agg.meldungen.length > 0
+                  ? (agg.summeRest / (tgStk * agg.meldungen.length)) * 100
+                  : 0;
                 const open = expandedTg === agg.teilgebietId;
+                const hatFehl = agg.summeFehl > 0;
                 return (
                   <Fragment key={agg.teilgebietId}>
                     <tr
-                      className="hover:bg-gray-50 cursor-pointer"
+                      className={`cursor-pointer ${hatFehl ? 'bg-red-50/60 hover:bg-red-100/60' : 'hover:bg-gray-50'}`}
                       onClick={() => setExpandedTg(open ? null : agg.teilgebietId)}
                     >
                       <td className="px-3 py-2 font-medium text-gray-900">
                         <span className="inline-block w-3 text-gray-400">{open ? '▾' : '▸'}</span>{' '}
+                        {hatFehl && <span className="mr-1 text-red-600" title="Fehlmenge-Meldung">⚠</span>}
                         {tg?.name ?? '— gelöscht —'}
                         {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono text-xs font-semibold text-amber-700">
-                        {agg.summe.toLocaleString('de-DE')}
+                      <td className={`px-3 py-2 text-right font-mono text-xs ${hatFehl ? 'font-bold text-red-700' : 'text-gray-300'}`}>
+                        {hatFehl ? agg.summeFehl.toLocaleString('de-DE') : '—'}
+                      </td>
+                      <td className={`px-3 py-2 text-right font-mono text-xs ${agg.summeRest > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}>
+                        {agg.summeRest > 0 ? agg.summeRest.toLocaleString('de-DE') : '—'}
                       </td>
                       <td className="px-3 py-2 text-right text-xs text-gray-600">{agg.meldungen.length}</td>
-                      <td className="px-3 py-2 text-right font-mono text-xs text-gray-600">
-                        {Math.round(agg.summe / agg.meldungen.length).toLocaleString('de-DE')}
-                      </td>
                       <td className="px-3 py-2 text-right font-mono text-xs text-gray-500">
                         {tgStk.toLocaleString('de-DE')}
                       </td>
@@ -2421,7 +2443,7 @@ function RestmengenAuswertung({
                           : prozent >= 2 ? 'text-amber-700'
                           : 'text-gray-500'
                       }`}>
-                        {prozent.toFixed(1).replace('.', ',')} %
+                        {agg.summeRest > 0 ? `${prozent.toFixed(1).replace('.', ',')} %` : '—'}
                       </td>
                       <td className="px-3 py-2 text-right text-xs text-gray-500">
                         {agg.letzteMeldungAm
@@ -2437,27 +2459,41 @@ function RestmengenAuswertung({
                               <tr>
                                 <th className="text-left py-1 font-medium">KW/Jahr</th>
                                 <th className="text-left py-1 font-medium">Austräger</th>
+                                <th className="text-right py-1 font-medium">Fehlmenge</th>
                                 <th className="text-right py-1 font-medium">Restmenge</th>
+                                <th className="text-left py-1 font-medium px-2">Kommentar</th>
                                 <th className="text-right py-1 font-medium">Gemeldet am</th>
                               </tr>
                             </thead>
                             <tbody>
                               {[...agg.meldungen]
-                                .sort((a, b) =>
-                                  b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
-                                )
+                                .sort((a, b) => {
+                                  // Fehlmenge-Meldungen oben
+                                  const af = a.fehlmenge > 0 ? 1 : 0;
+                                  const bf = b.fehlmenge > 0 ? 1 : 0;
+                                  if (af !== bf) return bf - af;
+                                  return b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw;
+                                })
                                 .map((m) => {
                                   const ma = m.mitarbeiterId ? maMap.get(m.mitarbeiterId) : undefined;
                                   return (
-                                    <tr key={m.einsatzId} className="border-t border-gray-200">
-                                      <td className="py-1 font-mono">KW {m.kw}/{m.jahr}</td>
+                                    <tr key={m.einsatzId} className="border-t border-gray-200 align-top">
+                                      <td className="py-1 font-mono whitespace-nowrap">KW {m.kw}/{m.jahr}</td>
                                       <td className="py-1">
                                         {ma ? `${ma.name} (${ma.nummer})` : <span className="text-gray-400">—</span>}
                                       </td>
-                                      <td className="py-1 text-right font-mono font-semibold text-amber-700">
-                                        {m.restmenge.toLocaleString('de-DE')}
+                                      <td className={`py-1 text-right font-mono ${m.fehlmenge > 0 ? 'font-bold text-red-700' : 'text-gray-300'}`}>
+                                        {m.fehlmenge > 0 ? m.fehlmenge.toLocaleString('de-DE') : '—'}
                                       </td>
-                                      <td className="py-1 text-right text-gray-500">
+                                      <td className={`py-1 text-right font-mono ${m.restmenge > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}>
+                                        {m.restmenge > 0 ? m.restmenge.toLocaleString('de-DE') : '—'}
+                                      </td>
+                                      <td className="py-1 px-2 text-gray-700">
+                                        {m.kommentar
+                                          ? <span className="italic">„{m.kommentar}"</span>
+                                          : <span className="text-gray-300">—</span>}
+                                      </td>
+                                      <td className="py-1 text-right text-gray-500 whitespace-nowrap">
                                         {m.eingereichtAm
                                           ? new Date(m.eingereichtAm).toLocaleDateString('de-DE')
                                           : '—'}

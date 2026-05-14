@@ -466,7 +466,9 @@ export interface Einsatz {
   memo?: string;
   // Selbstmeldung durch den Austräger (ohne Login, via QR-Code)
   arbeitszeit?: AustraegerArbeitszeit;
-  restmenge?: number;           // nicht ausgetragene Stücke
+  restmenge?: number;           // nicht ausgetragene Stücke (Überschuss)
+  fehlmenge?: number;           // zu wenig erhalten (Mangel) — z. B. weil neue Häuser dazukamen
+  meldungKommentar?: string;    // Freitext-Kommentar des Austrägers (Grund, Hinweis)
   meldungEingereichtAm?: number; // Unix-Timestamp ms der Einreichung
   erstelltAm: number;
   aktualisiertAm: number;
