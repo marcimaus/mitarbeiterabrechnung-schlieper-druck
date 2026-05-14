@@ -1280,20 +1280,22 @@ function defaultTypFuerRollen(rollen: Rolle[] | undefined): ArbeitszeitsTyp | ''
 }
 
 /** Welche Arbeitszeit-Typen darf ein MA mit den angegebenen Rollen wählen?
- *  Strikte Zuordnung:
+ *  Strikte Zuordnung — jeder Typ ist nur erlaubt, wenn die entsprechende
+ *  Rolle gesetzt ist:
  *   - austräger → austragen
  *   - zusammenträger → zusammentragen, vorarbeit (Vorbereitung)
  *   - sonstige → sonstige
- *  'sonstige' ist immer erlaubt (z. B. Besprechung, Sonderarbeit).
+ *  Reine Austräger oder Zusammenträger dürfen also nicht „Sonstige" buchen.
  */
 function erlaubteTypenFuerRollen(rollen: Rolle[] | undefined): ArbeitszeitsTyp[] {
-  const erlaubt = new Set<ArbeitszeitsTyp>(['sonstige']);
-  if (!rollen) return [...erlaubt];
+  const erlaubt = new Set<ArbeitszeitsTyp>();
+  if (!rollen) return [];
   if (rollen.includes('austräger')) erlaubt.add('austragen');
   if (rollen.includes('zusammenträger')) {
     erlaubt.add('zusammentragen');
     erlaubt.add('vorarbeit');
   }
+  if (rollen.includes('sonstige')) erlaubt.add('sonstige');
   // Reihenfolge wie in TYP_LABELS
   return (Object.keys(TYP_LABELS) as ArbeitszeitsTyp[]).filter((t) => erlaubt.has(t));
 }
