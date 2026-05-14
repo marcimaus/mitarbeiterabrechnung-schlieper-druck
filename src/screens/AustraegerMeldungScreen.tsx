@@ -538,11 +538,6 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
                   von && bis && bis <= von ? 'border-red-400 bg-red-50' : 'border-gray-300'
                 }`}
               />
-              {sollStunden > 0 && von && !bisManuell && (
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Vorbelegt mit Soll-Zeit ({formatDauer(Math.round(sollStunden * 60))}) — bei Bedarf anpassen.
-                </p>
-              )}
             </div>
           </div>
           {von && bis && bis <= von && (
