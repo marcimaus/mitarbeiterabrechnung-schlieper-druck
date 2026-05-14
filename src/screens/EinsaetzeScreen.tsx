@@ -3,7 +3,6 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import LieferscheinDruck from '../components/LieferscheinDruck';
-import LieferscheinDruckNeu from '../components/LieferscheinDruckNeu';
 import ZettelchenDruck from '../components/ZettelchenDruck';
 import KontrolleGewichteDruck from '../components/KontrolleGewichteDruck';
 import AuslieferungsmemoVerwaltung from '../components/AuslieferungsmemoVerwaltung';
@@ -56,8 +55,7 @@ function EinsaetzeInhalt() {
   const [springerZuschlag, setSpringerZuschlag] = useState('');
   const [springerIndividuell, setSpringerIndividuell] = useState(false);
   const [springerFilter, setSpringerFilter] = useState('');
-  const [lieferscheinPeriode, setLieferscheinPeriode] = useState<Abrechnungsperiode | null>(null);
-  const [lieferscheinNeuPeriode, setLieferscheinNeuPeriode] = useState<{ periode: Abrechnungsperiode; kw: number } | null>(null);
+  const [lieferscheinPeriode, setLieferscheinPeriode] = useState<{ periode: Abrechnungsperiode; kw: number } | null>(null);
   const [zettelchenOffen, setZettelchenOffen] = useState(false);
   const [kontrolleOffen, setKontrolleOffen] = useState(false);
   const [memosOffen, setMemosOffen] = useState(false);
@@ -197,23 +195,7 @@ function EinsaetzeInhalt() {
       );
       return;
     }
-    setLieferscheinPeriode(periode);
-  }
-
-  function handleLieferscheineNeuDrucken() {
-    if (!selectedAusgabe) return;
-    const periode = abrechnungsperioden.find(
-      (p) =>
-        p.kalenderwochen.includes(selectedAusgabe.kw) &&
-        p.jahr === selectedAusgabe.jahr
-    );
-    if (!periode) {
-      alert(
-        `Keine Abrechnungsperiode gefunden, die KW ${selectedAusgabe.kw}/${selectedAusgabe.jahr} enthält.\n\nBitte zuerst die Abrechnungsperiode anlegen und die KW zuordnen.`
-      );
-      return;
-    }
-    setLieferscheinNeuPeriode({ periode, kw: selectedAusgabe.kw });
+    setLieferscheinPeriode({ periode, kw: selectedAusgabe.kw });
   }
 
   // ---- Filter auf Teilgebiete anwenden ----
@@ -315,15 +297,6 @@ function EinsaetzeInhalt() {
                 title="Lieferscheine für die Abrechnungsperiode dieser Ausgabe drucken"
               >
                 🖨️ Lieferscheine
-              </button>
-              <button
-                type="button"
-                onClick={handleLieferscheineNeuDrucken}
-                disabled={!selectedAusgabe}
-                className="text-xs font-medium px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-800 hover:border-emerald-500 hover:bg-emerald-100 disabled:opacity-40 transition-colors"
-                title="Neue Variante: druckt nur Lieferscheine für TGs, die in DIESER Ausgabe ausgetragen werden (1 Schein pro TG). Auf dem Schein erscheinen alle bisherigen + aktuellen Ausgaben der Periode."
-              >
-                🖨️ Lieferscheine-neu
               </button>
               <button
                 type="button"
@@ -800,23 +773,12 @@ function EinsaetzeInhalt() {
       {/* Lieferschein-Druck-Modal */}
       {lieferscheinPeriode && (
         <LieferscheinDruck
-          periode={lieferscheinPeriode}
+          periode={lieferscheinPeriode.periode}
           ausgaben={ausgaben}
+          selectedKw={lieferscheinPeriode.kw}
           mitarbeiter={mitarbeiter}
           teilgebiete={teilgebiete}
           onClose={() => setLieferscheinPeriode(null)}
-        />
-      )}
-
-      {/* Lieferschein-Druck-Modal (NEU) */}
-      {lieferscheinNeuPeriode && (
-        <LieferscheinDruckNeu
-          periode={lieferscheinNeuPeriode.periode}
-          ausgaben={ausgaben}
-          selectedKw={lieferscheinNeuPeriode.kw}
-          mitarbeiter={mitarbeiter}
-          teilgebiete={teilgebiete}
-          onClose={() => setLieferscheinNeuPeriode(null)}
         />
       )}
 

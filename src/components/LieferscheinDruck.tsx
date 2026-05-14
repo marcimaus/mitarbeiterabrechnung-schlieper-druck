@@ -1,5 +1,12 @@
 // Lieferschein-Druckkomponente
-// Zeigt print-fertige Lieferscheine für alle Teilgebiete einer Abrechnungsperiode
+// Druckt nur die Lieferscheine für Teilgebiete, die in der AKTUELL gewählten
+// Ausgabe ausgetragen werden. Pro Teilgebiet entsteht maximal ein Schein —
+// der Empfänger ist der Austräger, der das TG in dieser Ausgabe übernimmt
+// (Standardausträger oder Springer). Auf dem Schein erscheinen ALLE bisherigen
+// + aktuellen Ausgaben der Periode, in denen dieser Empfänger das TG bedient
+// hat — gut zum nachträglichen Eintragen. Über einen Toggle-Chip lassen sich
+// optional auch die Scheine einblenden, deren TG in dieser Ausgabe nicht
+// beliefert wird (für Nachdrucke bei verlorenen Zetteln).
 
 import { useState, useEffect, useMemo } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
@@ -74,6 +81,10 @@ function formatKm(m: number): string {
 interface Props {
   periode: Abrechnungsperiode;
   ausgaben: Ausgabe[];
+  /** KW der aktuell gewählten Ausgabe — nur TGs, die in DIESER Ausgabe
+   *  ausgetragen werden, erscheinen im Druck. Vergangene + aktuelle KWs
+   *  der Periode werden trotzdem in der Tabelle des Scheins gezeigt. */
+  selectedKw: number;
   mitarbeiter: Mitarbeiter[];
   teilgebiete: Teilgebiet[];
   touren?: Tour[];
@@ -83,6 +94,7 @@ interface Props {
 export default function LieferscheinDruck({
   periode,
   ausgaben,
+  selectedKw,
   mitarbeiter,
   teilgebiete,
   onClose,
@@ -91,6 +103,12 @@ export default function LieferscheinDruck({
   const [fehler, setFehler] = useState('');
   const [scheine, setScheine] = useState<LieferscheinInfo[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  /** Schlüssel der Scheine, deren Empfänger in der gewählten KW austrägt. */
+  const [aktuelleSchluessel, setAktuelleSchluessel] = useState<Set<string>>(new Set());
+  /** Wenn true: auch Scheine anzeigen, deren TG in dieser Ausgabe NICHT beliefert
+   *  wird (z. B. weil dort Ausfall war oder weil der Standard-Austräger gerade
+   *  vom Springer abgelöst wurde). Hilfreich für Nachdrucke bei verlorenem Zettel. */
+  const [zeigeNichtBeliefert, setZeigeNichtBeliefert] = useState(false);
 
   const mitarbeiterMap = new Map(mitarbeiter.map((m) => [m.id, m]));
 
@@ -245,7 +263,29 @@ export default function LieferscheinDruck({
         }
       }
 
-      result.sort((a, b) => {
+      // Neue Filter-Logik:
+      //  (a) Nur Scheine, deren Empfänger das TG in der gewählten KW
+      //      (selectedKw) tatsächlich austrägt → garantiert max. 1 Schein
+      //      pro TG.
+      //  (b) Tabellen-Zeilen + Memos pro Schein auf bisherige + aktuelle KWs
+      //      der Periode begrenzen (kw <= selectedKw) — zukünftige Ausgaben
+      //      erscheinen nicht.
+      // Alle Scheine (Zeilen/Memos auf kw <= selectedKw beschränkt) + Markierung,
+      // welche von ihnen in der gewählten KW tatsächlich beliefert werden. Die
+      // „nicht beliefert"-Scheine werden im UI normalerweise ausgeblendet, lassen
+      // sich aber per Chip einblenden (Nachdrucken bei verlorenem Zettel).
+      const alle: LieferscheinInfo[] = [];
+      const aktuelleSchluessel = new Set<string>();
+      for (const s of result) {
+        const hatAktuelleKw = s.zeilen.some((z) => z.kw === selectedKw);
+        const zeilen = s.zeilen.filter((z) => z.kw <= selectedKw);
+        if (zeilen.length === 0) continue; // keine Zeilen ≤ selectedKw → uninteressant
+        const memos = s.memos.filter((m) => m.kw <= selectedKw);
+        alle.push({ ...s, zeilen, memos });
+        if (hatAktuelleKw) aktuelleSchluessel.add(s.schluessel);
+      }
+
+      alle.sort((a, b) => {
         // Natural sort: Uslar1 < Uslar2 < … < Uslar10 (nicht lexikographisch).
         const byName = a.teilgebiet.name.localeCompare(b.teilgebiet.name, 'de', { numeric: true });
         if (byName !== 0) return byName;
@@ -253,9 +293,10 @@ export default function LieferscheinDruck({
         if (a.istSpringer !== b.istSpringer) return a.istSpringer ? 1 : -1;
         return a.empfaenger.name.localeCompare(b.empfaenger.name, 'de');
       });
-      setScheine(result);
+      setScheine(alle);
+      setAktuelleSchluessel(aktuelleSchluessel);
       // Standardmäßig alle ausgewählt
-      setSelectedIds(new Set(result.map((s) => s.schluessel)));
+      setSelectedIds(new Set(alle.map((s) => s.schluessel)));
     } catch (err) {
       console.error(err);
       setFehler('Fehler beim Laden der Daten.');
@@ -269,21 +310,18 @@ export default function LieferscheinDruck({
   // selbst werden dann auch nur die KW-passenden Zeilen + Memos behalten.
   // → Damit erscheint Scherbarths Schein nicht im KW-18-Druck, wenn KW18
   //   ein Springer austrägt.
-  const [filterKw, setFilterKw] = useState<number | null>(null);
+  // Standardmäßig nur die Scheine, deren Empfänger in der gewählten KW
+  // tatsächlich austrägt. Über den Chip „Auch nicht beliefert" lassen sich
+  // die übrigen einblenden (z. B. zum Nachdrucken eines verlorenen Zettels).
   const sichtbareScheine = useMemo(() => {
-    const ausgewaehlt = scheine.filter((s) => selectedIds.has(s.schluessel));
-    if (filterKw === null) return ausgewaehlt;
-    return ausgewaehlt.flatMap((s) => {
-      const zeilen = s.zeilen.filter((z) => z.kw === filterKw);
-      if (zeilen.length === 0) return [];
-      const memos = s.memos.filter((m) => m.kw === filterKw);
-      return [{ ...s, zeilen, memos }];
-    });
-  }, [scheine, selectedIds, filterKw]);
-  const kwListe = useMemo(
-    () => [...periode.kalenderwochen].sort((a, b) => a - b),
-    [periode.kalenderwochen]
-  );
+    return scheine
+      .filter((s) => selectedIds.has(s.schluessel))
+      .filter((s) => zeigeNichtBeliefert || aktuelleSchluessel.has(s.schluessel));
+  }, [scheine, selectedIds, aktuelleSchluessel, zeigeNichtBeliefert]);
+
+  const anzahlNichtBeliefert = scheine.filter(
+    (s) => !aktuelleSchluessel.has(s.schluessel)
+  ).length;
 
   // ---- Render -----------------------------------------------
   return (
@@ -353,21 +391,24 @@ export default function LieferscheinDruck({
             Lieferscheine — {periode.bezeichnung}
           </span>
           <span className="text-gray-500 text-sm">
-            ({sichtbareScheine.length} von {scheine.length} Lieferscheinen)
+            ({sichtbareScheine.length} Lieferschein{sichtbareScheine.length === 1 ? '' : 'e'} · KW {selectedKw})
           </span>
+          {anzahlNichtBeliefert > 0 && (
+            <button
+              type="button"
+              onClick={() => setZeigeNichtBeliefert((v) => !v)}
+              className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                zeigeNichtBeliefert
+                  ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600'
+                  : 'bg-white text-amber-700 border-amber-300 hover:bg-amber-50'
+              }`}
+              title="Auch Scheine anzeigen, deren TG in dieser Ausgabe nicht beliefert wird (z. B. Nachdruck bei verlorenem Zettel)"
+            >
+              {zeigeNichtBeliefert ? '✓ ' : '+ '}
+              auch nicht beliefert ({anzahlNichtBeliefert})
+            </button>
+          )}
           <div className="ml-auto flex gap-2">
-            <button
-              onClick={() => setSelectedIds(new Set(scheine.map((s) => s.schluessel)))}
-              className="text-xs text-blue-600 hover:underline"
-            >
-              Alle
-            </button>
-            <button
-              onClick={() => setSelectedIds(new Set())}
-              className="text-xs text-blue-600 hover:underline"
-            >
-              Keine
-            </button>
             <button
               onClick={() => window.print()}
               disabled={sichtbareScheine.length === 0}
@@ -377,76 +418,6 @@ export default function LieferscheinDruck({
             </button>
           </div>
         </div>
-
-        {/* KW-Filter — beschränkt die Lieferscheine auf eine bestimmte Ausgabe */}
-        {!loading && scheine.length > 0 && kwListe.length > 1 && (
-          <div className="bg-blue-50 border-b border-blue-200 px-4 py-2 flex flex-wrap items-center gap-2 shrink-0">
-            <span className="text-xs font-semibold text-blue-900">Ausgabe (KW):</span>
-            <button
-              type="button"
-              onClick={() => setFilterKw(null)}
-              className={`text-xs px-2.5 py-1 rounded-full border ${
-                filterKw === null
-                  ? 'bg-blue-700 text-white border-blue-700'
-                  : 'bg-white text-blue-700 border-blue-300 hover:border-blue-400'
-              }`}
-            >
-              Alle ({kwListe.length})
-            </button>
-            {kwListe.map((kw) => (
-              <button
-                key={kw}
-                type="button"
-                onClick={() => setFilterKw(kw)}
-                className={`text-xs px-2.5 py-1 rounded-full border ${
-                  filterKw === kw
-                    ? 'bg-blue-700 text-white border-blue-700'
-                    : 'bg-white text-blue-700 border-blue-300 hover:border-blue-400'
-                }`}
-                title={`Nur Lieferscheine für KW ${kw}`}
-              >
-                KW {kw}
-              </button>
-            ))}
-            {filterKw !== null && (
-              <span className="text-[11px] text-blue-700 italic ml-1">
-                Filter aktiv — nur die Empfänger der KW {filterKw} werden gedruckt.
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* Auswahl-Leiste */}
-        {!loading && scheine.length > 0 && (
-          <div className="bg-gray-50 border-b border-gray-200 px-4 py-2 flex flex-wrap gap-2 shrink-0">
-            {scheine.map((s) => (
-              <button
-                key={s.schluessel}
-                type="button"
-                onClick={() =>
-                  setSelectedIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(s.schluessel)) next.delete(s.schluessel);
-                    else next.add(s.schluessel);
-                    return next;
-                  })
-                }
-                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                  selectedIds.has(s.schluessel)
-                    ? s.istSpringer
-                      ? 'bg-red-600 text-white border-red-600'
-                      : 'bg-blue-600 text-white border-blue-600'
-                    : s.istSpringer
-                      ? 'bg-white text-red-600 border-red-300'
-                      : 'bg-white text-gray-600 border-gray-300'
-                }`}
-              >
-                {s.teilgebiet.name}
-                {s.istSpringer && ' 🔄'}
-              </button>
-            ))}
-          </div>
-        )}
 
         {/* Vorschau */}
         <div className="flex-1 overflow-y-auto p-6 bg-gray-200">
