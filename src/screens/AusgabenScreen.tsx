@@ -86,12 +86,14 @@ function AusgabenListe() {
           const key = `${periode.jahr}-${kw}`;
           if (!vorhandeneKeys.has(key)) {
             vorhandeneKeys.add(key); // Duplikate innerhalb des Loops verhindern
-            const standardSeitenzahl = 16;
+            // Seitenzahl + Stapelzahl stehen bei der automatischen Anlage
+            // noch nicht fest → leer (0) anlegen; werden später manuell
+            // gepflegt.
             const id = await erstelleAusgabe({
               kw,
               jahr: periode.jahr,
-              seitenzahl: standardSeitenzahl,
-              stapelAnzahl: berechneStapel(standardSeitenzahl).length,
+              seitenzahl: 0,
+              stapelAnzahl: 0,
               grammaturGqm: parameter?.standardGrammurGqm ?? 65,
               seitenformatMm: {
                 breite: parameter?.standardSeitenformatBreiteMm ?? 305,
@@ -101,8 +103,8 @@ function AusgabenListe() {
             });
             neuAngelegt.push({
               id, kw, jahr: periode.jahr,
-              seitenzahl: standardSeitenzahl,
-              stapelAnzahl: berechneStapel(standardSeitenzahl).length,
+              seitenzahl: 0,
+              stapelAnzahl: 0,
               grammaturGqm: parameter?.standardGrammurGqm ?? 65,
               seitenformatMm: {
                 breite: parameter?.standardSeitenformatBreiteMm ?? 305,
@@ -297,8 +299,16 @@ function AusgabeDetail({
         )}
 
         <div className="grid grid-cols-4 gap-4 mt-4">
-          <InfoBox label="Seitenzahl" value={`${ausgabe.seitenzahl} Seiten`} />
-          <InfoBox label="Stapel" value={`${ausgabe.stapelAnzahl} Stapel`} hint="Für Zusammentragen" />
+          <InfoBox
+            label="Seitenzahl"
+            value={ausgabe.seitenzahl > 0 ? `${ausgabe.seitenzahl} Seiten` : '— fehlt —'}
+            hint={ausgabe.seitenzahl > 0 ? undefined : 'Noch nicht erfasst'}
+          />
+          <InfoBox
+            label="Stapel"
+            value={ausgabe.stapelAnzahl > 0 ? `${ausgabe.stapelAnzahl} Stapel` : '— fehlt —'}
+            hint={ausgabe.stapelAnzahl > 0 ? 'Für Zusammentragen' : 'Noch nicht erfasst'}
+          />
           <InfoBox label="Grammatur" value={`${ausgabe.grammaturGqm} g/m²`} />
           <InfoBox
             label="Gewicht je Exemplar"
@@ -1488,16 +1498,16 @@ function PeriodeForm({
         onSave({ id, monat, jahr, bezeichnung, kalenderwochen: gewaehlteKWs, status: 'offen', erstelltAm: Date.now() });
       }
 
-      // Für jede KW in der Periode automatisch eine Ausgabe anlegen, falls noch keine vorhanden
+      // Für jede KW in der Periode automatisch eine Ausgabe anlegen, falls noch keine vorhanden.
+      // Seitenzahl + Stapelzahl bewusst LEER (0) anlegen — werden später erfasst.
       const kwsMitAusgabeAktuell = new Set(ausgaben.filter((a) => a.jahr === jahr).map((a) => a.kw));
-      const standardSeitenzahl = 16;
       for (const kw of gewaehlteKWs) {
         if (!kwsMitAusgabeAktuell.has(kw)) {
           await erstelleAusgabe({
             kw,
             jahr,
-            seitenzahl: standardSeitenzahl,
-            stapelAnzahl: berechneStapel(standardSeitenzahl).length,
+            seitenzahl: 0,
+            stapelAnzahl: 0,
             grammaturGqm: parameter?.standardGrammurGqm ?? 65,
             seitenformatMm: {
               breite: parameter?.standardSeitenformatBreiteMm ?? 305,

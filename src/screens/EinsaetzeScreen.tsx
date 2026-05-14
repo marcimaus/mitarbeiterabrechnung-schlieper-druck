@@ -284,50 +284,88 @@ function EinsaetzeInhalt() {
           </select>
 
           {/* Statistik-Badges + Lieferscheine-Button */}
-          {!loading && (
-            <div className="flex gap-2 flex-wrap ml-auto items-center">
-              <StatBadge label="Standard" count={stats.standard} farbe="bg-gray-100 text-gray-700" />
-              <StatBadge label="Springer" count={stats.springer} farbe="bg-blue-100 text-blue-700" />
-              <StatBadge label="Unbesetzt" count={stats.unbesetzt} farbe="bg-yellow-100 text-yellow-700" />
-              <button
-                type="button"
-                onClick={handleLieferscheineDrucken}
-                disabled={!selectedAusgabe}
-                className="ml-2 text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 transition-colors"
-                title="Lieferscheine für die Abrechnungsperiode dieser Ausgabe drucken"
-              >
-                🖨️ Lieferscheine
-              </button>
-              <button
-                type="button"
-                onClick={() => setZettelchenOffen(true)}
-                disabled={!selectedAusgabe}
-                className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 transition-colors"
-                title="Arbeitsvorbereitungs-Zettelchen (Zusammentragen + Vorarbeit) für diese Ausgabe drucken"
-              >
-                🗒️ Zettelchen
-              </button>
-              <button
-                type="button"
-                onClick={() => setKontrolleOffen(true)}
-                disabled={!selectedAusgabe}
-                className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 transition-colors"
-                title="Kontrollliste Gewichte (Soll/Min/Max) zum Ausdrucken"
-              >
-                ⚖️ Kontrolle Gewichte
-              </button>
-              <button
-                type="button"
-                onClick={() => setMemosOffen(true)}
-                disabled={!selectedAusgabe}
-                className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 transition-colors"
-                title="Auslieferungs-Memos für diese Ausgabe verwalten (werden auf den Lieferscheinen angezeigt)"
-              >
-                📝 Memos
-              </button>
-            </div>
-          )}
+          {!loading && (() => {
+            const seitenFehlen = !!selectedAusgabe && (!selectedAusgabe.seitenzahl || selectedAusgabe.seitenzahl <= 0);
+            const stapelFehlen = !!selectedAusgabe && (!selectedAusgabe.stapelAnzahl || selectedAusgabe.stapelAnzahl <= 0);
+            const lieferscheineGesperrt = seitenFehlen || stapelFehlen;
+            const kontrolleGesperrt = seitenFehlen;
+            return (
+              <div className="flex gap-2 flex-wrap ml-auto items-center">
+                <StatBadge label="Standard" count={stats.standard} farbe="bg-gray-100 text-gray-700" />
+                <StatBadge label="Springer" count={stats.springer} farbe="bg-blue-100 text-blue-700" />
+                <StatBadge label="Unbesetzt" count={stats.unbesetzt} farbe="bg-yellow-100 text-yellow-700" />
+                <button
+                  type="button"
+                  onClick={handleLieferscheineDrucken}
+                  disabled={!selectedAusgabe || lieferscheineGesperrt}
+                  className="ml-2 text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title={
+                    lieferscheineGesperrt
+                      ? 'Seitenzahl und/oder Stapelzahl fehlen — Lieferscheine wären unvollständig. Bitte zuerst in „Ausgaben & Beilagen" ergänzen.'
+                      : 'Lieferscheine für die Abrechnungsperiode dieser Ausgabe drucken'
+                  }
+                >
+                  🖨️ Lieferscheine
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setZettelchenOffen(true)}
+                  disabled={!selectedAusgabe}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 transition-colors"
+                  title="Arbeitsvorbereitungs-Zettelchen (Zusammentragen + Vorarbeit) für diese Ausgabe drucken"
+                >
+                  🗒️ Zettelchen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setKontrolleOffen(true)}
+                  disabled={!selectedAusgabe || kontrolleGesperrt}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title={
+                    kontrolleGesperrt
+                      ? 'Seitenzahl fehlt — Gewichts-Kontrolle nicht möglich. Bitte zuerst in „Ausgaben & Beilagen" eintragen.'
+                      : 'Kontrollliste Gewichte (Soll/Min/Max) zum Ausdrucken'
+                  }
+                >
+                  ⚖️ Kontrolle Gewichte
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMemosOffen(true)}
+                  disabled={!selectedAusgabe}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 transition-colors"
+                  title="Auslieferungs-Memos für diese Ausgabe verwalten (werden auf den Lieferscheinen angezeigt)"
+                >
+                  📝 Memos
+                </button>
+              </div>
+            );
+          })()}
         </div>
+
+        {/* Warn-Banner: fehlende Seitenzahl / Stapelzahl */}
+        {selectedAusgabe && (() => {
+          const seitenFehlen = !selectedAusgabe.seitenzahl || selectedAusgabe.seitenzahl <= 0;
+          const stapelFehlen = !selectedAusgabe.stapelAnzahl || selectedAusgabe.stapelAnzahl <= 0;
+          if (!seitenFehlen && !stapelFehlen) return null;
+          const fehlend: string[] = [];
+          if (seitenFehlen) fehlend.push('Seitenzahl');
+          if (stapelFehlen) fehlend.push('Anzahl Stapel');
+          return (
+            <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 flex items-start gap-2">
+              <span className="text-amber-700">⚠</span>
+              <div className="flex-1">
+                <strong>Daten unvollständig:</strong> {fehlend.join(' und ')} {fehlend.length === 1 ? 'fehlt' : 'fehlen'} für diese Ausgabe.
+                {seitenFehlen && stapelFehlen
+                  ? ' Lieferscheine und Gewichts-Kontrolle sind deshalb deaktiviert.'
+                  : seitenFehlen
+                    ? ' Lieferscheine und Gewichts-Kontrolle sind deshalb deaktiviert.'
+                    : ' Lieferscheine sind deshalb deaktiviert (Stapelzahl wird für die Lieferscheine benötigt).'}
+                {' '}Bitte unter „Ausgaben &amp; Beilagen" ergänzen.
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Filter-Leiste */}

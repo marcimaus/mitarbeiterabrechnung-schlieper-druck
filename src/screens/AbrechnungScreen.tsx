@@ -24,9 +24,10 @@ import {
   loescheStueckzahlAnpassung,
   entferneAusAbmeldungenSnapshot,
   ladeFahrten,
+  ladeAusgaben,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
-import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle } from '../types';
+import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe } from '../types';
 import { ROLLEN_LABELS } from '../types';
 
 export default function AbrechnungScreen() {
@@ -56,6 +57,35 @@ function AbrechnungInhalt() {
   // Warnung: Fahrtkosten-Datensätze, die noch keiner Abrechnungsperiode
   // zugeordnet sind (abrechnungsperiodeId fehlt).
   const [unzugeordneteFahrten, setUnzugeordneteFahrten] = useState<number>(0);
+  // Ausgaben der gewählten Periode — zur Prüfung auf fehlende Seitenzahl /
+  // Stapelzahl. Wird beim Periodenwechsel neu geladen.
+  const [periodenAusgaben, setPeriodenAusgaben] = useState<Ausgabe[]>([]);
+
+  useEffect(() => {
+    if (!selectedPeriodeId) {
+      setPeriodenAusgaben([]);
+      return;
+    }
+    let cancelled = false;
+    ladeAusgaben().then((alle) => {
+      if (cancelled) return;
+      const periode = abrechnungsperioden.find((p) => p.id === selectedPeriodeId);
+      if (!periode) {
+        setPeriodenAusgaben([]);
+        return;
+      }
+      setPeriodenAusgaben(
+        alle.filter((a) => a.jahr === periode.jahr && periode.kalenderwochen.includes(a.kw))
+      );
+    }).catch((err) => console.error('Fehler beim Laden der Periode-Ausgaben:', err));
+    return () => { cancelled = true; };
+  }, [selectedPeriodeId, abrechnungsperioden]);
+
+  // Liste der Ausgaben mit fehlenden Pflichtwerten (Seitenzahl / Stapelzahl).
+  const ausgabenMitFehlendenWerten = periodenAusgaben.filter(
+    (a) => !a.seitenzahl || a.seitenzahl <= 0 || !a.stapelAnzahl || a.stapelAnzahl <= 0
+  );
+  const periodeIstUnvollstaendig = ausgabenMitFehlendenWerten.length > 0;
 
   // Beim Mount + nach Periode-Wechsel die Anzahl der nicht zugeordneten
   // Fahrten holen. Schlank gehalten: nur Anzahl, nicht die Datensätze.
@@ -456,8 +486,17 @@ function AbrechnungInhalt() {
                   ) : !monatswechselBestaetigt ? (
                     <button
                       onClick={() => setMonatswechselBestaetigt(true)}
-                      className="bg-blue-50 text-blue-700 border border-blue-200 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-100 transition-colors"
-                      title="Fixiert Austragen und Zusammentragen vor dem Wechsel der Standardausträger"
+                      disabled={periodeIstUnvollstaendig}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                        periodeIstUnvollstaendig
+                          ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                          : 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                      }`}
+                      title={
+                        periodeIstUnvollstaendig
+                          ? 'Erst Seitenzahl und Anzahl Stapel für alle Ausgaben dieser Periode eintragen.'
+                          : 'Fixiert Austragen und Zusammentragen vor dem Wechsel der Standardausträger'
+                      }
                     >
                       📌 Monatswechsel durchführen
                     </button>
@@ -485,16 +524,18 @@ function AbrechnungInhalt() {
                   {!abschliessenBestaetigt ? (
                     <button
                       onClick={() => setAbschliessenBestaetigt(true)}
-                      disabled={!selectedPeriode?.monatswechselSnapshot}
+                      disabled={!selectedPeriode?.monatswechselSnapshot || periodeIstUnvollstaendig}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        selectedPeriode?.monatswechselSnapshot
+                        selectedPeriode?.monatswechselSnapshot && !periodeIstUnvollstaendig
                           ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                           : 'bg-gray-50 text-gray-400 cursor-not-allowed'
                       }`}
                       title={
-                        selectedPeriode?.monatswechselSnapshot
-                          ? 'Schließt die Periode ab und speichert das aktuelle Berechnungsergebnis als Snapshot'
-                          : 'Erst Monatswechsel durchführen, dann kann abgeschlossen werden'
+                        periodeIstUnvollstaendig
+                          ? 'Erst Seitenzahl und Anzahl Stapel für alle Ausgaben dieser Periode eintragen.'
+                          : selectedPeriode?.monatswechselSnapshot
+                            ? 'Schließt die Periode ab und speichert das aktuelle Berechnungsergebnis als Snapshot'
+                            : 'Erst Monatswechsel durchführen, dann kann abgeschlossen werden'
                       }
                     >
                       🔒 Periode abschließen &amp; speichern
@@ -543,6 +584,35 @@ function AbrechnungInhalt() {
         {fehler && (
           <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
             {fehler}
+          </div>
+        )}
+
+        {/* Warnung: Ausgaben der Periode mit fehlenden Pflichtwerten */}
+        {selectedPeriode && ausgabenMitFehlendenWerten.length > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-400 bg-amber-50 px-4 py-3 text-sm">
+            <div className="font-semibold text-amber-900 mb-1">
+              ⚠ Ausgaben der Periode unvollständig — Monatsabschluss gesperrt
+            </div>
+            <p className="text-xs text-amber-800 mb-1.5">
+              Folgende Ausgaben dieser Periode haben keine Seitenzahl und/oder
+              keine Anzahl Stapel eingetragen. Solange Werte fehlen, kann die
+              Periode nicht abgeschlossen werden:
+            </p>
+            <ul className="list-disc list-inside text-amber-900 space-y-0.5">
+              {ausgabenMitFehlendenWerten.map((a) => {
+                const fehlend: string[] = [];
+                if (!a.seitenzahl || a.seitenzahl <= 0) fehlend.push('Seitenzahl');
+                if (!a.stapelAnzahl || a.stapelAnzahl <= 0) fehlend.push('Anzahl Stapel');
+                return (
+                  <li key={a.id} className="text-xs">
+                    <strong>KW {a.kw}/{a.jahr}</strong> — fehlt: {fehlend.join(', ')}
+                  </li>
+                );
+              })}
+            </ul>
+            <p className="text-xs text-amber-700 mt-1.5 italic">
+              Bitte unter „Ausgaben &amp; Beilagen" ergänzen.
+            </p>
           </div>
         )}
       </div>
