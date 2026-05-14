@@ -2370,8 +2370,8 @@ function RestmengenAuswertung({
           <p className="text-xs text-gray-500 mt-0.5">
             Restmenge = nicht ausgetragene Stücke (Überschuss). Fehlmenge = zu
             wenig erhalten (z. B. weil neue Häuser dazukamen). Gemeldet via
-            Selbstmeldung (QR-Code) oder Lieferschein. Fehlmengen-Meldungen
-            stehen oben.
+            Selbstmeldung (QR-Code) oder Lieferschein. Werte sind Ø je Meldung;
+            sortiert nach Ø Fehlmenge, dann Ø Restmenge — Hover zeigt Summe + Anzahl.
           </p>
         </div>
         <label className="text-xs text-gray-600 flex items-center gap-2">
@@ -2404,11 +2404,11 @@ function RestmengenAuswertung({
             <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
               <tr>
                 <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
-                <th className="px-3 py-2 text-right font-medium" title="Summe fehlender Exemplare (zu wenig erhalten)">Σ Fehlmenge</th>
-                <th className="px-3 py-2 text-right font-medium">Σ Restmenge</th>
+                <th className="px-3 py-2 text-right font-medium" title="Durchschnittliche Fehlmenge je Meldung (zu wenig erhalten)">Ø Fehlmenge</th>
+                <th className="px-3 py-2 text-right font-medium" title="Durchschnittliche Restmenge je Meldung">Ø Restmenge</th>
                 <th className="px-3 py-2 text-right font-medium" title="Anzahl Meldungen mit Rest oder Fehlmenge">Meldungen</th>
                 <th className="px-3 py-2 text-right font-medium">Stückzahl TG</th>
-                <th className="px-3 py-2 text-right font-medium" title="Rest in % der ausgelieferten Exemplare (Schnitt)">Rest %</th>
+                <th className="px-3 py-2 text-right font-medium" title="Ø Restmenge in % der TG-Stückzahl">Rest %</th>
                 <th className="px-3 py-2 text-right font-medium">Zuletzt</th>
               </tr>
             </thead>
@@ -2416,11 +2416,15 @@ function RestmengenAuswertung({
               {aggregate.map((agg) => {
                 const tg = tgMap.get(agg.teilgebietId);
                 const tgStk = tg?.stueckzahl ?? 0;
-                const prozent = tgStk > 0 && agg.meldungen.length > 0
-                  ? (agg.summeRest / (tgStk * agg.meldungen.length)) * 100
-                  : 0;
+                const anzMeldungen = agg.meldungen.length;
+                const avgRest = anzMeldungen > 0 ? agg.summeRest / anzMeldungen : 0;
+                const avgFehl = anzMeldungen > 0 ? agg.summeFehl / anzMeldungen : 0;
+                const prozent = tgStk > 0 && avgRest > 0 ? (avgRest / tgStk) * 100 : 0;
                 const open = expandedTg === agg.teilgebietId;
                 const hatFehl = agg.summeFehl > 0;
+                const fmtAvg = (v: number) =>
+                  v >= 10 ? Math.round(v).toLocaleString('de-DE')
+                    : v.toLocaleString('de-DE', { maximumFractionDigits: 1 });
                 return (
                   <Fragment key={agg.teilgebietId}>
                     <tr
@@ -2433,13 +2437,19 @@ function RestmengenAuswertung({
                         {tg?.name ?? '— gelöscht —'}
                         {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
                       </td>
-                      <td className={`px-3 py-2 text-right font-mono text-xs ${hatFehl ? 'font-bold text-red-700' : 'text-gray-300'}`}>
-                        {hatFehl ? agg.summeFehl.toLocaleString('de-DE') : '—'}
+                      <td
+                        className={`px-3 py-2 text-right font-mono text-xs ${hatFehl ? 'font-bold text-red-700' : 'text-gray-300'}`}
+                        title={hatFehl ? `Σ ${agg.summeFehl} aus ${anzMeldungen} Meldungen` : undefined}
+                      >
+                        {hatFehl ? fmtAvg(avgFehl) : '—'}
                       </td>
-                      <td className={`px-3 py-2 text-right font-mono text-xs ${agg.summeRest > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}>
-                        {agg.summeRest > 0 ? agg.summeRest.toLocaleString('de-DE') : '—'}
+                      <td
+                        className={`px-3 py-2 text-right font-mono text-xs ${agg.summeRest > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}
+                        title={agg.summeRest > 0 ? `Σ ${agg.summeRest} aus ${anzMeldungen} Meldungen` : undefined}
+                      >
+                        {agg.summeRest > 0 ? fmtAvg(avgRest) : '—'}
                       </td>
-                      <td className="px-3 py-2 text-right text-xs text-gray-600">{agg.meldungen.length}</td>
+                      <td className="px-3 py-2 text-right text-xs text-gray-600">{anzMeldungen}</td>
                       <td className="px-3 py-2 text-right font-mono text-xs text-gray-500">
                         {tgStk.toLocaleString('de-DE')}
                       </td>
@@ -2448,7 +2458,7 @@ function RestmengenAuswertung({
                           : prozent >= 2 ? 'text-amber-700'
                           : 'text-gray-500'
                       }`}>
-                        {agg.summeRest > 0 ? `${prozent.toFixed(1).replace('.', ',')} %` : '—'}
+                        {avgRest > 0 ? `${prozent.toFixed(1).replace('.', ',')} %` : '—'}
                       </td>
                       <td className="px-3 py-2 text-right text-xs text-gray-500">
                         {agg.letzteMeldungAm

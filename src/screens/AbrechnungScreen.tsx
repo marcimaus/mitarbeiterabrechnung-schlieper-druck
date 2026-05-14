@@ -874,7 +874,7 @@ function AbrechnungInhalt() {
 
           {/* Detailtabelle */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-            <table className="min-w-[1400px] w-full text-sm whitespace-nowrap">
+            <table className="min-w-[1500px] w-full text-sm whitespace-nowrap">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
                   <th className="px-4 py-3 text-left font-medium text-gray-600 sticky left-0 bg-gray-50 z-20 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Mitarbeiter</th>
@@ -884,6 +884,7 @@ function AbrechnungInhalt() {
                   <th className="px-4 py-3 text-right font-medium text-gray-600">Zusammentr.</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600">Zeiterfassung</th>
                   <th className="px-4 py-3 text-right font-medium text-purple-700" title="Tätigkeits-Boni in Minuten je Ausgabe (z. B. Orga, Betreuung Zusammenträger)">Min-Boni</th>
+                  <th className="px-4 py-3 text-right font-medium text-emerald-700" title="Bonus Zeiterfassung Austragen — pauschal je vollständig online erfasstem Einsatz">Bonus Zeit</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600">Fix</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600">Fahrtkosten</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600" title="Erbrachte Leistung in dieser Periode (vor Lohnkonto-Bewegung)">Brutto</th>
@@ -1003,6 +1004,16 @@ function AbrechnungInhalt() {
                       >
                         {er.ausgabenBoniLohnGesamt > 0 ? eur(er.ausgabenBoniLohnGesamt) : '—'}
                       </td>
+                      <td
+                        className="px-4 py-3 text-right text-emerald-700"
+                        title={
+                          er.bonusZeiterfassungAnzahl > 0
+                            ? `${er.bonusZeiterfassungAnzahl} vollständig online erfasste Einsätze · ${eur(er.bonusZeiterfassungEur)}`
+                            : ''
+                        }
+                      >
+                        {er.bonusZeiterfassungEur > 0 ? eur(er.bonusZeiterfassungEur) : '—'}
+                      </td>
                       <td className="px-4 py-3 text-right text-gray-700">
                         {er.fixesGehalt > 0 ? eur(er.fixesGehalt) : '—'}
                       </td>
@@ -1055,7 +1066,7 @@ function AbrechnungInhalt() {
                     {/* Detail-Aufklappung */}
                     {expandedId === er.mitarbeiter.id && (
                       <tr key={`${er.mitarbeiter.id}-detail`}>
-                        <td colSpan={14} className="bg-gray-50 px-6 py-4">
+                        <td colSpan={15} className="bg-gray-50 px-6 py-4">
                           <DetailAnsicht
                             ergebnis={er}
                             periode={selectedPeriode}
@@ -1087,6 +1098,9 @@ function AbrechnungInhalt() {
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-purple-700">
                     {eur(ergebnisse.reduce((s, e) => s + e.ausgabenBoniLohnGesamt, 0))}
+                  </td>
+                  <td className="px-4 py-3 text-right font-bold text-emerald-700">
+                    {eur(ergebnisse.reduce((s, e) => s + (e.bonusZeiterfassungEur ?? 0), 0))}
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.fixesGehalt, 0))}
