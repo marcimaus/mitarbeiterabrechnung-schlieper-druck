@@ -16,13 +16,15 @@ function kwLabel(kw: number, jahr: number): string {
   return `KW ${kw}/${jahr}`;
 }
 
-/** Donnerstag der ISO-Woche als YYYY-MM-DD (Auslieferungs-Deadline). */
+/** Donnerstag der ISO-Woche als YYYY-MM-DD (Auslieferungs-Deadline).
+ *  Komplett in UTC gerechnet, damit `toISOString().slice(0,10)` nicht durch
+ *  die lokale Zeitzone um einen Tag verschoben wird. */
 function donnerstagDerKW(kw: number, jahr: number): string {
-  const jan4 = new Date(jahr, 0, 4);
-  const wochentag = jan4.getDay() || 7;
-  const mo = new Date(jan4);
-  mo.setDate(jan4.getDate() - (wochentag - 1) + (kw - 1) * 7 + 3); // +3 = Donnerstag
-  return mo.toISOString().slice(0, 10);
+  const jan4 = new Date(Date.UTC(jahr, 0, 4));
+  const jan4Day = jan4.getUTCDay() || 7;
+  const weekStart = new Date(jan4.getTime() - (jan4Day - 1) * 86400000);
+  const thursday = new Date(weekStart.getTime() + (kw - 1) * 7 * 86400000 + 3 * 86400000);
+  return thursday.toISOString().slice(0, 10);
 }
 
 /** Liefert die Deadline Donnerstag 12:00 als JS-Date in lokaler Zeit. */
@@ -386,13 +388,9 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
   const netto = von && bis ? nettoMinuten(von, bis, Number(pausenMin) || 0) : null;
   const formValid = datum && von && bis && von < bis;
 
-  // „Verspätung"-Hinweis: Datum/Endzeit liegt nach Do 12:00 der Ausgabe-KW.
+  // „Verspätung"-Hinweis: Datum UND Endzeit liegen nach Do 12:00 der Ausgabe-KW.
   const verspaetung = (() => {
-    if (!ausgabe || !datum) return false;
-    if (!bis) {
-      // Nur Datum prüfen
-      return new Date(`${datum}T23:59:59`) > donnerstagMittag(ausgabe.kw, ausgabe.jahr);
-    }
+    if (!ausgabe || !datum || !bis) return false;
     return new Date(`${datum}T${bis}:00`) > donnerstagMittag(ausgabe.kw, ausgabe.jahr);
   })();
 
