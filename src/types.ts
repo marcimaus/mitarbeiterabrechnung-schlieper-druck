@@ -635,6 +635,12 @@ export interface Parameter {
   // Abrechnungslogik: Plan-Zeit (false) oder Ist-Zeit (true)
   austragenNachIstZeit: boolean;
   zusammentragenNachIstZeit: boolean;
+  // Bonus „Zeiterfassung Austragen": pauschaler Bonus in EUR je vollständig
+  // online erfasstem Einsatz (Austragen). Nur Austräger erhalten ihn; je
+  // Teilgebiet & Ausgabe einmal. Bedingung: Arbeitszeit (von/bis) UND
+  // Restmenge eingegeben UND Meldung eingereicht (alles über QR-Code).
+  // Wert in EUR. 0 = deaktiviert.
+  bonusZeiterfassungEur?: number;
 }
 
 // ---- Lohnkonto -----------------------------------------------

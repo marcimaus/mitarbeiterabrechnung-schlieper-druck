@@ -43,6 +43,19 @@ interface RestmengeMeldung {
   eingereichtAm?: number;
 }
 
+/** Status der Online-Erfassung pro (TG, Ausgabe) für einen Austräger. */
+type ErfassungStatus = 'vollstaendig' | 'unvollstaendig' | 'nicht_erfasst';
+interface ErfassungEintrag {
+  teilgebietId: string;
+  ausgabeId: string;
+  kw: number;
+  jahr: number;
+  status: ErfassungStatus;
+  hatZeit: boolean;
+  hatRestmenge: boolean;
+  hatMeldung: boolean;
+}
+
 function ZeitübersichtInhalt() {
   const { mitarbeiter, parameter, adminName, userRole, mitarbeiterId, teilgebiete } = useApp();
   const isAdmin = userRole === 'admin';
@@ -63,6 +76,9 @@ function ZeitübersichtInhalt() {
   const [reloadKey, setReloadKey] = useState(0);
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [restmengen, setRestmengen] = useState<RestmengeMeldung[]>([]);
+  /** Pro (TG, Ausgabe) im gewählten Monat der Erfassungsstatus für den
+   *  aktuell selektierten MA als Austräger (Standard oder Springer). */
+  const [erfassungStatusListe, setErfassungStatusListe] = useState<ErfassungEintrag[]>([]);
   /** Nacherfassungs-Modal: initial-meldung gesetzt → bearbeiten, sonst neu. */
   const [nacherfassen, setNacherfassen] = useState<{
     initial: RestmengeMeldung | null;
@@ -130,6 +146,73 @@ function ZeitübersichtInhalt() {
       cancelled = true;
     };
   }, [ausgaben, jahr, monat, reloadKey]);
+
+  // Erfassungs-Status (für Bonus „Zeiterfassung Austragen"): pro (TG, Ausgabe)
+  // im Monat ermitteln, ob der gewählte MA effektiver Austräger war und ob
+  // seine Meldung vollständig ist (Zeit + Restmenge + meldungEingereichtAm).
+  useEffect(() => {
+    if (!selectedMaId || ausgaben.length === 0) {
+      setErfassungStatusListe([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const relevante = ausgaben.filter((a) => {
+        const d = donnerstagDerKW(a.kw, a.jahr);
+        return d.getUTCFullYear() === jahr && d.getUTCMonth() + 1 === monat;
+      });
+      if (relevante.length === 0) {
+        if (!cancelled) setErfassungStatusListe([]);
+        return;
+      }
+      try {
+        const listen = await Promise.all(relevante.map((a) => ladeEinsaetze(a.id)));
+        if (cancelled) return;
+        const result: ErfassungEintrag[] = [];
+        for (let i = 0; i < relevante.length; i++) {
+          const a = relevante[i];
+          const einsListe = listen[i];
+          // Lookup einsatz pro TG
+          const byTg = new Map<string, typeof einsListe[number]>();
+          for (const e of einsListe) byTg.set(e.teilgebietId, e);
+          for (const tg of teilgebiete) {
+            if (!tg.isActive || tg.istAuslagestelle) continue;
+            const e = byTg.get(tg.id);
+            // Effektiver Austräger ermitteln
+            let effektivId: string | null = null;
+            if (!e || e.typ === 'standard') {
+              effektivId = tg.standardAustraegerId;
+            } else if (e.typ === 'springer') {
+              effektivId = e.mitarbeiterId ?? null;
+            } else {
+              effektivId = null;
+            }
+            if (effektivId !== selectedMaId) continue;
+            const hatZeit = !!e?.arbeitszeit;
+            const hatRestmenge = e?.restmenge !== undefined && e?.restmenge !== null;
+            const hatMeldung = !!e?.meldungEingereichtAm;
+            let status: ErfassungStatus = 'nicht_erfasst';
+            if (hatZeit && hatRestmenge && hatMeldung) status = 'vollstaendig';
+            else if (hatZeit || hatRestmenge || hatMeldung) status = 'unvollstaendig';
+            result.push({
+              teilgebietId: tg.id,
+              ausgabeId: a.id,
+              kw: a.kw,
+              jahr: a.jahr,
+              status,
+              hatZeit,
+              hatRestmenge,
+              hatMeldung,
+            });
+          }
+        }
+        setErfassungStatusListe(result);
+      } catch (err) {
+        console.error('Fehler beim Laden des Erfassungsstatus:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedMaId, ausgaben, teilgebiete, jahr, monat, reloadKey]);
 
   // Suche / Filter
   const [suchText, setSuchText] = useState('');
@@ -684,6 +767,13 @@ function ZeitübersichtInhalt() {
             })()}
           </div>
 
+          {/* Erfassungs-Status (Bonus „Zeiterfassung Austragen") */}
+          <ErfassungStatusÜbersicht
+            eintraege={erfassungStatusListe}
+            teilgebiete={teilgebiete}
+            bonusEur={parameter?.bonusZeiterfassungEur ?? 0}
+          />
+
           {/* Rest- und Fehlmengen (vom Austräger via QR-Code gemeldet
               oder vom Admin per Nacherfassung eingetragen) */}
           <RestmengenAustraegerÜbersicht
@@ -775,6 +865,114 @@ function SummaryCard({ label, value, sub }: { label: string; value: string; sub?
       <div className="text-xs text-gray-500 mb-1">{label}</div>
       <div className="font-bold text-gray-900">{value}</div>
       {sub && <div className="text-xs text-gray-400 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+// ---- Erfassungs-Status (Bonus Zeiterfassung Austragen) -----
+
+function ErfassungStatusÜbersicht({
+  eintraege,
+  teilgebiete,
+  bonusEur,
+}: {
+  eintraege: ErfassungEintrag[];
+  teilgebiete: import('../types').Teilgebiet[];
+  bonusEur: number;
+}) {
+  if (eintraege.length === 0) return null;
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const vollstaendig = eintraege.filter((e) => e.status === 'vollstaendig').length;
+  const unvollstaendig = eintraege.filter((e) => e.status === 'unvollstaendig').length;
+  const nichtErfasst = eintraege.filter((e) => e.status === 'nicht_erfasst').length;
+  const bonusGesamt = vollstaendig * (bonusEur > 0 ? bonusEur : 0);
+  const sortiert = [...eintraege].sort((a, b) => {
+    // unvollständig oben, dann nicht_erfasst, dann vollständig — innerhalb nach KW desc
+    const order: Record<ErfassungStatus, number> = { unvollstaendig: 0, nicht_erfasst: 1, vollstaendig: 2 };
+    if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
+    return b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw;
+  });
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
+      <div className="px-4 py-3 border-b border-gray-200 bg-emerald-50 flex items-center gap-3 flex-wrap">
+        <span className="text-emerald-700">🎯</span>
+        <span className="font-medium text-sm text-emerald-900">
+          Zeiterfassungs-Status (Bonus Austragen)
+        </span>
+        <span className="text-xs text-emerald-700 ml-auto">
+          {vollstaendig} vollständig
+          {unvollstaendig > 0 && <span className="text-amber-700"> · {unvollstaendig} unvollständig</span>}
+          {nichtErfasst > 0 && <span className="text-gray-500"> · {nichtErfasst} nicht erfasst</span>}
+          {bonusEur > 0 && (
+            <span className="ml-2 font-semibold text-emerald-900">
+              → Bonus: {bonusGesamt.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })}
+            </span>
+          )}
+        </span>
+      </div>
+      {bonusEur <= 0 && (
+        <div className="px-4 py-2 text-xs text-gray-500 bg-gray-50 border-b border-gray-100">
+          ⓘ Bonus-Betrag ist in den Parametern aktuell auf 0 € gesetzt — Status wird nur informativ angezeigt.
+        </div>
+      )}
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 border-b border-gray-100">
+          <tr>
+            <th className="text-left px-4 py-2 font-medium text-gray-600">KW/Jahr</th>
+            <th className="text-left px-4 py-2 font-medium text-gray-600">Teilgebiet</th>
+            <th className="text-center px-4 py-2 font-medium text-gray-600">Zeit</th>
+            <th className="text-center px-4 py-2 font-medium text-gray-600">Restmenge</th>
+            <th className="text-center px-4 py-2 font-medium text-gray-600">Eingereicht</th>
+            <th className="text-left px-4 py-2 font-medium text-gray-600">Status</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {sortiert.map((e) => {
+            const tg = tgMap.get(e.teilgebietId);
+            const rowBg =
+              e.status === 'vollstaendig' ? 'bg-green-50/40'
+                : e.status === 'unvollstaendig' ? 'bg-amber-50/60'
+                : 'bg-gray-50/40';
+            return (
+              <tr key={`${e.ausgabeId}-${e.teilgebietId}`} className={rowBg}>
+                <td className="px-4 py-1.5 text-gray-700 font-mono text-xs whitespace-nowrap">
+                  KW {e.kw}/{e.jahr}
+                </td>
+                <td className="px-4 py-1.5 text-gray-700">
+                  {tg?.name ?? '— gelöscht —'}
+                  {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                </td>
+                <td className="px-4 py-1.5 text-center">
+                  {e.hatZeit ? <span className="text-green-700">✓</span> : <span className="text-gray-300">—</span>}
+                </td>
+                <td className="px-4 py-1.5 text-center">
+                  {e.hatRestmenge ? <span className="text-green-700">✓</span> : <span className="text-gray-300">—</span>}
+                </td>
+                <td className="px-4 py-1.5 text-center">
+                  {e.hatMeldung ? <span className="text-green-700">✓</span> : <span className="text-gray-300">—</span>}
+                </td>
+                <td className="px-4 py-1.5">
+                  {e.status === 'vollstaendig' && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                      ✓ vollständig{bonusEur > 0 ? ` (+${bonusEur.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })})` : ''}
+                    </span>
+                  )}
+                  {e.status === 'unvollstaendig' && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium">
+                      ⚠ unvollständig
+                    </span>
+                  )}
+                  {e.status === 'nicht_erfasst' && (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-medium">
+                      noch nicht erfasst
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

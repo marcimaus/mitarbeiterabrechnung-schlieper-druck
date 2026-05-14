@@ -66,6 +66,7 @@ function ParameterInhalt() {
     gewichtToleranzUntenProzent: STANDARD_PARAMETER.gewichtToleranzUntenProzent,
     austragenNachIstZeit: false,
     zusammentragenNachIstZeit: false,
+    bonusZeiterfassungEur: 0,
     adminName: adminName || '',
   });
   const [neueOption, setNeueOption] = useState('');
@@ -110,6 +111,7 @@ function ParameterInhalt() {
         gewichtToleranzUntenProzent: parameter.gewichtToleranzUntenProzent ?? 1,
         austragenNachIstZeit: parameter.austragenNachIstZeit ?? false,
         zusammentragenNachIstZeit: parameter.zusammentragenNachIstZeit ?? false,
+        bonusZeiterfassungEur: parameter.bonusZeiterfassungEur ?? 0,
         adminName: parameter.adminName || '',
       }));
     }
@@ -491,6 +493,29 @@ function ParameterInhalt() {
               </p>
             </span>
           </label>
+        </Section>
+
+        {/* Bonus Zeiterfassung Austragen */}
+        <Section title="Bonus Zeiterfassung Austragen">
+          <p className="text-xs text-gray-500 -mt-1">
+            Pauschaler Bonus in EUR je vollständig online erfasstem Einsatz
+            (Austragen). Nur Austräger erhalten ihn — je Teilgebiet und Ausgabe
+            einmalig. Bedingung: Arbeitszeit (von/bis) UND Restmenge sind über
+            den QR-Code-Lieferschein eingegeben und die Meldung wurde vor
+            Periodenabschluss eingereicht. 0 = deaktiviert.
+          </p>
+          <div className="grid grid-cols-3 gap-4">
+            <Field label="Bonus je Einsatz (EUR)" hint="z. B. 0,50">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.bonusZeiterfassungEur}
+                onChange={(e) => setForm((f) => ({ ...f, bonusZeiterfassungEur: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+          </div>
         </Section>
 
         {/* Ausgabe-Standardwerte */}

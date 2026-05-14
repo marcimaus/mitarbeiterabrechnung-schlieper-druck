@@ -1465,6 +1465,19 @@ function DetailAnsicht({
           istGesperrt={istGesperrt}
         />
       )}
+      {/* Bonus Zeiterfassung Austragen */}
+      {er.bonusZeiterfassungAnzahl > 0 && (
+        <div className="md:col-span-2">
+          <h4 className="font-semibold text-gray-700 mb-2 text-sm">
+            Bonus Zeiterfassung Austragen ({er.bonusZeiterfassungAnzahl} vollständig online erfasste Einsätze · {eur(er.bonusZeiterfassungEur)})
+          </h4>
+          <p className="text-xs text-gray-500 -mt-1 mb-2">
+            Pauschaler Bonus je vollständig online erfasstem Austragen-Einsatz
+            (Zeit + Restmenge via QR-Code). Pro Teilgebiet &amp; Ausgabe einmal.
+          </p>
+        </div>
+      )}
+
       {/* Minuten-Boni je Ausgabe */}
       {er.ausgabenBoni.length > 0 && (
         <div className="md:col-span-2">

@@ -381,7 +381,7 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
   const [bis, setBis] = useState('');
   const [bisManuell, setBisManuell] = useState(false);
   const [pausenMin, setPausenMin] = useState('0');
-  const [restmenge, setRestmenge] = useState('0');
+  const [restmenge, setRestmenge] = useState(''); // Pflichtfeld — keine Vorbelegung
   const [fehlmengeAn, setFehlmengeAn] = useState(false);
   const [fehlmenge, setFehlmenge] = useState('0');
   const [kommentar, setKommentar] = useState('');
@@ -389,7 +389,9 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
   const [meldung, setMeldung] = useState('');
 
   const netto = von && bis ? nettoMinuten(von, bis, Number(pausenMin) || 0) : null;
-  const formValid = datum && von && bis && von < bis;
+  // Restmenge ist Pflichtfeld (auch 0 ist ok, muss aber eingegeben sein).
+  const restmengeOk = restmenge.trim() !== '' && Number.isFinite(parseInt(restmenge, 10));
+  const formValid = datum && von && bis && von < bis && restmengeOk;
 
   // „Verspätung"-Hinweis: Datum UND Endzeit liegen nach Do 12:00 der Ausgabe-KW.
   const verspaetung = (() => {
@@ -438,7 +440,7 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
       }
       await aktualisiereEinsatzMeldung(echteId, {
         arbeitszeit: az,
-        restmenge: Number(restmenge) || 0,
+        restmenge: parseInt(restmenge, 10) || 0,
         fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
         meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,
@@ -457,7 +459,7 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
         ...einsatz,
         id: echteId,
         arbeitszeit: az,
-        restmenge: Number(restmenge) || 0,
+        restmenge: parseInt(restmenge, 10) || 0,
         fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
         meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,
@@ -581,10 +583,10 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
             </div>
           </div>
 
-          {/* Restmenge */}
+          {/* Restmenge — Pflichtfeld */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
-              Restmenge (nicht ausgetragene Stücke)
+              Restmenge (nicht ausgetragene Stücke) *
             </label>
             <div className="flex items-center gap-3">
               <input
@@ -592,7 +594,12 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
                 min="0"
                 value={restmenge}
                 onChange={(e) => setRestmenge(e.target.value)}
-                className="w-28 border border-gray-300 rounded-lg px-3 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-green-500"
+                placeholder="z. B. 0 oder 12"
+                className={`w-28 border rounded-lg px-3 py-2.5 text-base focus:outline-none focus:ring-2 ${
+                  restmenge.trim() === ''
+                    ? 'border-amber-400 bg-amber-50 focus:ring-amber-500'
+                    : 'border-gray-300 focus:ring-green-500'
+                }`}
               />
               <span className="text-gray-500 text-sm">
                 Stück
@@ -603,8 +610,8 @@ function MeldungsKarte({ einsatz, ausgabe, teilgebiet, onGespeichert }: KartePro
                 )}
               </span>
             </div>
-            <p className="text-xs text-gray-400 mt-1">
-              0 eingeben wenn alles ausgetragen wurde.
+            <p className="text-xs text-gray-500 mt-1">
+              Pflicht — auch 0 eintragen, wenn alles ausgetragen wurde.
             </p>
           </div>
 
@@ -722,7 +729,7 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
       const ts = Date.now();
       await aktualisiereEinsatzMeldung(einsatz.id, {
         arbeitszeit: az,
-        restmenge: Number(restmenge) || 0,
+        restmenge: parseInt(restmenge, 10) || 0,
         fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
         meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,
@@ -737,7 +744,7 @@ function EingereichtKarte({ einsatz, ausgabe, teilgebiet, onBearbeiten }: Einger
       onBearbeiten({
         ...einsatz,
         arbeitszeit: az,
-        restmenge: Number(restmenge) || 0,
+        restmenge: parseInt(restmenge, 10) || 0,
         fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
         meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: ts,

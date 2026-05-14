@@ -107,6 +107,11 @@ export interface MitarbeiterAbrechnung {
   ausgabenBoni: AusgabenBonusErgebnis[];
   ausgabenBoniMinutenGesamt: number;
   ausgabenBoniLohnGesamt: number;
+  /** Bonus „Zeiterfassung Austragen": pauschaler Betrag je vollständig online
+   *  erfasstem Einsatz (Austragen) — Bedingungen: Arbeitszeit + Restmenge +
+   *  meldungEingereichtAm gesetzt. */
+  bonusZeiterfassungEur: number;
+  bonusZeiterfassungAnzahl: number;
   // Lohnkonto: Buchungen DIESER Periode (für Anzeige + Wirkung auf Brutto-Lohnbüro)
   lohnkontoBuchungenPeriode: LohnkontoBuchung[];
   /** Summe aller "Verschiebungen" dieser Periode (>= 0) — wird vom Brutto abgezogen. */
@@ -396,7 +401,11 @@ export function berechneAbrechnung(
     // =======================================================
     if (ma.hatFestgehalt) {
       const fixesGehalt = ma.festgehaltEur ?? ma.fixesGehalt ?? 0;
-      const gesamt = fixesGehalt + bonus + fahrtkostenGesamt + ausgabenBoniLohnGesamt;
+      // Festgehälter erhalten keinen Zeiterfassungs-Bonus (Austragen ist
+      // dort nicht über Stempelzeit abgerechnet).
+      const bonusZeiterfassungEur = 0;
+      const bonusZeiterfassungAnzahl = 0;
+      const gesamt = fixesGehalt + bonus + fahrtkostenGesamt + ausgabenBoniLohnGesamt + bonusZeiterfassungEur;
       const lk = berechneLohnkontoFuer(ma.id);
       const bruttoLohnbuero =
         gesamt - lk.lohnkontoVerschiebungPeriode + lk.lohnkontoVerrechnungPeriode;
@@ -437,6 +446,8 @@ export function berechneAbrechnung(
           ausgabenBoni: ausgabenBoniDetails,
           ausgabenBoniMinutenGesamt,
           ausgabenBoniLohnGesamt,
+          bonusZeiterfassungEur,
+          bonusZeiterfassungAnzahl,
           ...lk,
           gesamt,
           bruttoLohnbuero,
@@ -718,6 +729,31 @@ export function berechneAbrechnung(
       return s + stdH * lohnsatz;
     }, 0);
 
+    // --- Bonus Zeiterfassung Austragen ---
+    // Pauschaler Bonus pro vollständig online erfasstem Austragen-Einsatz.
+    // Bedingungen: arbeitszeit + restmenge + meldungEingereichtAm gesetzt;
+    // einsatz.mitarbeiterId === ma.id (Standard oder Springer); nur Austräger
+    // (Rolle 'austräger') sind anspruchsberechtigt.
+    const bonusZeiterfBetrag = effParams.bonusZeiterfassungEur ?? 0;
+    const bonusZeiterfassungAnzahl = (() => {
+      if (bonusZeiterfBetrag <= 0) return 0;
+      if (!(ma.rollen ?? []).includes('austräger')) return 0;
+      // Einsätze in dieser Periode, bei denen der MA der effektive Austräger
+      // war UND die Selbst-Meldung vollständig vorliegt. Pro (ausgabe, tg)
+      // gibt es maximal einen Einsatz-Doc — Pflichtfeld-Bedingung garantiert
+      // also höchstens 1 Bonus pro (Ausgabe, Teilgebiet).
+      let n = 0;
+      for (const e of data.einsaetze) {
+        if (e.mitarbeiterId !== ma.id) continue;
+        if (!e.arbeitszeit) continue;
+        if (e.restmenge === undefined || e.restmenge === null) continue;
+        if (!e.meldungEingereichtAm) continue;
+        n++;
+      }
+      return n;
+    })();
+    const bonusZeiterfassungEur = bonusZeiterfassungAnzahl * bonusZeiterfBetrag;
+
     // --- Gesamt ---
     const gesamt =
       austraegerGesamt +
@@ -725,7 +761,8 @@ export function berechneAbrechnung(
       zeitLohn +
       fahrtkostenGesamt +
       bonus +
-      ausgabenBoniLohnGesamt;
+      ausgabenBoniLohnGesamt +
+      bonusZeiterfassungEur;
 
     const lk = berechneLohnkontoFuer(ma.id);
     const bruttoLohnbuero =
@@ -767,6 +804,8 @@ export function berechneAbrechnung(
         ausgabenBoni: ausgabenBoniDetails,
         ausgabenBoniMinutenGesamt,
         ausgabenBoniLohnGesamt,
+        bonusZeiterfassungEur,
+        bonusZeiterfassungAnzahl,
         ...lk,
         gesamt,
         bruttoLohnbuero,
