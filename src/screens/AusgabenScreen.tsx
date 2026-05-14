@@ -12,6 +12,7 @@ import {
   aktualisiereBeilage,
   loescheBeilage,
   ladeEinsaetze,
+  mergeAusgaben,
 } from '../lib/db';
 import { berechneStapel, berechneGewichtProExemplarG } from '../lib/berechnung';
 import {
@@ -130,6 +131,21 @@ function AusgabenListe() {
   const gefilterteAusgaben = ausgaben.filter((a) => a.jahr === filterJahr);
   const jahre = [...new Set(ausgaben.map((a) => a.jahr))].sort((a, b) => b - a);
 
+  // Duplikat-Erkennung: Gruppen mit gleichem (kw, jahr) und >1 Eintrag.
+  const duplikatGruppen = (() => {
+    const map = new Map<string, Ausgabe[]>();
+    for (const a of ausgaben) {
+      const key = `${a.jahr}-${a.kw}`;
+      const arr = map.get(key) ?? [];
+      arr.push(a);
+      map.set(key, arr);
+    }
+    return [...map.values()]
+      .filter((arr) => arr.length > 1)
+      .sort((a, b) => b[0].jahr - a[0].jahr || b[0].kw - a[0].kw);
+  })();
+  const [duplikatDialogOffen, setDuplikatDialogOffen] = useState(false);
+
   async function handleSave(neu: Ausgabe) {
     setAusgaben((prev) => {
       const idx = prev.findIndex((a) => a.id === neu.id);
@@ -145,6 +161,45 @@ function AusgabenListe() {
   }
 
   return (
+    <>
+      {duplikatGruppen.length > 0 && (
+        <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm flex items-start gap-3">
+          <span className="text-red-600 text-xl">⚠</span>
+          <div className="flex-1">
+            <div className="font-semibold text-red-900 mb-0.5">
+              {duplikatGruppen.length} doppelt angelegte Ausgabe
+              {duplikatGruppen.length === 1 ? '' : 'n'} gefunden
+            </div>
+            <p className="text-xs text-red-800">
+              Für die folgenden Kalenderwochen existieren mehrere Ausgaben:
+              {' '}
+              {duplikatGruppen.map((g) => `KW ${g[0].kw}/${g[0].jahr} (${g.length}×)`).join(', ')}
+              . Bitte zusammenführen — abhängige Daten (Beilagen, Einsätze,
+              Memos) werden dabei automatisch auf die behaltene Ausgabe
+              umgehängt.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDuplikatDialogOffen(true)}
+            className="bg-red-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-red-700"
+          >
+            🛠 Duplikate auflösen
+          </button>
+        </div>
+      )}
+
+      {duplikatDialogOffen && (
+        <DuplikatDialog
+          gruppen={duplikatGruppen}
+          onClose={() => setDuplikatDialogOffen(false)}
+          onResolved={async () => {
+            const neu = await ladeAusgaben();
+            setAusgaben(neu);
+          }}
+        />
+      )}
+
     <div className="flex gap-6">
       {/* Liste links */}
       <div className="w-64 shrink-0">
@@ -217,6 +272,7 @@ function AusgabenListe() {
         />
       </Modal>
     </div>
+    </>
   );
 }
 
@@ -1333,6 +1389,8 @@ function BeilageForm({
 // ============================================================
 
 import { ladeAbrechnungsperioden, erstelleAbrechnungsperiode, aktualisiereAbrechnungsperiode } from '../lib/db';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import type { Abrechnungsperiode } from '../types';
 import { MONATSNAMEN } from '../lib/kalender';
 
@@ -1437,6 +1495,7 @@ function AbrechnungsperiodenInhalt() {
             });
             setShowForm(false);
           }}
+          onAusgabenChanged={(neu) => setAusgaben(neu)}
           onCancel={() => setShowForm(false)}
         />
       </Modal>
@@ -1449,12 +1508,16 @@ function PeriodeForm({
   ausgaben,
   belegteKWs,
   onSave,
+  onAusgabenChanged,
   onCancel,
 }: {
   initial: Abrechnungsperiode | null;
   ausgaben: Ausgabe[];
   belegteKWs: string[];
   onSave: (p: Abrechnungsperiode) => void;
+  /** Wird nach evtl. Auto-Erstellung von Ausgaben mit der frischen Liste
+   *  aufgerufen, damit der Parent-State synchron bleibt. */
+  onAusgabenChanged: (neueListe: Ausgabe[]) => void;
   onCancel: () => void;
 }) {
   const { parameter } = useApp();
@@ -1498,24 +1561,42 @@ function PeriodeForm({
         onSave({ id, monat, jahr, bezeichnung, kalenderwochen: gewaehlteKWs, status: 'offen', erstelltAm: Date.now() });
       }
 
-      // Für jede KW in der Periode automatisch eine Ausgabe anlegen, falls noch keine vorhanden.
-      // Seitenzahl + Stapelzahl bewusst LEER (0) anlegen — werden später erfasst.
-      const kwsMitAusgabeAktuell = new Set(ausgaben.filter((a) => a.jahr === jahr).map((a) => a.kw));
+      // Für jede KW in der Periode automatisch eine Ausgabe anlegen, falls
+      // noch keine vorhanden. Seitenzahl + Stapelzahl bewusst LEER (0)
+      // anlegen — werden später erfasst.
+      //
+      // Wichtig: Vor jedem `erstelleAusgabe` direkt in Firestore prüfen, ob
+      // schon eine Ausgabe für (kw,jahr) existiert. Sonst können Duplikate
+      // entstehen, wenn der Parent-State (`ausgaben`-Prop) durch eine
+      // vorherige Auto-Anlage noch nicht aktualisiert wurde.
       for (const kw of gewaehlteKWs) {
-        if (!kwsMitAusgabeAktuell.has(kw)) {
-          await erstelleAusgabe({
-            kw,
-            jahr,
-            seitenzahl: 0,
-            stapelAnzahl: 0,
-            grammaturGqm: parameter?.standardGrammurGqm ?? 65,
-            seitenformatMm: {
-              breite: parameter?.standardSeitenformatBreiteMm ?? 305,
-              hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
-            },
-            status: 'geplant',
-          });
-        }
+        const existing = await getDocs(query(
+          collection(db, 'ausgaben'),
+          where('kw', '==', kw),
+          where('jahr', '==', jahr),
+        ));
+        if (!existing.empty) continue;
+        await erstelleAusgabe({
+          kw,
+          jahr,
+          seitenzahl: 0,
+          stapelAnzahl: 0,
+          grammaturGqm: parameter?.standardGrammurGqm ?? 65,
+          seitenformatMm: {
+            breite: parameter?.standardSeitenformatBreiteMm ?? 305,
+            hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
+          },
+          status: 'geplant',
+        });
+      }
+
+      // Frisch nachladen und Parent-State synchronisieren, damit der nächste
+      // PeriodeForm-Edit eine aktuelle Ausgaben-Prop bekommt.
+      try {
+        const neu = await ladeAusgaben();
+        onAusgabenChanged(neu);
+      } catch (loadErr) {
+        console.warn('Ausgaben-Refresh fehlgeschlagen:', loadErr);
       }
     } catch (err) {
       setError('Fehler beim Speichern.');
@@ -1812,6 +1893,220 @@ function TeilgebietBeilagenUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Duplikat-Auflösungs-Dialog
+// =====================================================================
+
+function DuplikatDialog({
+  gruppen,
+  onClose,
+  onResolved,
+}: {
+  gruppen: Ausgabe[][];
+  onClose: () => void;
+  onResolved: () => Promise<void>;
+}) {
+  // Map: ausgabeId → Anzahl abhängiger Datensätze (Beilagen + Einsätze).
+  const [abhaengig, setAbhaengig] = useState<Map<string, { beilagen: number; einsaetze: number }>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [meldung, setMeldung] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const m = new Map<string, { beilagen: number; einsaetze: number }>();
+      for (const gruppe of gruppen) {
+        for (const a of gruppe) {
+          const [b, e] = await Promise.all([
+            ladeBeilagen(a.id),
+            ladeEinsaetze(a.id),
+          ]);
+          m.set(a.id, { beilagen: b.length, einsaetze: e.length });
+        }
+      }
+      if (!cancelled) {
+        setAbhaengig(m);
+        setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [gruppen]);
+
+  /** Heuristik: Survivor = die Ausgabe mit den meisten abhängigen Daten;
+   *  bei Gleichstand die mit gesetzter Seitenzahl > 0; sonst die älteste. */
+  function vorschlagSurvivor(gruppe: Ausgabe[]): string {
+    return [...gruppe].sort((a, b) => {
+      const da = (abhaengig.get(a.id)?.beilagen ?? 0) + (abhaengig.get(a.id)?.einsaetze ?? 0);
+      const db_ = (abhaengig.get(b.id)?.beilagen ?? 0) + (abhaengig.get(b.id)?.einsaetze ?? 0);
+      if (da !== db_) return db_ - da;
+      const sa = a.seitenzahl > 0 ? 1 : 0;
+      const sb = b.seitenzahl > 0 ? 1 : 0;
+      if (sa !== sb) return sb - sa;
+      return a.erstelltAm - b.erstelltAm;
+    })[0].id;
+  }
+
+  const [survivors, setSurvivors] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (loading) return;
+    const initial: Record<string, string> = {};
+    for (const gruppe of gruppen) {
+      const key = `${gruppe[0].jahr}-${gruppe[0].kw}`;
+      initial[key] = vorschlagSurvivor(gruppe);
+    }
+    setSurvivors(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, gruppen]);
+
+  async function handleMerge(gruppe: Ausgabe[]) {
+    const key = `${gruppe[0].jahr}-${gruppe[0].kw}`;
+    const survivorId = survivors[key];
+    if (!survivorId) return;
+    const verlierer = gruppe.filter((a) => a.id !== survivorId);
+    setBusy(key);
+    setMeldung('');
+    try {
+      for (const v of verlierer) {
+        await mergeAusgaben(survivorId, v.id);
+      }
+      await onResolved();
+      setMeldung(`✓ ${verlierer.length} Duplikat${verlierer.length === 1 ? '' : 'e'} zur KW ${gruppe[0].kw}/${gruppe[0].jahr} zusammengeführt.`);
+    } catch (err: any) {
+      console.error(err);
+      setMeldung('Fehler: ' + (err.message ?? err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <div className="px-5 py-3 border-b border-gray-200">
+          <h3 className="text-base font-semibold text-gray-900">
+            Doppelt angelegte Ausgaben zusammenführen
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Pro KW eine Ausgabe wählen, die behalten werden soll
+            („Survivor"). Alle abhängigen Daten (Beilagen, Einsätze,
+            Memos, Zusammentragezeiten, Arbeitszeiten) werden automatisch
+            auf den Survivor umgehängt; die übrigen Ausgaben werden danach
+            gelöscht.
+          </p>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-5">
+          {loading ? (
+            <div className="text-center text-gray-400 py-8">Lade abhängige Daten…</div>
+          ) : gruppen.length === 0 ? (
+            <div className="text-center text-green-700 py-8">
+              ✓ Keine Duplikate mehr — alles sauber.
+            </div>
+          ) : (
+            gruppen.map((gruppe) => {
+              const key = `${gruppe[0].jahr}-${gruppe[0].kw}`;
+              const survivor = survivors[key];
+              return (
+                <div key={key} className="rounded-lg border border-gray-200 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-semibold text-sm text-gray-900">
+                      KW {gruppe[0].kw}/{gruppe[0].jahr}
+                      <span className="ml-2 text-xs text-gray-500 font-normal">
+                        {gruppe.length} Datensätze
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleMerge(gruppe)}
+                      disabled={busy === key || !survivor}
+                      className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {busy === key ? '…' : '✓ Zusammenführen'}
+                    </button>
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead className="text-gray-500 border-b border-gray-200">
+                      <tr>
+                        <th className="px-2 py-1 text-left font-medium">Behalten</th>
+                        <th className="px-2 py-1 text-left font-medium">ID</th>
+                        <th className="px-2 py-1 text-right font-medium">Seiten</th>
+                        <th className="px-2 py-1 text-right font-medium">Stapel</th>
+                        <th className="px-2 py-1 text-right font-medium">Beilagen</th>
+                        <th className="px-2 py-1 text-right font-medium">Einsätze</th>
+                        <th className="px-2 py-1 text-left font-medium">Erstellt</th>
+                        <th className="px-2 py-1 text-left font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gruppe.map((a) => {
+                        const d = abhaengig.get(a.id);
+                        const istSurvivor = survivor === a.id;
+                        return (
+                          <tr key={a.id} className={istSurvivor ? 'bg-green-50' : ''}>
+                            <td className="px-2 py-1.5">
+                              <input
+                                type="radio"
+                                name={`survivor-${key}`}
+                                checked={istSurvivor}
+                                onChange={() => setSurvivors((prev) => ({ ...prev, [key]: a.id }))}
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 font-mono text-[10px] text-gray-500" title={a.id}>
+                              {a.id.slice(0, 8)}…
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {a.seitenzahl > 0 ? a.seitenzahl : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {a.stapelAnzahl > 0 ? a.stapelAnzahl : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {d?.beilagen ?? '?'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {d?.einsaetze ?? '?'}
+                            </td>
+                            <td className="px-2 py-1.5 text-gray-500">
+                              {new Date(a.erstelltAm).toLocaleDateString('de-DE')}
+                            </td>
+                            <td className="px-2 py-1.5 text-gray-500">{a.status}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })
+          )}
+
+          {meldung && (
+            <div className={`rounded-md px-3 py-2 text-xs ${
+              meldung.startsWith('✓') ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+            }`}>
+              {meldung}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-200 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700"
+          >
+            Schließen
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

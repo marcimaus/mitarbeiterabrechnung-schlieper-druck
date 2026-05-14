@@ -342,6 +342,48 @@ export async function loescheAusgabe(id: string): Promise<void> {
   await deleteDoc(doc(db, 'ausgaben', id));
 }
 
+/**
+ * Führt eine doppelt angelegte Ausgabe in die „Survivor"-Ausgabe zusammen:
+ *  - alle abhängigen Datensätze (beilagen, auslieferungsmemos, einsaetze,
+ *    zusammentragezeiten, arbeitszeiten) werden auf die Survivor-ID
+ *    umgehängt;
+ *  - der Verlierer-Ausgabe wird anschließend gelöscht.
+ *
+ * Idempotent — falls ein Datensatz bereits umgehängt wurde, ist nichts zu tun.
+ * Achtung: keine atomare Transaktion (Firestore-Limit) — bei Abbruch in der
+ * Mitte kann es teil-migrierte Daten geben; durch idempotente Wiederholung
+ * lässt sich der Merge erneut anstoßen.
+ */
+export async function mergeAusgaben(
+  survivorId: string,
+  loserId: string
+): Promise<{ migratedCounts: Record<string, number> }> {
+  if (survivorId === loserId) {
+    throw new Error('Survivor- und Verlierer-Ausgabe sind identisch.');
+  }
+  const collectionsMitAusgabeRef = [
+    'beilagen',
+    'auslieferungsmemos',
+    'einsaetze',
+    'zusammentragezeiten',
+    'arbeitszeiten',
+  ];
+  const migratedCounts: Record<string, number> = {};
+  for (const coll of collectionsMitAusgabeRef) {
+    const snap = await getDocs(
+      query(collection(db, coll), where('ausgabeId', '==', loserId))
+    );
+    migratedCounts[coll] = snap.size;
+    await Promise.all(
+      snap.docs.map((d) =>
+        updateDoc(doc(db, coll, d.id), { ausgabeId: survivorId, aktualisiertAm: now() })
+      )
+    );
+  }
+  await deleteDoc(doc(db, 'ausgaben', loserId));
+  return { migratedCounts };
+}
+
 // ---- Beilagen ----------------------------------------------
 
 export async function ladeBeilagen(ausgabeId?: string): Promise<Beilage[]> {
