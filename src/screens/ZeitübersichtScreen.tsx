@@ -690,7 +690,6 @@ function ZeitübersichtInhalt() {
             meldungen={restmengen.filter((r) => r.mitarbeiterId === selectedMaId)}
             teilgebiete={teilgebiete}
             isAdmin={!istMitarbeiter}
-            onNeu={() => setNacherfassen({ initial: null })}
             onEdit={(m) => setNacherfassen({ initial: m })}
           />
 
@@ -786,15 +785,15 @@ function RestmengenAustraegerÜbersicht({
   meldungen,
   teilgebiete,
   isAdmin,
-  onNeu,
   onEdit,
 }: {
   meldungen: RestmengeMeldung[];
   teilgebiete: import('../types').Teilgebiet[];
   isAdmin: boolean;
-  onNeu: () => void;
   onEdit: (m: RestmengeMeldung) => void;
 }) {
+  // Wenn der MA keine Meldungen im Zeitraum hat, gar nichts anzeigen.
+  if (meldungen.length === 0) return null;
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
   const summeRest = meldungen.reduce((s, m) => s + m.restmenge, 0);
   const summeFehl = meldungen.reduce((s, m) => s + m.fehlmenge, 0);
@@ -817,16 +816,6 @@ function RestmengenAustraegerÜbersicht({
           {summeFehl > 0 && <span className="text-red-700 font-semibold mr-2">⚠ Σ Fehl: {summeFehl.toLocaleString('de-DE')}</span>}
           Σ Rest: {summeRest.toLocaleString('de-DE')} Stk in {meldungen.length} Meldung{meldungen.length === 1 ? '' : 'en'}
         </span>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={onNeu}
-            className="ml-auto text-xs bg-amber-600 text-white px-3 py-1 rounded hover:bg-amber-700"
-            title="Rest-/Fehlmenge nacherfassen (z. B. wenn MA auf Papier gemeldet hat)"
-          >
-            + Nacherfassen
-          </button>
-        )}
       </div>
       {meldungen.length === 0 ? (
         <div className="px-4 py-6 text-center text-sm text-gray-400">
@@ -1290,6 +1279,25 @@ function defaultTypFuerRollen(rollen: Rolle[] | undefined): ArbeitszeitsTyp | ''
   }
 }
 
+/** Welche Arbeitszeit-Typen darf ein MA mit den angegebenen Rollen wählen?
+ *  Strikte Zuordnung:
+ *   - austräger → austragen
+ *   - zusammenträger → zusammentragen, vorarbeit (Vorbereitung)
+ *   - sonstige → sonstige
+ *  'sonstige' ist immer erlaubt (z. B. Besprechung, Sonderarbeit).
+ */
+function erlaubteTypenFuerRollen(rollen: Rolle[] | undefined): ArbeitszeitsTyp[] {
+  const erlaubt = new Set<ArbeitszeitsTyp>(['sonstige']);
+  if (!rollen) return [...erlaubt];
+  if (rollen.includes('austräger')) erlaubt.add('austragen');
+  if (rollen.includes('zusammenträger')) {
+    erlaubt.add('zusammentragen');
+    erlaubt.add('vorarbeit');
+  }
+  // Reihenfolge wie in TYP_LABELS
+  return (Object.keys(TYP_LABELS) as ArbeitszeitsTyp[]).filter((t) => erlaubt.has(t));
+}
+
 function NeueZeitForm({
   aktiveMitarbeiter,
   vorausgewaehlteMaId,
@@ -1298,14 +1306,14 @@ function NeueZeitForm({
   onSaved,
   onCancel,
 }: {
-  aktiveMitarbeiter: { id: string; name: string; nummer: string; rollen?: Rolle[] }[];
+  aktiveMitarbeiter: { id: string; name: string; nummer: string; rollen?: Rolle[]; teilgebietFreigaben?: string[] }[];
   vorausgewaehlteMaId: string;
   adminName: string;
   ausgaben: Ausgabe[];
   onSaved: () => void;
   onCancel: () => void;
 }) {
-  const { abrechnungsperioden } = useApp();
+  const { abrechnungsperioden, teilgebiete } = useApp();
   const sortiert = [...aktiveMitarbeiter].sort((a, b) => a.name.localeCompare(b.name));
   const heute = new Date();
   const heuteIso = `${heute.getFullYear()}-${(heute.getMonth() + 1).toString().padStart(2, '0')}-${heute.getDate().toString().padStart(2, '0')}`;
@@ -1337,6 +1345,36 @@ function NeueZeitForm({
   const [kommentar, setKommentar] = useState('');
   const [saving, setSaving] = useState(false);
   const [fehler, setFehler] = useState('');
+
+  // Austragen-spezifisch: Teilgebiet + Rest-/Fehlmenge
+  const [tgId, setTgId] = useState('');
+  const [restmenge, setRestmenge] = useState('0');
+  const [fehlmengeAn, setFehlmengeAn] = useState(false);
+  const [fehlmenge, setFehlmenge] = useState('0');
+  const [austrKommentar, setAustrKommentar] = useState('');
+
+  const aktiverMA = aktiveMitarbeiter.find((m) => m.id === maId);
+  const erlaubteTypen = erlaubteTypenFuerRollen(aktiverMA?.rollen);
+
+  // Wenn der aktuell ausgewählte Typ für die MA-Rollen nicht (mehr) erlaubt
+  // ist (z. B. nach MA-Wechsel), zurücksetzen.
+  useEffect(() => {
+    if (typ && !erlaubteTypen.includes(typ as ArbeitszeitsTyp)) {
+      setTyp('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maId]);
+
+  // Auswahl der für den MA freigegebenen Teilgebiete (für Austragen-Erfassung)
+  const tgOptionen = (() => {
+    const freigaben = new Set(aktiverMA?.teilgebietFreigaben ?? []);
+    const aktive = teilgebiete.filter((t) => t.isActive && !t.istAuslagestelle);
+    const freigegeben = aktive.filter((t) => freigaben.has(t.id));
+    // Wenn der MA keine Freigaben hat (oder leer): alle aktiven TGs anbieten —
+    // sonst wäre keine Nacherfassung möglich.
+    const list = freigegeben.length > 0 ? freigegeben : aktive;
+    return list.sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  })();
 
   // Wenn Ausgaben erst nachträglich geladen werden: Default nachziehen
   useEffect(() => {
@@ -1422,6 +1460,42 @@ function NeueZeitForm({
       };
       if (ausgabeId) payload.ausgabeId = ausgabeId;
       await erstelleArbeitszeit(payload);
+
+      // Bei Austragen + TG + Ausgabe: auch Einsatz-Meldung (Rest/Fehl/Kommentar)
+      // schreiben. Nur ausführen, wenn TG und Ausgabe gewählt sind UND mindestens
+      // ein Wert oder Kommentar vorliegt.
+      if (
+        typ === 'austragen' &&
+        tgId &&
+        ausgabeId &&
+        ((Number(restmenge) || 0) > 0 ||
+          (fehlmengeAn && (Number(fehlmenge) || 0) > 0) ||
+          austrKommentar.trim())
+      ) {
+        try {
+          const ausgabe = ausgaben.find((a) => a.id === ausgabeId);
+          if (ausgabe) {
+            const einsatzId = await setzeEinsatz({
+              ausgabeId,
+              kw: ausgabe.kw,
+              jahr: ausgabe.jahr,
+              teilgebietId: tgId,
+              mitarbeiterId: maId,
+              typ: 'standard',
+            });
+            await aktualisiereEinsatzMeldung(einsatzId, {
+              restmenge: Number(restmenge) || 0,
+              fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
+              meldungKommentar: austrKommentar.trim() || undefined,
+              meldungEingereichtAm: Date.now(),
+            });
+          }
+        } catch (einsatzErr) {
+          // Arbeitszeit ist bereits gespeichert — Meldungs-Fehler nur warnen.
+          console.warn('Einsatz-Meldung konnte nicht gespeichert werden:', einsatzErr);
+        }
+      }
+
       onSaved();
     } catch (err: any) {
       setFehler(err?.message ?? 'Speichern fehlgeschlagen.');
@@ -1453,13 +1527,19 @@ function NeueZeitForm({
           value={typ}
           onChange={(e) => setTyp(e.target.value as ArbeitszeitsTyp | '')}
           className={inputClass}
+          disabled={!maId}
           required
         >
           <option value="">— auswählen —</option>
-          {(Object.keys(TYP_LABELS) as ArbeitszeitsTyp[]).map((t) => (
+          {erlaubteTypen.map((t) => (
             <option key={t} value={t}>{TYP_LABELS[t]}</option>
           ))}
         </select>
+        {!maId && (
+          <p className="text-xs text-gray-400 mt-1">
+            Erst Mitarbeiter wählen — die Auswahl filtert sich nach den Rollen.
+          </p>
+        )}
         {maId && !typ && (() => {
           const ma = aktiveMitarbeiter.find((m) => m.id === maId);
           if (ma?.rollen && ma.rollen.length > 1) {
@@ -1574,6 +1654,88 @@ function NeueZeitForm({
           />
         </div>
       </div>
+
+      {/* Bei Austragen: Teilgebiet + Rest-/Fehlmenge + Kommentar erfassen
+          (analog zur QR-Code-Selbstmeldung, für Papierzettel-Nacherfassung) */}
+      {typ === 'austragen' && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3 space-y-3">
+          <div className="text-sm font-semibold text-amber-900">
+            📦 Rest- &amp; Fehlmengen (Austragen)
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Teilgebiet</label>
+              <select
+                value={tgId}
+                onChange={(e) => setTgId(e.target.value)}
+                className={inputClass}
+              >
+                <option value="">— optional, kein TG-Bezug —</option>
+                {tgOptionen.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} {t.plz && `(${t.plz})`}
+                  </option>
+                ))}
+              </select>
+              {!ausgabeId && tgId && (
+                <p className="text-[11px] text-amber-700 mt-1">
+                  ⓘ Für Rest-/Fehlmengen-Erfassung muss zusätzlich die Ausgabe (KW) oben gewählt sein.
+                </p>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Restmenge (nicht ausgetragen)</label>
+              <input
+                type="number"
+                min={0}
+                value={restmenge}
+                onChange={(e) => setRestmenge(e.target.value)}
+                className={inputClass}
+                disabled={!tgId}
+              />
+            </div>
+          </div>
+          <div className="rounded-md border border-red-200 bg-red-50/40 p-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={fehlmengeAn}
+                onChange={(e) => setFehlmengeAn(e.target.checked)}
+                className="w-4 h-4"
+                disabled={!tgId}
+              />
+              <span className="text-sm font-medium text-red-800">
+                ⚠ Fehlmenge — Austräger hat zu wenige Exemplare erhalten
+              </span>
+            </label>
+            {fehlmengeAn && (
+              <div className="mt-2 flex items-center gap-3">
+                <input
+                  type="number"
+                  min={0}
+                  value={fehlmenge}
+                  onChange={(e) => setFehlmenge(e.target.value)}
+                  className="w-32 border border-red-300 rounded-lg px-3 py-2 text-sm"
+                />
+                <span className="text-red-700 text-sm">Stück fehlen</span>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              Kommentar zur Rest-/Fehlmenge (optional)
+            </label>
+            <textarea
+              value={austrKommentar}
+              onChange={(e) => setAustrKommentar(e.target.value)}
+              rows={2}
+              placeholder="z. B. ‚Neue Wohnungen in der Schulstraße 5 dazugekommen‘"
+              className={inputClass}
+              disabled={!tgId}
+            />
+          </div>
+        </div>
+      )}
 
       {fehler && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
