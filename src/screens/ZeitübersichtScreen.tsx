@@ -11,7 +11,7 @@ import {
   formatierDauer,
   korrigiereSession,
 } from '../lib/zeiterfassung';
-import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit, ladeEinsaetze, setzeEinsatz, aktualisiereEinsatzMeldung } from '../lib/db';
+import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit, ladeEinsaetze, setzeEinsatz, aktualisiereEinsatzMeldung, setzeArbeitszeitFuerEinsatz } from '../lib/db';
 import { MONATSNAMEN, donnerstagDerKW, kwLabel } from '../lib/kalender';
 import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
@@ -41,6 +41,7 @@ interface RestmengeMeldung {
   fehlmenge: number;
   kommentar?: string;
   eingereichtAm?: number;
+  arbeitszeit?: import('../types').AustraegerArbeitszeit;
 }
 
 /** Status der Online-Erfassung pro (TG, Ausgabe) für einen Austräger. */
@@ -60,6 +61,7 @@ interface ErfassungEintrag {
   fehlmenge?: number;
   kommentar?: string;
   eingereichtAm?: number;
+  arbeitszeit?: import('../types').AustraegerArbeitszeit;
 }
 
 function ZeitübersichtInhalt() {
@@ -140,6 +142,7 @@ function ZeitübersichtInhalt() {
               fehlmenge: fehl,
               kommentar: komm,
               eingereichtAm: e.meldungEingereichtAm,
+              arbeitszeit: e.arbeitszeit,
             });
           }
         }
@@ -214,6 +217,7 @@ function ZeitübersichtInhalt() {
               fehlmenge: e?.fehlmenge,
               kommentar: e?.meldungKommentar,
               eingereichtAm: e?.meldungEingereichtAm,
+              arbeitszeit: e?.arbeitszeit,
             });
           }
         }
@@ -805,6 +809,7 @@ function ZeitübersichtInhalt() {
                   fehlmenge: e.fehlmenge ?? 0,
                   kommentar: e.kommentar,
                   eingereichtAm: e.eingereichtAm,
+                  arbeitszeit: e.arbeitszeit,
                 },
               });
             }}
@@ -1188,6 +1193,12 @@ function RestmengeNacherfassenForm({
   const [fehlmengeAn, setFehlmengeAn] = useState((initial?.fehlmenge ?? 0) > 0);
   const [fehlmenge, setFehlmenge] = useState(String(initial?.fehlmenge ?? 0));
   const [kommentar, setKommentar] = useState(initial?.kommentar ?? '');
+  // Arbeitszeit-Felder: vorbelegt aus bestehender Selbstmeldung, falls
+  // vorhanden. Sonst leer — können hier nacherfasst werden.
+  const [azDatum, setAzDatum] = useState(initial?.arbeitszeit?.datum ?? '');
+  const [azVon, setAzVon] = useState(initial?.arbeitszeit?.von ?? '');
+  const [azBis, setAzBis] = useState(initial?.arbeitszeit?.bis ?? '');
+  const [azPausen, setAzPausen] = useState(String(initial?.arbeitszeit?.pausenMinuten ?? 0));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1208,6 +1219,19 @@ function RestmengeNacherfassenForm({
       setError('Kein Mitarbeiter gewählt.');
       return;
     }
+    // Arbeitszeit ist OPTIONAL in dieser Maske — wenn (teil-)ausgefüllt,
+    // muss sie vollständig + plausibel sein.
+    const hatAzAngaben = !!(azDatum || azVon || azBis);
+    if (hatAzAngaben) {
+      if (!azDatum || !azVon || !azBis) {
+        setError('Bitte alle Arbeitszeit-Felder (Datum, Von, Bis) ausfüllen — oder alle drei leer lassen.');
+        return;
+      }
+      if (azVon >= azBis) {
+        setError('Bis-Zeit muss nach Von-Zeit liegen.');
+        return;
+      }
+    }
     setSaving(true);
     setError('');
     try {
@@ -1226,12 +1250,45 @@ function RestmengeNacherfassenForm({
           typ: 'standard',
         });
       }
+      const arbeitszeit = hatAzAngaben
+        ? {
+            datum: azDatum,
+            von: azVon,
+            bis: azBis,
+            pausenMinuten: Math.max(0, parseInt(azPausen, 10) || 0),
+          }
+        : undefined;
       await aktualisiereEinsatzMeldung(einsatzId, {
+        arbeitszeit,
         restmenge: Number(restmenge) || 0,
         fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
         meldungKommentar: kommentar.trim() || undefined,
         meldungEingereichtAm: Date.now(),
       });
+      // Arbeitszeit auch in die zentrale Collection spiegeln, damit sie in
+      // Zeitübersicht/Abrechnung sichtbar wird (analog QR-Selbstmeldung).
+      if (arbeitszeit) {
+        try {
+          const startTime = new Date(`${arbeitszeit.datum}T${arbeitszeit.von}:00`).getTime();
+          const endTime = new Date(`${arbeitszeit.datum}T${arbeitszeit.bis}:00`).getTime();
+          if (Number.isFinite(startTime) && Number.isFinite(endTime) && endTime > startTime) {
+            await setzeArbeitszeitFuerEinsatz(einsatzId, {
+              mitarbeiterId,
+              startTime,
+              endTime,
+              status: 'abgeschlossen',
+              quelle: 'selbstmeldung',
+              typ: 'austragen',
+              pausen: [],
+              gesamtPauseMinuten: arbeitszeit.pausenMinuten,
+              korrekturLog: [],
+              ausgabeId,
+            });
+          }
+        } catch (syncErr) {
+          console.warn('Arbeitszeit-Sync fehlgeschlagen:', syncErr);
+        }
+      }
       onSaved();
     } catch (err: any) {
       console.error(err);
@@ -1273,6 +1330,57 @@ function RestmengeNacherfassenForm({
           ))}
         </select>
       </div>
+      {/* Arbeitszeit (optional — nur ausfüllen, wenn nachgepflegt werden soll) */}
+      <div className="rounded-lg border border-blue-200 bg-blue-50/40 p-3 space-y-3">
+        <div className="text-sm font-semibold text-blue-900">
+          🕒 Arbeitszeit (optional)
+        </div>
+        <p className="text-xs text-blue-800/80 -mt-1">
+          Für den Bonus „Zeiterfassung Austragen" muss zusätzlich zur Restmenge
+          die Arbeitszeit erfasst sein. Felder leer lassen, wenn nichts zu
+          ändern ist.
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Datum</label>
+            <input
+              type="date"
+              value={azDatum}
+              onChange={(e) => setAzDatum(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Von</label>
+            <input
+              type="time"
+              value={azVon}
+              onChange={(e) => setAzVon(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Bis</label>
+            <input
+              type="time"
+              value={azBis}
+              onChange={(e) => setAzBis(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-2 py-2 text-sm"
+            />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 mb-1">Pausen (Minuten)</label>
+          <input
+            type="number"
+            min={0}
+            value={azPausen}
+            onChange={(e) => setAzPausen(e.target.value)}
+            className="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm"
+          />
+        </div>
+      </div>
+
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
           Restmenge (nicht ausgetragene Stücke)
