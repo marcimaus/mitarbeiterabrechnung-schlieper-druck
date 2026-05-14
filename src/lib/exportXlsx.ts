@@ -27,6 +27,7 @@ export async function exportiereAbrechnung(
     { header: 'Zusammentragen (€)', key: 'zusammentragen', width: 20 },
     { header: 'Zeiterfassung (€)', key: 'zeiterfassung', width: 18 },
     { header: 'Min-Boni (€)', key: 'minboni', width: 14 },
+    { header: 'Bonus Zeit (€)', key: 'bonuszeit', width: 16 },
     { header: 'Fixes Gehalt (€)', key: 'fix', width: 16 },
     { header: 'Fahrtkosten (€)', key: 'fahrtkosten', width: 16 },
     { header: 'Brutto (€)', key: 'gesamt', width: 14 },
@@ -42,7 +43,7 @@ export async function exportiereAbrechnung(
   wsUe.spliceRows(3, 0, []);
 
   // Header-Zeile (Row 4)
-  const headers = ['Nr.', 'Name', 'Minijob', 'SV-frei', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Min-Boni (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Brutto (€)', 'Auszahlung (€)'];
+  const headers = ['Nr.', 'Name', 'Minijob', 'SV-frei', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Min-Boni (€)', 'Bonus Zeit (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Brutto (€)', 'Auszahlung (€)'];
   const headerRow = wsUe.getRow(4);
   headers.forEach((h, i) => {
     const cell = headerRow.getCell(i + 1);
@@ -67,21 +68,22 @@ export async function exportiereAbrechnung(
       er.zusammentragenGesamt,
       er.zeitLohn,
       er.ausgabenBoniLohnGesamt,
+      er.bonusZeiterfassungEur ?? 0,
       er.fixesGehalt,
       er.fahrtkostenGesamt,
       bruttoExport,
       istSvBefreit ? bruttoExport - er.vorschussSumme : null,
     ]);
-    // Zahlenformat Spalten 5..12 (numeric)
-    for (let c = 5; c <= 12; c++) {
+    // Zahlenformat Spalten 5..13 (numeric)
+    for (let c = 5; c <= 13; c++) {
       r.getCell(c).numFmt = '#,##0.00 "€"';
       r.getCell(c).alignment = { horizontal: 'right' };
     }
-    // Auszahlung leer bei nicht-SV-befreit: Hinweistext (Spalte 12)
+    // Auszahlung leer bei nicht-SV-befreit: Hinweistext (Spalte 13)
     if (!istSvBefreit) {
-      r.getCell(12).value = 'Lohnbüro';
-      r.getCell(12).font = { italic: true, color: { argb: 'FF9CA3AF' } };
-      r.getCell(12).numFmt = '@';
+      r.getCell(13).value = 'Lohnbüro';
+      r.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } };
+      r.getCell(13).numFmt = '@';
     }
     if (er.mitarbeiter.istMinijob) {
       r.getCell(3).font = { bold: true, color: { argb: 'FFB45309' } };
@@ -103,6 +105,7 @@ export async function exportiereAbrechnung(
     ergebnisse.reduce((s, e) => s + e.zusammentragenGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.zeitLohn, 0),
     ergebnisse.reduce((s, e) => s + e.ausgabenBoniLohnGesamt, 0),
+    ergebnisse.reduce((s, e) => s + (e.bonusZeiterfassungEur ?? 0), 0),
     ergebnisse.reduce((s, e) => s + e.fixesGehalt, 0),
     ergebnisse.reduce((s, e) => s + e.fahrtkostenGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.bruttoLohnbuero, 0),
@@ -111,7 +114,7 @@ export async function exportiereAbrechnung(
       .reduce((s, e) => s + (e.bruttoLohnbuero - e.vorschussSumme), 0),
   ]);
   sumRow.getCell(2).font = { bold: true };
-  for (let c = 5; c <= 12; c++) {
+  for (let c = 5; c <= 13; c++) {
     sumRow.getCell(c).numFmt = '#,##0.00 "€"';
     sumRow.getCell(c).font = { bold: true };
     sumRow.getCell(c).alignment = { horizontal: 'right' };
