@@ -2337,11 +2337,16 @@ function RestmengenAuswertung({
             }
           }
         }
-        // Sortierung: Fehlmengen-Gruppen zuerst (nach Σ Fehlmenge desc),
-        // danach Restmengen-Gruppen (nach Σ Restmenge desc).
+        // Sortierung: nach Durchschnitt absteigend. Fehlmengen-Gruppen zuerst
+        // (Ø Fehlmenge je Meldung), danach Restmengen-Gruppen (Ø Restmenge
+        // je Meldung).
         const list = [...byTg.values()].sort((a, b) => {
-          if (a.summeFehl !== b.summeFehl) return b.summeFehl - a.summeFehl;
-          return b.summeRest - a.summeRest;
+          const avgFehlA = a.meldungen.length > 0 ? a.summeFehl / a.meldungen.length : 0;
+          const avgFehlB = b.meldungen.length > 0 ? b.summeFehl / b.meldungen.length : 0;
+          if (avgFehlA !== avgFehlB) return avgFehlB - avgFehlA;
+          const avgRestA = a.meldungen.length > 0 ? a.summeRest / a.meldungen.length : 0;
+          const avgRestB = b.meldungen.length > 0 ? b.summeRest / b.meldungen.length : 0;
+          return avgRestB - avgRestA;
         });
         setAggregate(list);
       } catch (err) {
