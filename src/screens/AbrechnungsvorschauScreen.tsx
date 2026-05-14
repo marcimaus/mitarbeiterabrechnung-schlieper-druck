@@ -16,7 +16,7 @@ import {
 } from '../lib/abrechnungslogik';
 import type {
   Mitarbeiter,
-  Einsatz,
+  Teilgebiet,
 } from '../types';
 
 export default function AbrechnungsvorschauScreen() {
@@ -94,12 +94,33 @@ function AbrechnungsvorschauInhalt() {
 
       // Für Interessenten oder MAs ohne Austräger-Rolle: temporär eine
       // 'austräger'-Rolle ergänzen, damit Boni/Stundenlöhne korrekt greifen.
+      // Wenn der MA kein Geburtsdatum, aber das Interessenten-Alter erfasst
+      // ist, ein synthetisches Geburtsdatum aus (Alter bei Erfassung +
+      // verstrichene Zeit) ableiten — damit minderjährige korrekt mit dem
+      // Minderjährigen-Stundenlohn berechnet werden.
+      const synthGeburtsdatum = (() => {
+        if (ma.geburtsdatum && ma.geburtsdatum.trim()) return ma.geburtsdatum;
+        const alterBeiErf = ma.interessentAlterBeiErfassung;
+        const kontakt = ma.interessentKontaktDatum;
+        if (alterBeiErf == null || alterBeiErf <= 0 || !kontakt) return ma.geburtsdatum;
+        const erf = new Date(kontakt);
+        const heute = new Date();
+        let zusatz = heute.getFullYear() - erf.getFullYear();
+        const md = heute.getMonth() - erf.getMonth();
+        if (md < 0 || (md === 0 && heute.getDate() < erf.getDate())) zusatz--;
+        const aktuell = alterBeiErf + zusatz;
+        const geb = new Date(heute);
+        geb.setFullYear(heute.getFullYear() - aktuell);
+        return geb.toISOString().slice(0, 10);
+      })();
+
       const maFuerSim: Mitarbeiter = {
         ...ma,
         isActive: true,
         abgemeldet: false,
         istInteressent: false,
         interessentDeinteressiert: false,
+        geburtsdatum: synthGeburtsdatum,
         rollen: (() => {
           const r = new Set([...(ma.rollen ?? [])]);
           if (extraTgIds.length > 0) r.add('austräger');
@@ -122,39 +143,26 @@ function AbrechnungsvorschauInhalt() {
       const basis = ergebnisseBasis.find((e) => e.mitarbeiter.id === ma.id) ?? null;
       setPeriodeOhneZusatz(basis);
 
-      // Variante B: mit zusätzlichen TGs als simulierte Springer-Einsätze
-      // (typ='springer' mit mitarbeiterId=ma.id für jede Ausgabe der Periode).
+      // Variante B: zusätzliche TGs als „Standardausträger"-Übernahme
+      // simulieren. Wir klonen das teilgebiete-Array und setzen für die
+      // ausgewählten TGs den standardAustraegerId auf unseren MA. Damit wird
+      // er für die Berechnung als Standardausträger gewertet (kein Springer-
+      // Zuschlag). Existierende Einsätze, die einem anderen MA zugewiesen
+      // sind (z. B. Springer für diese KW), entfernen wir für die Simulation
+      // aus dem TG, damit unsere Übernahme zum Zug kommt.
       if (extraTgIds.length > 0) {
-        const virtuelle: Einsatz[] = [];
-        for (const ausgabe of data.ausgaben) {
-          for (const tgId of extraTgIds) {
-            // Wenn bereits ein Einsatz für (Ausgabe, TG) existiert, ersetzen.
-            const existingIdx = data.einsaetze.findIndex(
-              (e) => e.ausgabeId === ausgabe.id && e.teilgebietId === tgId
-            );
-            const virt: Einsatz = {
-              id: `sim_${ausgabe.id}_${tgId}`,
-              ausgabeId: ausgabe.id,
-              kw: ausgabe.kw,
-              jahr: ausgabe.jahr,
-              teilgebietId: tgId,
-              mitarbeiterId: ma.id,
-              typ: 'springer',
-              erstelltAm: Date.now(),
-              aktualisiertAm: Date.now(),
-            };
-            if (existingIdx >= 0) {
-              // Überschreiben: dieser TG geht für die Simulation an unseren MA.
-              data.einsaetze[existingIdx] = virt;
-            } else {
-              virtuelle.push(virt);
-            }
-          }
-        }
-        const dataMitSim = { ...data, einsaetze: [...data.einsaetze, ...virtuelle] };
+        const tgsFuerSim: Teilgebiet[] = teilgebiete.map((t) =>
+          extraTgIds.includes(t.id) ? { ...t, standardAustraegerId: ma.id } : t
+        );
+        const dataMitSim = {
+          ...data,
+          einsaetze: data.einsaetze.filter(
+            (e) => !(extraTgIds.includes(e.teilgebietId) && e.mitarbeiterId !== ma.id)
+          ),
+        };
         const ergebnisseSim = berechneAbrechnung(
           [maFuerSim],
-          teilgebiete,
+          tgsFuerSim,
           dataMitSim,
           parameter,
           periode,
@@ -433,10 +441,8 @@ function VorschauErgebnis({
               <tr>
                 <th className="px-3 py-1.5 text-left font-medium">KW</th>
                 <th className="px-3 py-1.5 text-left font-medium">Teilgebiet</th>
-                <th className="px-3 py-1.5 text-left font-medium">Typ</th>
                 <th className="px-3 py-1.5 text-right font-medium">Zeit</th>
                 <th className="px-3 py-1.5 text-right font-medium">Grundlohn</th>
-                <th className="px-3 py-1.5 text-right font-medium">Zuschlag</th>
                 <th className="px-3 py-1.5 text-right font-medium">Gewichtsbonus</th>
                 <th className="px-3 py-1.5 text-right font-medium">Gesamt</th>
               </tr>
@@ -448,14 +454,8 @@ function VorschauErgebnis({
                   <tr key={`${e.teilgebietId}-${e.kw}`} className="hover:bg-gray-50">
                     <td className="px-3 py-1.5 font-mono">{e.kw}/{e.jahr}</td>
                     <td className="px-3 py-1.5">{e.teilgebietName}</td>
-                    <td className="px-3 py-1.5">
-                      {e.typ === 'springer'
-                        ? <span className="text-blue-700">Springer (Sim.)</span>
-                        : 'Standard'}
-                    </td>
                     <td className="px-3 py-1.5 text-right font-mono">{stdMin(d.zeitStunden)}</td>
                     <td className="px-3 py-1.5 text-right font-mono">{eur(d.grundlohn)}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{eur(d.springerZuschlag ?? 0)}</td>
                     <td className="px-3 py-1.5 text-right font-mono">{eur((d.gewichtsbonusAnzeigenblatt ?? 0) + (d.gewichtsbonusBeilagen ?? 0))}</td>
                     <td className="px-3 py-1.5 text-right font-mono font-semibold">{eur(d.gesamt)}</td>
                   </tr>
