@@ -28,6 +28,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/reklamationen', label: 'Reklamationen', icon: '📞', roles: ['admin', 'abrechnung'] },
   // Abrechnung & Parameter: nur Admin. Lieferscheine: ausgeblendet, Druck
   // erfolgt aus dem Einsätze-Screen heraus.
+  { to: '/abrechnungsvorschau', label: 'Abrechnungsvorschau', icon: '🧮', roles: ['admin', 'abrechnung'] },
   { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin'] },
   { to: '/parameter', label: 'Parameter', icon: '⚙️', roles: ['admin'] },
 ];

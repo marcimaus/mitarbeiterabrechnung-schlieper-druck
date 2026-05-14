@@ -13,6 +13,7 @@ import EinsaetzeScreen from './screens/EinsaetzeScreen';
 import ZusammentragenScreen from './screens/ZusammentragenScreen';
 import FahrtenScreen from './screens/FahrtenScreen';
 import AbrechnungScreen from './screens/AbrechnungScreen';
+import AbrechnungsvorschauScreen from './screens/AbrechnungsvorschauScreen';
 import ParameterScreen from './screens/ParameterScreen';
 import ReklamationenScreen from './screens/ReklamationenScreen';
 import NfcLandingScreen from './screens/NfcLandingScreen';
@@ -66,6 +67,7 @@ function AppLayout() {
             <Route path="/einsaetze" element={<EinsaetzeScreen />} />
             <Route path="/zusammentragen" element={<ZusammentragenScreen />} />
             <Route path="/fahrten" element={<FahrtenScreen />} />
+            <Route path="/abrechnungsvorschau" element={<AbrechnungsvorschauScreen />} />
             <Route path="/abrechnung" element={<AbrechnungScreen />} />
             <Route path="/parameter" element={<ParameterScreen />} />
             <Route path="/reklamationen" element={<ReklamationenScreen />} />
