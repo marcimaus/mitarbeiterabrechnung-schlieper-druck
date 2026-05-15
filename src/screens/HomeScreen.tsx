@@ -39,12 +39,12 @@ export default function HomeScreen() {
       </h1>
       <p className="text-gray-500 mb-6 text-sm">Schlieper-Druck GmbH</p>
 
-      {/* Statistik-Kacheln */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <StatCard label="Aktive Mitarbeiter" value={aktiveMitarbeiter.length} icon="👥" color="blue" />
-        <StatCard label="Teilgebiete" value={teilgebiete.filter(t => t.isActive).length} icon="📍" color="green" />
-        <StatCard label="Touren" value={aktiveTouren} icon="🗺" color="yellow" />
-        <StatCard label="Offene Perioden" value={offenePerioden} icon="💰" color="orange" />
+      {/* Statistik-Chips — kompakt, einzeilig */}
+      <div className="flex flex-wrap gap-2 mb-5">
+        <StatChip label="Aktive Mitarbeiter" value={aktiveMitarbeiter.length} icon="👥" color="blue" />
+        <StatChip label="Teilgebiete" value={teilgebiete.filter(t => t.isActive).length} icon="📍" color="green" />
+        <StatChip label="Touren" value={aktiveTouren} icon="🗺" color="yellow" />
+        <StatChip label="Offene Perioden" value={offenePerioden} icon="💰" color="orange" />
       </div>
 
       {/* Schnellzugriff */}
@@ -200,7 +200,7 @@ export default function HomeScreen() {
   );
 }
 
-function StatCard({
+function StatChip({
   label,
   value,
   icon,
@@ -218,10 +218,10 @@ function StatCard({
     orange: 'bg-orange-50 text-orange-700',
   };
   return (
-    <div className={`rounded-xl p-3 md:p-4 ${colors[color]}`}>
-      <div className="text-xl md:text-2xl mb-1">{icon}</div>
-      <div className="text-2xl font-bold">{value}</div>
-      <div className="text-xs font-medium opacity-80 leading-tight">{label}</div>
+    <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm ${colors[color]}`}>
+      <span className="text-base leading-none">{icon}</span>
+      <span className="font-bold">{value}</span>
+      <span className="text-xs font-medium opacity-80">{label}</span>
     </div>
   );
 }
