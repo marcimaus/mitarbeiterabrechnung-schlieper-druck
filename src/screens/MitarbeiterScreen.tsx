@@ -846,9 +846,14 @@ function MitarbeiterForm({
       if (geb.getFullYear() < 1930) { setError('Geburtsdatum darf nicht vor 1930 liegen.'); return; }
       alterJahre = berechneAlter(form.geburtsdatum);
       if (alterJahre < 13) {
-        if (!confirm(`Der Mitarbeiter ist laut Geburtsdatum erst ${alterJahre} Jahre alt. Trotzdem speichern?`)) {
-          return;
-        }
+        // Gesetzliches Mindestalter für Schülerarbeit (JArbSchG §5): 13 Jahre.
+        // Eingaben unter 13 sind nicht zulässig — kein Bypass möglich.
+        setError(
+          `Der Mitarbeiter ist laut Geburtsdatum erst ${alterJahre} Jahre alt. ` +
+          `Das gesetzliche Mindestalter für Beschäftigung beträgt 13 Jahre. ` +
+          `Bitte das Geburtsdatum prüfen.`
+        );
+        return;
       }
     }
 
@@ -1538,10 +1543,23 @@ function MitarbeiterForm({
             type="date"
             required={!form.nochNichtAngemeldet}
             value={form.geburtsdatum}
+            // Maximum: vor 13 Jahren (heute) — verhindert Eingabe eines
+            // Datums, das einen MA unter 13 Jahren ergibt.
+            max={(() => {
+              const d = new Date();
+              d.setFullYear(d.getFullYear() - 13);
+              return d.toISOString().slice(0, 10);
+            })()}
             onChange={(e) => setForm((f) => ({ ...f, geburtsdatum: e.target.value }))}
             className={inputClass}
           />
-          {minderjährig && (
+          {alter !== null && alter < 13 && (
+            <p className="text-xs text-red-600 mt-1">
+              ⛔ Alter unter 13 Jahren — Beschäftigung gesetzlich nicht zulässig.
+              Bitte Geburtsdatum prüfen.
+            </p>
+          )}
+          {minderjährig && alter !== null && alter >= 13 && (
             <p className="text-xs text-orange-600 mt-1">
               ⚠ Minderjährig ({alter} Jahre) — abweichender Stundenlohn gilt
             </p>
