@@ -25,6 +25,13 @@ export default function HomeScreen() {
   }, [isAdminAuthenticated]);
   const offeneReklamationen = reklamationen.filter((r) => !r.mitgeteilt);
 
+  // Mitarbeiter, die noch nicht beim Lohnbüro angemeldet sind (Flag
+  // `nochNichtAngemeldet=true`). Abgemeldete und Interessenten werden
+  // ausgeblendet — beide brauchen keine Anmeldung.
+  const nichtAngemeldeteMitarbeiter = mitarbeiter
+    .filter((m) => m.nochNichtAngemeldet && !m.abgemeldet && !m.istInteressent)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
       <h1 className="text-xl md:text-2xl font-bold text-gray-900 mb-0.5">
@@ -150,6 +157,43 @@ export default function HomeScreen() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Noch nicht angemeldete Mitarbeiter (unterhalb der anderen Auswertungen) */}
+      {isAdminAuthenticated && (
+        <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-amber-600">⏳</span>
+            <h2 className="font-semibold text-gray-800">
+              Noch nicht beim Lohnbüro angemeldet
+            </h2>
+            <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium ${
+              nichtAngemeldeteMitarbeiter.length === 0
+                ? 'bg-green-100 text-green-700'
+                : 'bg-amber-100 text-amber-800'
+            }`}>
+              {nichtAngemeldeteMitarbeiter.length}
+            </span>
+          </div>
+          {nichtAngemeldeteMitarbeiter.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">
+              Alle Mitarbeiter sind beim Lohnbüro angemeldet. ✓
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {nichtAngemeldeteMitarbeiter.map((m) => (
+                <a
+                  key={m.id}
+                  href="/mitarbeiter"
+                  className="flex items-center justify-between py-1.5 px-2.5 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                >
+                  <span className="text-sm font-medium text-amber-900 truncate">{m.name}</span>
+                  <span className="text-xs text-amber-700 font-mono shrink-0 ml-2">{m.nummer}</span>
+                </a>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
