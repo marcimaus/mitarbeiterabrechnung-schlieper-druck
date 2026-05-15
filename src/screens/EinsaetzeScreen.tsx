@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import LieferscheinDruck from '../components/LieferscheinDruck';
 import ZettelchenDruck from '../components/ZettelchenDruck';
 import KontrolleGewichteDruck from '../components/KontrolleGewichteDruck';
+import UebersichtDruck from '../components/UebersichtDruck';
 import AuslieferungsmemoVerwaltung from '../components/AuslieferungsmemoVerwaltung';
 import { ladeAusgaben, ladeEinsaetze, setzeEinsatz, loescheEinsatz, ladeBeilagen } from '../lib/db';
 import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage } from '../types';
@@ -58,6 +59,7 @@ function EinsaetzeInhalt() {
   const [lieferscheinPeriode, setLieferscheinPeriode] = useState<{ periode: Abrechnungsperiode; kw: number } | null>(null);
   const [zettelchenOffen, setZettelchenOffen] = useState(false);
   const [kontrolleOffen, setKontrolleOffen] = useState(false);
+  const [uebersichtOffen, setUebersichtOffen] = useState(false);
   const [memosOffen, setMemosOffen] = useState(false);
   const [beilagenDialogTg, setBeilagenDialogTg] = useState<Teilgebiet | null>(null);
 
@@ -328,6 +330,15 @@ function EinsaetzeInhalt() {
                   }
                 >
                   ⚖️ Kontrolle Gewichte
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUebersichtOffen(true)}
+                  disabled={!selectedAusgabe}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 disabled:opacity-40 transition-colors"
+                  title="A4-Übersicht für den Werksleiter: Teilgebiete mit Beilagen, Austrägern und Gewichten — mit Checkboxen zum Abhaken"
+                >
+                  📋 Übersicht
                 </button>
                 <button
                   type="button"
@@ -851,6 +862,20 @@ function EinsaetzeInhalt() {
           touren={touren}
           parameter={parameter}
           onClose={() => setKontrolleOffen(false)}
+        />
+      )}
+
+      {/* Übersicht-Druck-Modal (A4, mit Checkboxen) */}
+      {uebersichtOffen && selectedAusgabe && parameter && (
+        <UebersichtDruck
+          ausgabe={selectedAusgabe}
+          teilgebiete={teilgebiete}
+          beilagen={beilagen}
+          einsaetze={Object.values(einsaetze)}
+          mitarbeiter={mitarbeiter}
+          touren={touren}
+          parameter={parameter}
+          onClose={() => setUebersichtOffen(false)}
         />
       )}
 
