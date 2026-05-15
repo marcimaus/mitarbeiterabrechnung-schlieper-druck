@@ -1697,9 +1697,18 @@ function MitarbeiterForm({
         </div>
       </FormField>
 
-      {/* Festgehalt — nur Admin sieht / bearbeitet dieses Kennzeichen */}
+      {/* ============================================================
+          🔐 Admin-Einstellungen — nur für Admin sichtbar & editierbar
+          ============================================================ */}
       {isAdmin && (
-        <>
+        <div className="rounded-lg border-2 border-red-300 bg-red-50/30 p-4 my-2">
+          <div className="flex items-center gap-2 mb-3 pb-2 border-b border-red-200">
+            <span className="text-red-700">🔐</span>
+            <h3 className="text-sm font-semibold text-red-900">Admin-Einstellungen</h3>
+            <span className="text-xs text-red-600 ml-auto">nur für Admin sichtbar &amp; editierbar</span>
+          </div>
+          <div className="space-y-5">
+
           <FormField label="Abrechnung">
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <input
@@ -1851,7 +1860,84 @@ function MitarbeiterForm({
               })()}
             </>
           )}
-        </>
+
+          {/* Ausnahme bei Minderjährigen: Abrechnung wie Erwachsener */}
+          {minderjährig && (
+            <FormField
+              label="Ausnahme: Abrechnung nach MiLoG (Erwachsene)"
+              hint={`Wenn aktiviert, wird dieser minderjährige Mitarbeiter mit den Erwachsenen-Stundenlöhnen abgerechnet (Austragen: ${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h, Zusammentragen: ${parameter?.stundenlohnErwachseneZusammen ?? 13.9} €/h).`}
+            >
+              <label className="flex items-start gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={form.abrechnungAlsErwachseneMiLoG ?? false}
+                  onChange={(e) => setForm((f) => ({ ...f, abrechnungAlsErwachseneMiLoG: e.target.checked }))}
+                  className="rounded mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Abrechnung nach MiLoG (Erwachsene)</span>
+                  <span className="block text-xs text-gray-500">
+                    Überschreibt die Stundenlöhne für Minderjährige zugunsten der Erwachsenen-Tarife.
+                    Greift nicht, wenn ein individueller Stundenlohn gesetzt ist.
+                  </span>
+                </span>
+              </label>
+            </FormField>
+          )}
+
+          {/* Individueller Stundenlohn */}
+          <FormField
+            label="Individueller Stundenlohn (EUR/h)"
+            hint={`Leer lassen für Standard (${
+              minderjährig && !form.abrechnungAlsErwachseneMiLoG
+                ? `${parameter?.stundenlohnMinderjAustr ?? 10.0} €/h Minderjährige`
+                : `${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h MiLoG`
+            })`}
+          >
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.stundenlohnIndividuell ?? ''}
+              onChange={(e) => setForm((f) => ({
+                ...f,
+                stundenlohnIndividuell: e.target.value ? parseFloat(e.target.value) : undefined,
+              }))}
+              onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+              placeholder="Leer = Standard"
+              className={inputClass}
+            />
+            {form.stundenlohnIndividuell !== undefined &&
+              parameter?.stundenlohnErwachseneAustr !== undefined &&
+              form.stundenlohnIndividuell < parameter.mindeststundenlohn && (
+                <p className="text-xs text-red-600 mt-1">
+                  ⚠ Stundenlohn liegt unter dem konfigurierten Mindestlohn ({parameter.mindeststundenlohn} €/h)!
+                </p>
+              )}
+          </FormField>
+
+          {/* Individueller Fahrkostensatz */}
+          <FormField
+            label="Individueller Fahrkostensatz (EUR/km)"
+            hint={`Leer lassen für globalen Standardsatz (${parameter?.fahrkostenEurProKm ?? 0.30} €/km)`}
+          >
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={(form as any).fahrkostenEurProKm ?? ''}
+              onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+              onChange={(e) => setForm((f) => ({
+                ...f,
+                fahrkostenEurProKm: e.target.value ? parseFloat(e.target.value) : undefined,
+              } as any))}
+              placeholder="Leer = Standard"
+              className={inputClass}
+            />
+          </FormField>
+
+          </div>
+        </div>
       )}
 
       {/* Sozialversicherungs-Status */}
@@ -1928,62 +2014,6 @@ function MitarbeiterForm({
         </FormField>
       )}
 
-      {/* Ausnahme bei Minderjährigen: Abrechnung wie Erwachsener — nur Admin */}
-      {isAdmin && minderjährig && (
-        <FormField
-          label="Ausnahme: Abrechnung nach MiLoG (Erwachsene)"
-          hint={`Wenn aktiviert, wird dieser minderjährige Mitarbeiter mit den Erwachsenen-Stundenlöhnen abgerechnet (Austragen: ${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h, Zusammentragen: ${parameter?.stundenlohnErwachseneZusammen ?? 13.9} €/h).`}
-        >
-          <label className="flex items-start gap-2 text-sm text-gray-700">
-            <input
-              type="checkbox"
-              checked={form.abrechnungAlsErwachseneMiLoG ?? false}
-              onChange={(e) => setForm((f) => ({ ...f, abrechnungAlsErwachseneMiLoG: e.target.checked }))}
-              className="rounded mt-0.5"
-            />
-            <span>
-              <span className="font-medium">Abrechnung nach MiLoG (Erwachsene)</span>
-              <span className="block text-xs text-gray-500">
-                Überschreibt die Stundenlöhne für Minderjährige zugunsten der Erwachsenen-Tarife.
-                Greift nicht, wenn ein individueller Stundenlohn gesetzt ist.
-              </span>
-            </span>
-          </label>
-        </FormField>
-      )}
-
-      {isAdmin && (
-        <FormField
-          label="Individueller Stundenlohn (EUR/h)"
-          hint={`Leer lassen für Standard (${
-            minderjährig && !form.abrechnungAlsErwachseneMiLoG
-              ? `${parameter?.stundenlohnMinderjAustr ?? 10.0} €/h Minderjährige`
-              : `${parameter?.stundenlohnErwachseneAustr ?? 13.9} €/h MiLoG`
-          })`}
-        >
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.stundenlohnIndividuell ?? ''}
-            onChange={(e) => setForm((f) => ({
-              ...f,
-              stundenlohnIndividuell: e.target.value ? parseFloat(e.target.value) : undefined,
-            }))}
-            onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-            placeholder="Leer = Standard"
-            className={inputClass}
-          />
-          {form.stundenlohnIndividuell !== undefined &&
-            parameter?.stundenlohnErwachseneAustr !== undefined &&
-            form.stundenlohnIndividuell < parameter.mindeststundenlohn && (
-              <p className="text-xs text-red-600 mt-1">
-                ⚠ Stundenlohn liegt unter dem konfigurierten Mindestlohn ({parameter.mindeststundenlohn} €/h)!
-              </p>
-            )}
-        </FormField>
-      )}
-
       {/* Pauschaler Tätigkeitsbonus je Ausgabe — Abrechnungs-Rolle sieht nur (read-only) */}
       <FormField
         label="Tätigkeitsbonus je Ausgabe (Minuten)"
@@ -2047,27 +2077,6 @@ function MitarbeiterForm({
           <span className="text-sm text-gray-700">Fahrtkosten erfassen erlaubt</span>
         </label>
       </FormField>
-
-      {isAdmin && (
-        <FormField
-          label="Individueller Fahrkostensatz (EUR/km)"
-          hint={`Leer lassen für globalen Standardsatz (${parameter?.fahrkostenEurProKm ?? 0.30} €/km)`}
-        >
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={(form as any).fahrkostenEurProKm ?? ''}
-            onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-            onChange={(e) => setForm((f) => ({
-              ...f,
-              fahrkostenEurProKm: e.target.value ? parseFloat(e.target.value) : undefined,
-            } as any))}
-            placeholder="Leer = Standard"
-            className={inputClass}
-          />
-        </FormField>
-      )}
 
       <FormField
         label="Abholer"
