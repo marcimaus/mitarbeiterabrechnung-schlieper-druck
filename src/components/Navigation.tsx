@@ -18,10 +18,12 @@ const NAV_ITEMS: NavItem[] = [
   // Zeitübersicht: für Mitarbeiter ebenfalls sichtbar — eingeschränkt auf
   // die eigenen Daten (Filterung im Screen).
   { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
-  { to: '/mitarbeiter', label: 'Mitarbeiter', icon: '👥', roles: ['admin', 'abrechnung'] },
+  { to: '/mitarbeiter', label: 'Mitarbeiter & Interessenten', icon: '👥', roles: ['admin', 'abrechnung'] },
   { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin', 'abrechnung'] },
   { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin', 'abrechnung'] },
   { to: '/ausgaben', label: 'Ausgaben & Beilagen', icon: '📄', roles: ['admin', 'abrechnung'] },
+  { to: '/planung', label: 'Personalplanung', icon: '🗒', roles: ['admin', 'abrechnung'] },
+  { to: '/urlaub', label: 'Urlaub', icon: '🏖', roles: ['admin', 'abrechnung'] },
   { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
   { to: '/verteilplan', label: 'Verteilplan', icon: '📋', roles: ['admin', 'abrechnung'] },
   { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung'] },

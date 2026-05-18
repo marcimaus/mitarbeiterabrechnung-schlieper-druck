@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { abonniereReklamationen } from '../lib/db';
-import type { Reklamation } from '../types';
+import { urlaubsAusstehendListener } from '../lib/planung';
+import type { Reklamation, UrlaubsEintrag } from '../types';
 
 export default function HomeScreen() {
   const { mitarbeiter, teilgebiete, touren, abrechnungsperioden, isAdminAuthenticated } = useApp();
@@ -24,6 +25,19 @@ export default function HomeScreen() {
     return () => unsub();
   }, [isAdminAuthenticated]);
   const offeneReklamationen = reklamationen.filter((r) => !r.mitgeteilt);
+
+  // Urlaubsanträge, die durch Abrechnung erfasst und noch nicht freigegeben
+  // sind. Zeigen wir Admin & Abrechnung — Admin damit er entscheidet,
+  // Abrechnung damit sie sieht, was noch in der Warteschlange hängt.
+  const [offeneUrlaubsantraege, setOffeneUrlaubsantraege] = useState<UrlaubsEintrag[]>([]);
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const unsub = urlaubsAusstehendListener(setOffeneUrlaubsantraege);
+    return () => unsub();
+  }, [isAdminAuthenticated]);
+  const urlaubsantraegeSortiert = [...offeneUrlaubsantraege].sort(
+    (a, b) => a.jahr - b.jahr || a.kw - b.kw,
+  );
 
   // Mitarbeiter, die noch nicht beim Lohnbüro angemeldet sind (Flag
   // `nochNichtAngemeldet=true`). Abgemeldete und Interessenten werden
@@ -57,6 +71,7 @@ export default function HomeScreen() {
             <>
               <QuickLink href="/mitarbeiter" icon="👥" title="Mitarbeiter" desc="Stammdaten verwalten" />
               <QuickLink href="/ausgaben" icon="📄" title="Ausgaben & Beilagen" desc="Wochenausgaben planen" />
+              <QuickLink href="/planung" icon="🗒" title="Personalplanung" desc="Drucksaal · Fahrer · Springer" />
               <QuickLink href="/einsaetze" icon="🗓" title="Einsätze" desc="Austräger zuweisen" />
               <QuickLink href="/reklamationen" icon="📞" title="Reklamationen" desc="Leser-Reklamationen erfassen" />
               <QuickLink href="/abrechnung" icon="💰" title="Abrechnung" desc="Monatsabrechnung & Export" />
@@ -155,6 +170,52 @@ export default function HomeScreen() {
                   </a>
                 )}
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Urlaubsanträge — offen, durch Abrechnung erfasst, warten auf Admin-Freigabe */}
+      {isAdminAuthenticated && urlaubsantraegeSortiert.length > 0 && (
+        <div className="mt-4 bg-white rounded-xl shadow-sm border border-amber-300 p-4 md:p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-amber-600">🏖</span>
+            <h2 className="font-semibold text-gray-800">
+              Urlaubsanträge — Freigabe ausstehend
+            </h2>
+            <span className="ml-auto text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800">
+              {urlaubsantraegeSortiert.length}
+            </span>
+          </div>
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
+            {urlaubsantraegeSortiert.slice(0, 12).map((u) => {
+              const ma = mitarbeiter.find((m) => m.id === u.mitarbeiterId);
+              return (
+                <a
+                  key={u.id}
+                  href="/planung"
+                  className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                >
+                  <span className="text-sm font-medium text-amber-900 truncate">
+                    {ma?.name ?? '?'}
+                  </span>
+                  <span className="text-xs text-amber-700 shrink-0">
+                    KW {u.kw}/{u.jahr}
+                    {u.datumVon && u.datumBis ? ` · ${u.datumVon} – ${u.datumBis}` : ''}
+                  </span>
+                  <span className="text-[10px] text-amber-600 shrink-0 font-mono">
+                    {u.erstellerName}
+                  </span>
+                </a>
+              );
+            })}
+            {urlaubsantraegeSortiert.length > 12 && (
+              <a
+                href="/planung"
+                className="block py-1 text-center text-xs text-amber-700 hover:text-amber-900 font-medium"
+              >
+                … und {urlaubsantraegeSortiert.length - 12} weitere
+              </a>
             )}
           </div>
         </div>

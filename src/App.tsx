@@ -19,6 +19,8 @@ import ReklamationenScreen from './screens/ReklamationenScreen';
 import NfcLandingScreen from './screens/NfcLandingScreen';
 import AustraegerMeldungScreen from './screens/AustraegerMeldungScreen';
 import VerteilplanScreen from './screens/VerteilplanScreen';
+import PlanungScreen from './screens/PlanungScreen';
+import UrlaubScreen from './screens/UrlaubScreen';
 import { useApp } from './context/AppContext';
 
 export default function App() {
@@ -74,6 +76,8 @@ function AppLayout() {
             <Route path="/nfc" element={<NfcLandingScreen />} />
             <Route path="/meldung" element={<AustraegerMeldungScreen />} />
             <Route path="/verteilplan" element={<VerteilplanScreen />} />
+            <Route path="/planung" element={<PlanungScreen />} />
+            <Route path="/urlaub" element={<UrlaubScreen />} />
             <Route path="/admin" element={<AdminLoginPage />} />
           </Routes>
         </main>

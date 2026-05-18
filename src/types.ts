@@ -84,6 +84,41 @@ export interface Mitarbeiter {
    * den Stapel NICHT mitnimmt — er bleibt zur Abholung im Werk liegen.
    */
   istAbholer?: boolean;
+  /**
+   * „Drucksaal": Mitarbeiter ist im Drucksaal einsetzbar (Drucken, Falzen,
+   * Schneiden, Verpacken). Nur diese erscheinen in der Drucksaal-Planung
+   * der Personalplanungs-Maske. Nur Admin darf das Flag pflegen.
+   */
+  istDrucksaal?: boolean;
+  /**
+   * Manuelle Sortierreihenfolge in der Zusammenträger-Liste der
+   * Personalplanung. Niedrigere Werte erscheinen oben. Wer keinen Wert hat,
+   * landet alphabetisch hinter denen mit Wert. Wird ausschließlich aus der
+   * Planungs-Maske heraus gepflegt (Pfeil-Buttons).
+   */
+  sortierungZusammen?: number;
+  /** Analog für die Urlaubs-Sektion der Planungs-Maske. */
+  sortierungUrlaub?: number;
+  /**
+   * Untergruppierung in der Zusammenträger-Sektion der Planungsmaske:
+   *  - undefined / false → „fest eingeplant" (Standard, oben angezeigt)
+   *  - true               → „auf Abruf" (unten, leicht graue Hintergrund)
+   * Nur Admin darf dieses Flag setzen.
+   */
+  zusammenAufAbruf?: boolean;
+  /**
+   * Wenn true, blendet der Admin diesen MA aus der Urlaubs-Sektion der
+   * Personalplanung aus. Standard ist sichtbar (Flag undefined/false).
+   * MAs lassen sich vom Admin jederzeit wieder einblenden.
+   */
+  urlaubsplanungAusgeblendet?: boolean;
+  /**
+   * Optionales Kürzel des Mitarbeiters — 3 Großbuchstaben, frei wählbar.
+   * Vorschlag bei Neuerfassung: Vorname[0] + Nachname[0..2]. Wird in der
+   * Drucksaal-Planung auf den Chips angezeigt (statt voller Name), wenn
+   * gesetzt.
+   */
+  kuerzel?: string;
   fahrkostenEurProKm?: number;   // Überschreibt den globalen Kilomtersatz
   /** Wenn true: Mitarbeiter bekommt fixes Monatsgehalt statt variabler Abrechnung. */
   hatFestgehalt: boolean;
@@ -223,6 +258,12 @@ export interface Tour {
    * setzen.
    */
   streckeFahrkostenKm?: number;
+  /**
+   * Wenn true, blendet der Admin diese Tour in der Fahrer-Sektion der
+   * Personalplanung aus. Andere Bereiche (Lieferschein, Einsätze,
+   * Fahrtkosten) bleiben unberührt — die Tour existiert weiter.
+   */
+  fahrerplanungAusgeblendet?: boolean;
   erstelltAm: number;
 }
 
@@ -464,6 +505,26 @@ export interface Einsatz {
   typ: EinsatzTyp;
   springerZuschlagProzent?: number; // individ. Zuschlag, sonst aus Parametern
   memo?: string;
+  // ---- Planungs-Felder (aus PlanungScreen geschrieben) -----
+  /** Freitext-Kommentar zum Ausfall/Springer, aus der Planung gepflegt. */
+  kommentar?: string;
+  /** Externer Link (z. B. Mail-Thread) zum Ausfall. */
+  externerLink?: string;
+  /**
+   * Gruppen-Anker für mehrwöchige Ausfälle: alle Einsätze einer logischen
+   * Gruppe tragen identische `(ausfallBisJahr, ausfallBisKw)`. Beim
+   * Bearbeiten/Löschen aus der Planung werden alle Geschwister gemeinsam
+   * behandelt. Bei Single-Cell-Ausfällen identisch mit (jahr, kw).
+   */
+  ausfallBisJahr?: number;
+  ausfallBisKw?: number;
+  /**
+   * Snapshot des Standardausträgers zum Planungszeitpunkt. Wird zum
+   * Anlegen einmal befüllt und bei Folge-Updates beibehalten — der
+   * Planungsscreen vergleicht damit gegen den aktuellen Standardausträger
+   * und warnt mit ⚡, falls sich dieser zwischenzeitlich geändert hat.
+   */
+  standardAustraegerSnapshot?: string | null;
   // Selbstmeldung durch den Austräger (ohne Login, via QR-Code)
   arbeitszeit?: AustraegerArbeitszeit;
   restmenge?: number;           // nicht ausgetragene Stücke (Überschuss)
@@ -773,4 +834,205 @@ export interface AuditLog {
 export interface SelectOption {
   value: string;
   label: string;
+}
+
+// ============================================================
+// Personalplanung (Drucksaal + Austräger)
+// ============================================================
+//
+// Vier separate Collections — jede ist klein, hat einen eindeutigen
+// Composite-Key und lässt sich pro Eintrag sperren/freigeben.
+// Alle Einträge werden über (jahr, kw) abgefragt; UI cached die jeweils
+// sichtbare Jahresansicht im RAM.
+
+/** Drucksaal-Tätigkeiten, die in der Planung wöchentlich besetzt werden. */
+export type DrucksaalTaetigkeit =
+  | 'drucken'
+  | 'falzen1'
+  | 'falzen2'
+  | 'schneiden'
+  | 'verpacken';
+
+export const DRUCKSAAL_TAETIGKEIT_LABELS: Record<DrucksaalTaetigkeit, string> = {
+  drucken: 'Drucken',
+  falzen1: 'Falzen 1',
+  falzen2: 'Falzen 2',
+  schneiden: 'Schneiden',
+  verpacken: 'Verpacken',
+};
+
+/** Status, mit dem ein Zusammenträger seine Anwesenheit pro KW plant. */
+export type ZusammentragerStatus =
+  | 'kommt'
+  | 'kommt-nicht'
+  | 'kommt-ggf'
+  | 'unabgemeldet-nicht-erschienen';
+
+export const ZUSAMMENTRAGER_STATUS_LABELS: Record<ZusammentragerStatus, string> = {
+  'kommt': 'kommt',
+  'kommt-nicht': 'kommt nicht',
+  'kommt-ggf': 'kommt ggf.',
+  'unabgemeldet-nicht-erschienen': 'unabgemeldet nicht erschienen',
+};
+
+/**
+ * Drucksaal-Planung: eine Zelle pro (jahr, kw, taetigkeit).
+ * docId = `${jahr}-${kw}-${taetigkeit}` — Upsert.
+ */
+export interface DrucksaalPlanung {
+  id: string;
+  jahr: number;
+  kw: number;
+  taetigkeit: DrucksaalTaetigkeit;
+  mitarbeiterId: string | null;
+  /** Optionaler Freitext-Kommentar zur Zelle (Rechtsklick im UI). */
+  kommentar?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
+/**
+ * Fahrer-Planung: eine Zelle pro (jahr, kw, tourId).
+ * docId = `${jahr}-${kw}-${tourId}` — Upsert.
+ */
+export interface FahrerPlanung {
+  id: string;
+  jahr: number;
+  kw: number;
+  tourId: string;
+  mitarbeiterId: string | null;
+  /** Optionaler Freitext-Kommentar zur Zelle (Rechtsklick im UI). */
+  kommentar?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
+/**
+ * Zusammenträger-Planung: eine Zelle pro (jahr, kw, mitarbeiterId).
+ * docId = `${jahr}-${kw}-${mitarbeiterId}` — Upsert.
+ */
+export interface ZusammentragerPlanung {
+  id: string;
+  jahr: number;
+  kw: number;
+  mitarbeiterId: string;
+  /**
+   * Optional: ein Eintrag darf auch nur einen Kommentar tragen, ohne dass
+   * der Chip aktiviert wird. Erst beim aktiven Klick auf den Chip wird
+   * der Status gesetzt.
+   */
+  status?: ZusammentragerStatus;
+  kommentar?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
+/**
+ * Austräger-Ausfall (= Springer-Planung): eine Zelle pro (jahr, kw, teilgebietId).
+ * docId = `${jahr}-${kw}-${teilgebietId}` — Upsert.
+ *
+ * Felder:
+ *  - `standardAustraegerSnapshot`: ID des Standardausträgers zum Zeitpunkt
+ *    der Planung. Bleibt erhalten, auch wenn der TG-Standard später wechselt.
+ *  - `springerMitarbeiterId`: Ersatzkraft. Solange null → Anzeige rot.
+ *  - `ausfallBisKw` + `ausfallBisJahr`: optional, automatische Auto-Anlage
+ *    der Folgewochen erfolgt nicht in der DB, sondern bei jedem Speichern
+ *    durch die UI (idempotenter Upsert).
+ *  - `inAbrechnungUebernommen`: wenn `true`, ist die Planung in einen
+ *    Springer-Einsatz für die KW geflossen. Daten werden gesperrt.
+ *  - `uebernommenSpringerEinsatzId`: optionale Rückreferenz, damit beim
+ *    Reset bekannt ist, welcher Einsatz zu löschen ist.
+ */
+/** Urlaubsstatus pro (KW, Mitarbeiter). */
+export type UrlaubStatus = 'ganze-woche' | 'einzeltag' | 'mehrtaegig';
+
+export const URLAUB_STATUS_LABELS: Record<UrlaubStatus, string> = {
+  'ganze-woche': 'Urlaub — ganze Woche',
+  'einzeltag': 'Urlaubstag',
+  'mehrtaegig': 'Urlaub mehrtägig',
+};
+
+/**
+ * Urlaubseintrag — eine Zelle pro (jahr, kw, mitarbeiterId).
+ * docId = `${jahr}-${kw}-${mitarbeiterId}` — Upsert.
+ *
+ * Erstreckt sich der Urlaub über mehrere KWs, wird beim Speichern ein
+ * separater Eintrag pro betroffener KW angelegt (mit identischen
+ * von/bis-Daten). Damit funktioniert die KW-Matrix ohne Spezialfälle.
+ *
+ * Freigabe-Workflow:
+ *  - Erstellt durch Admin → automatisch `freigegeben: true`
+ *  - Erstellt durch Abrechnung → `freigegeben: false`; bis ein Admin
+ *    den Eintrag freigibt, erscheint er gelb markiert + in der
+ *    Hinweisbox auf der Startseite.
+ */
+export interface UrlaubsEintrag {
+  id: string;
+  jahr: number;
+  kw: number;
+  mitarbeiterId: string;
+  status: UrlaubStatus;
+  datumVon?: string;        // ISO YYYY-MM-DD
+  datumBis?: string;
+  kommentar?: string;
+  externerLink?: string;
+  /**
+   * Konkrete Werktage (Mo–Fr) in dieser Kalenderwoche, ISO-Format.
+   * Wenn gesetzt, ist das die maßgebliche Quelle für Statusberechnung
+   * (1 Tag = einzeltag, 2-4 = mehrtaegig, 5 = ganze-woche). Erlaubt
+   * mehrere Einzeltage pro KW (z. B. Mo + Mi + Fr). Bei Altdaten leer →
+   * Fallback aus datumVon/Bis.
+   */
+  werktageInKw?: string[];
+  erstellerName: string;
+  erstellerRolle: 'admin' | 'abrechnung';
+  freigegeben: boolean;
+  freigegebenVon?: string;
+  freigegebenAm?: number;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
+/**
+ * Geplanter dauerhafter Standardausträger-Wechsel je Teilgebiet.
+ * Wird in der Planungsmaske unterhalb der „Ausfälle"-Sektion angelegt;
+ * unabhängig vom kurzfristigen Ausfall-Handling.
+ *
+ * docId = `teilgebietId` (pro TG gibt es maximal einen geplanten Wechsel).
+ *
+ * Felder:
+ *  - letzteAusgabe(Jahr,Kw): letzte Ausgabe, die der BISHERIGE Standard-
+ *    austräger noch verteilt. Pflicht.
+ *  - neuerAustraegerId + abAusgabe(Jahr,Kw): optional — solange nicht
+ *    gesetzt, gilt das TG ab der nächsten Ausgabe als unbesetzt.
+ */
+export interface StandardAustraegerWechselPlan {
+  id: string;
+  teilgebietId: string;
+  letzteAusgabeJahr: number;
+  letzteAusgabeKw: number;
+  neuerAustraegerId?: string;
+  abAusgabeJahr?: number;
+  abAusgabeKw?: number;
+  kommentar?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
+export interface AustraegerAusfall {
+  id: string;
+  jahr: number;
+  kw: number;
+  teilgebietId: string;
+  standardAustraegerSnapshot: string | null;
+  springerMitarbeiterId: string | null;
+  kommentar?: string;
+  externerLink?: string;
+  ausfallBisJahr?: number;
+  ausfallBisKw?: number;
+  inAbrechnungUebernommen?: boolean;
+  uebernommenAm?: number;
+  uebernommenSpringerEinsatzId?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
 }

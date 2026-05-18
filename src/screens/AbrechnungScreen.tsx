@@ -27,7 +27,11 @@ import {
   ladeAusgaben,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
-import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe } from '../types';
+import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet } from '../types';
+import {
+  austraegerwechselPlanListener,
+  loescheAustraegerwechselPlan,
+} from '../lib/planung';
 import { ROLLEN_LABELS } from '../types';
 
 export default function AbrechnungScreen() {
@@ -50,6 +54,12 @@ function AbrechnungInhalt() {
   const [monatswechselBestaetigt, setMonatswechselBestaetigt] = useState(false);
   const [zeigeWechselDialog, setZeigeWechselDialog] = useState(false);
   const [zeigeAnpassungDialog, setZeigeAnpassungDialog] = useState(false);
+  // Wechselpläne (PlanungScreen-Sektion): werden beim Monatswechsel
+  // gefiltert auf jene, deren `letzteAusgabe` der letzten KW der laufenden
+  // Periode entspricht.
+  const [wechselplaene, setWechselplaene] = useState<StandardAustraegerWechselPlan[]>([]);
+  const [zeigeWechselplanDialog, setZeigeWechselplanDialog] = useState(false);
+  useEffect(() => austraegerwechselPlanListener(setWechselplaene), []);
   const [suchbegriff, setSuchbegriff] = useState('');
   const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
   const [filterMinijob, setFilterMinijob] = useState<'' | 'ja' | 'nein'>('');
@@ -321,6 +331,16 @@ function AbrechnungInhalt() {
       // Vorgemerkte Stückzahl-Anpassungen ebenfalls anbieten.
       if (stueckzahlAnpassungen.length > 0) {
         setZeigeAnpassungDialog(true);
+      }
+      // Wechselpläne (PlanungScreen), deren letzte Ausgabe in dieser Periode liegt.
+      const letzteKwDerPeriode = Math.max(...selectedPeriode.kalenderwochen);
+      const relevanteWechselplaene = wechselplaene.filter(
+        (p) =>
+          p.letzteAusgabeJahr === selectedPeriode.jahr &&
+          p.letzteAusgabeKw === letzteKwDerPeriode,
+      );
+      if (relevanteWechselplaene.length > 0) {
+        setZeigeWechselplanDialog(true);
       }
     } catch (e: any) {
       alert('Fehler beim Monatswechsel: ' + (e.message ?? e));
@@ -1156,6 +1176,19 @@ function AbrechnungInhalt() {
         />
       )}
 
+      {zeigeWechselplanDialog && selectedPeriode && (
+        <WechselplanUebernahmeDialog
+          wechselplaene={wechselplaene.filter(
+            (p) =>
+              p.letzteAusgabeJahr === selectedPeriode.jahr &&
+              p.letzteAusgabeKw === Math.max(...selectedPeriode.kalenderwochen),
+          )}
+          teilgebiete={teilgebiete}
+          mitarbeiter={mitarbeiter}
+          onClose={() => setZeigeWechselplanDialog(false)}
+        />
+      )}
+
       {zeigeAnpassungDialog && (
         <StueckzahlAnpassungDialog
           anpassungen={stueckzahlAnpassungen}
@@ -1272,6 +1305,162 @@ function AustraegerwechselDialog({
                           }}
                           className="text-xs text-red-500 hover:text-red-700"
                           title="Wechsel verwerfen"
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-gray-200 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700"
+          >
+            Schließen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Modal: Wechselplan-Übernahme (PlanungScreen-Quelle) ----
+//
+// Nach „Monatswechsel durchführen" werden Wechselpläne aus der
+// PlanungScreen-Sektion „Standard-Wechsel" einzeln zur Bestätigung
+// angeboten — sofern ihre `letzteAusgabe` der letzten KW dieser Periode
+// entspricht. Übernehmen setzt den neuen Standardausträger am TG und
+// löscht den Wechselplan; Lücken-Einsätze in der Abrechnung bleiben
+// unangetastet (vom User in der Ausfälle-Sektion zu klären).
+
+function WechselplanUebernahmeDialog({
+  wechselplaene,
+  teilgebiete,
+  mitarbeiter,
+  onClose,
+}: {
+  wechselplaene: StandardAustraegerWechselPlan[];
+  teilgebiete: Teilgebiet[];
+  mitarbeiter: Mitarbeiter[];
+  onClose: () => void;
+}) {
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const offen = [...wechselplaene].sort((a, b) => {
+    const na = tgMap.get(a.teilgebietId)?.name ?? '';
+    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
+    return na.localeCompare(nb, 'de', { numeric: true });
+  });
+
+  async function handleUebernehmen(p: StandardAustraegerWechselPlan) {
+    if (!p.neuerAustraegerId) return;
+    const tg = tgMap.get(p.teilgebietId);
+    if (!tg) {
+      alert('Teilgebiet nicht mehr vorhanden — Eintrag wird verworfen.');
+      await loescheAustraegerwechselPlan(p.teilgebietId);
+      return;
+    }
+    setBusyId(p.id);
+    try {
+      await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: p.neuerAustraegerId });
+      await loescheAustraegerwechselPlan(p.teilgebietId);
+    } catch (e: any) {
+      alert('Fehler beim Übernehmen: ' + (e.message ?? e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <div className="px-5 py-3 border-b border-gray-200">
+          <h3 className="text-base font-semibold text-gray-900">
+            Geplante Standardausträger-Wechsel ({offen.length})
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Aus der Personalplanung — die letzte Ausgabe des bisherigen
+            Austrägers liegt in dieser Periode. Pro TG einzeln bestätigen:
+            der neue Standardausträger wird am Teilgebiet eingetragen.
+            Lücken-Einsätze (zwischen letzter und erster Ausgabe) bleiben
+            in der Abrechnung als „unbesetzt" stehen und sind dort separat
+            zu klären.
+          </p>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {offen.length === 0 ? (
+            <div className="px-5 py-10 text-center text-sm text-gray-500">
+              Keine relevanten Wechselpläne mehr.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
+                  <th className="px-3 py-2 text-left font-medium">Bisheriger</th>
+                  <th className="px-3 py-2 text-left font-medium">Neuer (geplant)</th>
+                  <th className="px-3 py-2 text-left font-medium">Ab Ausgabe</th>
+                  <th className="px-3 py-2 text-right font-medium">Aktion</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {offen.map((p) => {
+                  const tg = tgMap.get(p.teilgebietId);
+                  const bisheriger = tg?.standardAustraegerId
+                    ? maMap.get(tg.standardAustraegerId)
+                    : undefined;
+                  const neuer = p.neuerAustraegerId ? maMap.get(p.neuerAustraegerId) : undefined;
+                  return (
+                    <tr key={p.id} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 font-medium text-gray-900">
+                        {tg?.name ?? '— gelöscht —'}
+                        {p.kommentar && (
+                          <div className="text-[10px] text-gray-500 truncate" title={p.kommentar}>
+                            💬 {p.kommentar}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-gray-700">
+                        {bisheriger?.name ?? <span className="text-gray-400 italic">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-gray-900">
+                        {neuer?.name ?? <span className="text-amber-600 italic">kein Nachfolger geplant</span>}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-600 whitespace-nowrap">
+                        {p.abAusgabeJahr && p.abAusgabeKw
+                          ? `KW ${p.abAusgabeKw}/${p.abAusgabeJahr}`
+                          : <span className="text-gray-400 italic">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
+                        {p.neuerAustraegerId ? (
+                          <button
+                            type="button"
+                            onClick={() => handleUebernehmen(p)}
+                            disabled={busyId === p.id}
+                            className="text-xs bg-green-600 text-white px-2.5 py-1 rounded hover:bg-green-700 disabled:opacity-50 mr-1.5"
+                          >
+                            {busyId === p.id ? '…' : '✓ Übernehmen'}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!confirm('Diesen geplanten Wechsel verwerfen?')) return;
+                            await loescheAustraegerwechselPlan(p.teilgebietId);
+                          }}
+                          className="text-xs text-red-500 hover:text-red-700"
+                          title="Wechselplan verwerfen"
                         >
                           ✕
                         </button>

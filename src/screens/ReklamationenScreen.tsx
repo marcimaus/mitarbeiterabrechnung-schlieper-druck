@@ -407,18 +407,33 @@ function ReklamationForm({
     [form.strasse, form.plz, form.ort, teilgebiete]
   );
 
-  // Bei Adressänderung Vorschläge in die Auswahl übernehmen — aber nur,
-  // wenn die User-Auswahl ausschließlich aus früheren Vorschlägen oder
-  // leer war (sonst nicht überschreiben).
+  // Bei Adressänderung Vorschläge in die Auswahl übernehmen — aber:
+  //  · Bei einem geladenen, bereits gespeicherten Datensatz die User-
+  //    Auswahl beim ersten Render NICHT überschreiben.
+  //  · Bei jeder Vorschlag-Änderung nur die NEU hinzugekommenen Vorschläge
+  //    in die Auswahl aufnehmen — eine vom User abgewählte ID wird nicht
+  //    erneut hinzugefügt.
   const vorschlagsIdsRef = useRef<Set<string>>(new Set());
+  const initialSyncRefTg = useRef(false);
   useEffect(() => {
     const neuVorgeschlagen = new Set(tgVorschlaege.map((v) => v.tg.id));
     setForm((f) => {
-      const manuellHinzu = f.teilgebietIds.filter((id) => !vorschlagsIdsRef.current.has(id));
-      const neu = Array.from(new Set([...Array.from(neuVorgeschlagen), ...manuellHinzu]));
+      // Erster Sync nach Form-Init mit gespeicherten Daten: nicht anfassen.
+      if (!initialSyncRefTg.current && f.teilgebietIds.length > 0) {
+        initialSyncRefTg.current = true;
+        vorschlagsIdsRef.current = neuVorgeschlagen;
+        return f;
+      }
+      initialSyncRefTg.current = true;
+
+      // Nur „neu hinzugekommene" Vorschläge in die Auswahl übernehmen.
+      // Bereits aktive Vorschläge bleiben drin; vom User abgewählte
+      // Vorschläge bleiben abgewählt.
+      const alt = vorschlagsIdsRef.current;
+      const hinzugekommen = Array.from(neuVorgeschlagen).filter((id) => !alt.has(id));
       vorschlagsIdsRef.current = neuVorgeschlagen;
-      // Falls neue Auswahl = alte Auswahl → State nicht ändern (vermeidet
-      // unnötige Re-Renders bei stabiler Adresse).
+      if (hinzugekommen.length === 0) return f;
+      const neu = Array.from(new Set([...f.teilgebietIds, ...hinzugekommen]));
       if (
         neu.length === f.teilgebietIds.length &&
         neu.every((id) => f.teilgebietIds.includes(id))
@@ -495,13 +510,26 @@ function ReklamationForm({
   );
 
   // Vorschläge auch in MA-Auswahl übernehmen — analog zu TGs.
+  // Gleiche Sicherung: bestehende User-Auswahl wird beim Initial-Load
+  // NICHT überschrieben, vom User abgewählte Vorschläge bleiben abgewählt,
+  // nur neu hinzukommende Vorschläge werden ergänzt.
   const maVorschlagsIdsRef = useRef<Set<string>>(new Set());
+  const initialSyncRefMa = useRef(false);
   useEffect(() => {
     const neuVorgeschlagen = new Set(maVorschlaege.map((v) => v.ma.id));
     setForm((f) => {
-      const manuellHinzu = f.mitarbeiterIds.filter((id) => !maVorschlagsIdsRef.current.has(id));
-      const neu = Array.from(new Set([...Array.from(neuVorgeschlagen), ...manuellHinzu]));
+      if (!initialSyncRefMa.current && f.mitarbeiterIds.length > 0) {
+        initialSyncRefMa.current = true;
+        maVorschlagsIdsRef.current = neuVorgeschlagen;
+        return f;
+      }
+      initialSyncRefMa.current = true;
+
+      const alt = maVorschlagsIdsRef.current;
+      const hinzugekommen = Array.from(neuVorgeschlagen).filter((id) => !alt.has(id));
       maVorschlagsIdsRef.current = neuVorgeschlagen;
+      if (hinzugekommen.length === 0) return f;
+      const neu = Array.from(new Set([...f.mitarbeiterIds, ...hinzugekommen]));
       if (
         neu.length === f.mitarbeiterIds.length &&
         neu.every((id) => f.mitarbeiterIds.includes(id))

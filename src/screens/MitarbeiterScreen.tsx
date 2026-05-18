@@ -31,6 +31,42 @@ type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'anmeldung' | 'lohnkonto'
 
 const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
+/**
+ * Schlägt die nächste freie 5-stellige Mitarbeiternummer beginnend mit 9
+ * vor (z. B. 90001, 90002, …). Sucht das Maximum unter den bisher
+ * vergebenen Nummern; fallback auf 90001, wenn keine passt.
+ *
+ * Verboten ist eine bereits vergebene Nummer — die Submit-Prüfung blockt
+ * das ebenfalls noch einmal redundant.
+ */
+function naechsteFreieNummer(mitarbeiter: Mitarbeiter[]): string {
+  let max = 90000;
+  for (const m of mitarbeiter) {
+    if (!m.nummer) continue;
+    if (!/^9\d{4}$/.test(m.nummer)) continue;
+    const n = parseInt(m.nummer, 10);
+    if (n > max) max = n;
+  }
+  return String(max + 1);
+}
+
+/**
+ * Schlägt aus einem Namen ein 3-Buchstaben-Kürzel vor: Vorname[0] +
+ * Nachname[0..1]. Bei Einzelwort: erste 3 Buchstaben. Liefert leeren
+ * String, wenn nicht genug Buchstaben vorhanden sind.
+ */
+function kuerzelVorschlag(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '';
+  const onlyLetters = (s: string) => s.replace(/[^A-Za-zÄÖÜäöüß]/g, '');
+  if (parts.length === 1) {
+    return onlyLetters(parts[0]).slice(0, 3).toUpperCase();
+  }
+  const v = onlyLetters(parts[0]).slice(0, 1);
+  const n = onlyLetters(parts[parts.length - 1]).slice(0, 2);
+  return (v + n).toUpperCase();
+}
+
 const DEFAULT_FORM: Omit<Mitarbeiter, 'id' | 'erstelltAm' | 'aktualisiertAm' | 'pinHash' | 'nfcUid'> = {
   nummer: '',
   name: '',
@@ -752,9 +788,19 @@ function MitarbeiterForm({
         ...(initial.fahrtkostenerstattung ? { fahrtkostenerstattung: true } : {}),
         ...(initial.fahrkostenEurProKm !== undefined ? { fahrkostenEurProKm: initial.fahrkostenEurProKm } : {}),
         ...(initial.istAbholer ? { istAbholer: true } : {}),
+        ...(initial.istDrucksaal ? { istDrucksaal: true } : {}),
+        ...(initial.kuerzel ? { kuerzel: initial.kuerzel } : {}),
       } as typeof DEFAULT_FORM;
     }
-    return { ...DEFAULT_FORM, adresse: { strasse: '', plz: '', ort: '' }, rollen: [] };
+    // Neu-Anlage: nächste freie Mitarbeiternummer vorschlagen (5-stellig,
+    // beginnt mit 9, fortlaufend). Bestehende werden geparst, das Maximum
+    // +1 verwendet. Fällt nichts heraus, starten wir bei 90001.
+    return {
+      ...DEFAULT_FORM,
+      nummer: naechsteFreieNummer(mitarbeiter),
+      adresse: { strasse: '', plz: '', ort: '' },
+      rollen: [],
+    };
   });
   // Freigaben und Boni als eigene States
   const [freigaben, setFreigaben] = useState<string[]>(initial?.teilgebietFreigaben ?? []);
@@ -1428,17 +1474,33 @@ function MitarbeiterForm({
 
       {/* Restliche Stammdaten: nur bei „echten" MAs (kein Interessent) */}
       {!form.istInteressent && (<>
-      <div className="grid grid-cols-2 gap-4">
-        <FormField label="Mitarbeiternummer *" hint="5-stellig, beginnt mit 9">
-          <input
-            type="text"
-            value={form.nummer}
-            onChange={(e) => setForm((f) => ({ ...f, nummer: e.target.value }))}
-            maxLength={5}
-            placeholder="90001"
-            className={inputClass}
-          />
-        </FormField>
+      <div className="grid grid-cols-[1fr_2fr_1fr] gap-4">
+        {(() => {
+          // Sperr-Regeln:
+          //  - Bestehender MA → Nummer ist final, nie änderbar.
+          //  - Neuer MA + Rolle „Abrechnung" → Vorschlag muss übernommen werden.
+          //  - Neuer MA + Rolle „Admin" → Vorschlag darf angepasst werden.
+          const istNummerGesperrt = !!initial || !isAdmin;
+          const hint = initial
+            ? 'Festgelegte Nummern können nicht mehr geändert werden.'
+            : isAdmin
+            ? '5-stellig, beginnt mit 9. Vorschlag fortlaufend — bei Bedarf anpassen.'
+            : 'Automatisch vorgeschlagen — fortlaufend. Anpassen darf nur ein Admin.';
+          return (
+            <FormField label="Mitarbeiternummer *" hint={hint}>
+              <input
+                type="text"
+                value={form.nummer}
+                onChange={(e) => setForm((f) => ({ ...f, nummer: e.target.value }))}
+                maxLength={5}
+                placeholder="90001"
+                readOnly={istNummerGesperrt}
+                className={`${inputClass} ${istNummerGesperrt ? 'bg-gray-100 text-gray-700 cursor-not-allowed font-mono' : 'font-mono'}`}
+                title={istNummerGesperrt ? hint : undefined}
+              />
+            </FormField>
+          );
+        })()}
         <FormField label="Name *">
           <input
             type="text"
@@ -1448,6 +1510,48 @@ function MitarbeiterForm({
             className={inputClass}
           />
         </FormField>
+        {(() => {
+          const vorschlag = kuerzelVorschlag(form.name);
+          const aktuell = ((form as any).kuerzel ?? '').toString().toUpperCase();
+          const zeigeVorschlag = !!vorschlag && aktuell !== vorschlag;
+          return (
+            <FormField
+              label="Kürzel"
+              hint="optional · 3 Buchstaben · z. B. für die Drucksaal-Planung"
+            >
+              <div className="flex gap-1">
+                <input
+                  type="text"
+                  value={aktuell}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      kuerzel: e.target.value
+                        .toUpperCase()
+                        .replace(/[^A-ZÄÖÜß]/g, '')
+                        .slice(0, 3) || undefined,
+                    } as any))
+                  }
+                  maxLength={3}
+                  placeholder={vorschlag || 'MMA'}
+                  className={`${inputClass} font-mono uppercase tracking-widest text-center`}
+                />
+                {zeigeVorschlag && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm((f) => ({ ...f, kuerzel: vorschlag } as any))
+                    }
+                    className="shrink-0 text-xs text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-1.5"
+                    title={`Vorschlag „${vorschlag}" übernehmen`}
+                  >
+                    ↩
+                  </button>
+                )}
+              </div>
+            </FormField>
+          );
+        })()}
       </div>
 
       <div className="grid grid-cols-3 gap-4">
@@ -1718,6 +1822,48 @@ function MitarbeiterForm({
                 className="rounded"
               />
               Mitarbeiter bekommt Festgehalt (fixes Monatsgehalt, keine Leistungsabrechnung)
+            </label>
+          </FormField>
+
+          {/* Fahrtkostenerstattung — nur Admin darf sehen & bearbeiten */}
+          <FormField
+            label="Fahrtkostenerstattung"
+            hint={'Wenn aktiv, sieht der MA in seinem Mitarbeiter-Login die „Fahrtkosten"-Maske und kann eigene Fahrten erfassen. Bei Admin/Abrechnung immer sichtbar.'}
+          >
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={(form as any).fahrtkostenerstattung ?? false}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  fahrtkostenerstattung: e.target.checked ? true : undefined,
+                } as any))}
+                className="w-4 h-4"
+              />
+              <span className="text-sm text-gray-700">🚗 Fahrtkosten erfassen erlaubt</span>
+            </label>
+          </FormField>
+
+          {/* Drucksaal — Mitarbeiter erscheint in der Drucksaal-Planung
+              (unabhängig von Festgehalt/Geschäftsführer-Status) */}
+          <FormField label="Drucksaal">
+            <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={(form as any).istDrucksaal ?? false}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  istDrucksaal: e.target.checked ? true : undefined,
+                } as any))}
+                className="rounded mt-0.5"
+              />
+              <span>
+                <span className="font-medium">🖨 Drucksaal-Mitarbeiter</span>
+                <span className="block text-xs text-gray-500">
+                  Erscheint in der Personalplanung als wählbarer MA für Drucken,
+                  Falzen, Schneiden, Verpacken.
+                </span>
+              </span>
             </label>
           </FormField>
 
@@ -2054,29 +2200,6 @@ function MitarbeiterForm({
           />
         </FormField>
       )}
-
-      <FormField
-        label="Fahrtkostenerstattung"
-        hint={
-          isAdmin
-            ? 'Wenn aktiv, sieht der MA in seinem Mitarbeiter-Login die „Fahrtkosten"-Maske und kann eigene Fahrten erfassen. Bei Admin/Abrechnung immer sichtbar.'
-            : 'Anzeige — Bearbeitung nur durch Admin.'
-        }
-      >
-        <label className={`flex items-center gap-2 ${!isAdmin ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
-          <input
-            type="checkbox"
-            checked={(form as any).fahrtkostenerstattung ?? false}
-            disabled={!isAdmin}
-            onChange={(e) => setForm((f) => ({
-              ...f,
-              fahrtkostenerstattung: e.target.checked ? true : undefined,
-            } as any))}
-            className="w-4 h-4"
-          />
-          <span className="text-sm text-gray-700">Fahrtkosten erfassen erlaubt</span>
-        </label>
-      </FormField>
 
       <FormField
         label="Abholer"
@@ -2806,6 +2929,7 @@ function AustraegerMeldungsLink({
 // ============================================================
 // Lohnkonto-Tab (Admin-only) — Verlauf + freie Korrektur-Buchungen
 // ============================================================
+
 
 function LohnkontoTab({ mitarbeiter }: { mitarbeiter: Mitarbeiter }) {
   const { lohnkontoBuchungen, abrechnungsperioden } = useApp();

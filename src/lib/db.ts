@@ -537,20 +537,74 @@ export async function setzeEinsatz(
   );
   const snap = await getDocs(q);
   const ts = now();
+  // undefined-Werte rausfiltern — Firestore akzeptiert sonst kein Payload.
+  // Beim Update zusätzlich gezielt löschen: Felder, die im Aufruf explizit
+  // auf undefined gesetzt sind, sollen im Datensatz verschwinden (z. B.
+  // wenn ein Kommentar entfernt wird).
   if (!snap.empty) {
     const existingId = snap.docs[0].id;
     await updateDoc(doc(db, 'einsaetze', existingId), {
-      ...data,
+      ...undefAsDelete(data as Record<string, unknown>),
       aktualisiertAm: ts,
     });
     return existingId;
   }
   const ref = await addDoc(collection(db, 'einsaetze'), {
-    ...data,
+    ...stripUndef(data as Record<string, unknown>),
     erstelltAm: ts,
     aktualisiertAm: ts,
   });
   return ref.id;
+}
+
+/**
+ * Listener über alle Einsätze eines Jahres — für die Planungs-Matrix.
+ * Liefert Live-Updates bei jeder Änderung in `einsaetze`.
+ */
+export function einsaetzeJahrListener(
+  jahr: number,
+  cb: (list: Einsatz[]) => void
+): Unsubscribe {
+  const q = query(collection(db, 'einsaetze'), where('jahr', '==', jahr));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz)));
+  });
+}
+
+/**
+ * Sucht die Ausgabe für (jahr, kw); legt sie an, wenn keine existiert.
+ * Wird aus dem PlanungScreen aufgerufen, wenn der User einen Ausfall in
+ * einer KW pflegt, für die bisher noch keine Ausgabe existiert.
+ *
+ * Defaults: seitenzahl=0, stapelAnzahl=0, status='geplant'. Grammatur und
+ * Seitenformat kommen aus den Parameter-Defaults. Der Ausgabe-Eintrag
+ * wird in „Ausgaben & Beilagen" als unvollständig erkennbar und kann
+ * dort nachgepflegt werden.
+ */
+export async function getOrCreateAusgabe(
+  jahr: number,
+  kw: number,
+  parameter: Parameter
+): Promise<string> {
+  const q = query(
+    collection(db, 'ausgaben'),
+    where('jahr', '==', jahr),
+    where('kw', '==', kw)
+  );
+  const snap = await getDocs(q);
+  if (!snap.empty) return snap.docs[0].id;
+  return await erstelleAusgabe({
+    jahr,
+    kw,
+    seitenzahl: 0,
+    stapelAnzahl: 0,
+    grammaturGqm: parameter.standardGrammurGqm,
+    seitenformatMm: {
+      breite: parameter.standardSeitenformatBreiteMm,
+      hoehe: parameter.standardSeitenformatHoeheMm,
+    },
+    status: 'geplant',
+  });
 }
 
 export async function loescheEinsatz(id: string): Promise<void> {
