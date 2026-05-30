@@ -14,8 +14,11 @@ import type {
   Abrechnungsperiode,
   VariablerPeriodenZusatz,
   LohnkontoBuchung,
-  Austraegerwechsel,
   StueckzahlAnpassung,
+  LohnbueroAbrechnung,
+  LohnbueroAnmeldung,
+  LohnbueroDriveLink,
+  MitarbeiterMemo,
 } from '../types';
 import {
   mitarbeiterListener,
@@ -25,8 +28,11 @@ import {
   abrechnungsperiodenListener,
   variablePeriodenZusaetzeListener,
   lohnkontoBuchungenListener,
-  austraegerwechselListener,
   stueckzahlAnpassungenListener,
+  lohnbueroAbrechnungenListener,
+  lohnbueroAnmeldungenListener,
+  lohnbueroDriveLinksListener,
+  mitarbeiterMemosListener,
 } from '../lib/db';
 
 // ---- State -------------------------------------------------
@@ -45,8 +51,11 @@ interface AppState {
   abrechnungsperioden: Abrechnungsperiode[];
   variablePeriodenZusaetze: VariablerPeriodenZusatz[];
   lohnkontoBuchungen: LohnkontoBuchung[];
-  austraegerwechsel: Austraegerwechsel[];
   stueckzahlAnpassungen: StueckzahlAnpassung[];
+  lohnbueroAbrechnungen: LohnbueroAbrechnung[];
+  lohnbueroAnmeldungen: LohnbueroAnmeldung[];
+  lohnbueroDriveLinks: LohnbueroDriveLink[];
+  mitarbeiterMemos: MitarbeiterMemo[];
   aktivePeriodeId: string | null;
   isOnline: boolean;
   isLoading: boolean;
@@ -63,8 +72,11 @@ const initialState: AppState = {
   abrechnungsperioden: [],
   variablePeriodenZusaetze: [],
   lohnkontoBuchungen: [],
-  austraegerwechsel: [],
   stueckzahlAnpassungen: [],
+  lohnbueroAbrechnungen: [],
+  lohnbueroAnmeldungen: [],
+  lohnbueroDriveLinks: [],
+  mitarbeiterMemos: [],
   aktivePeriodeId: null,
   isOnline: navigator.onLine,
   isLoading: true,
@@ -81,8 +93,11 @@ type Action =
   | { type: 'SET_ABRECHNUNGSPERIODEN'; payload: Abrechnungsperiode[] }
   | { type: 'SET_VARIABLE_PERIODEN_ZUSAETZE'; payload: VariablerPeriodenZusatz[] }
   | { type: 'SET_LOHNKONTO_BUCHUNGEN'; payload: LohnkontoBuchung[] }
-  | { type: 'SET_AUSTRAEGERWECHSEL'; payload: Austraegerwechsel[] }
   | { type: 'SET_STUECKZAHL_ANPASSUNGEN'; payload: StueckzahlAnpassung[] }
+  | { type: 'SET_LOHNBUERO_ABRECHNUNGEN'; payload: LohnbueroAbrechnung[] }
+  | { type: 'SET_LOHNBUERO_ANMELDUNGEN'; payload: LohnbueroAnmeldung[] }
+  | { type: 'SET_LOHNBUERO_DRIVE_LINKS'; payload: LohnbueroDriveLink[] }
+  | { type: 'SET_MITARBEITER_MEMOS'; payload: MitarbeiterMemo[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_LOADING'; payload: boolean };
@@ -112,10 +127,16 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, variablePeriodenZusaetze: action.payload };
     case 'SET_LOHNKONTO_BUCHUNGEN':
       return { ...state, lohnkontoBuchungen: action.payload };
-    case 'SET_AUSTRAEGERWECHSEL':
-      return { ...state, austraegerwechsel: action.payload };
     case 'SET_STUECKZAHL_ANPASSUNGEN':
       return { ...state, stueckzahlAnpassungen: action.payload };
+    case 'SET_LOHNBUERO_ABRECHNUNGEN':
+      return { ...state, lohnbueroAbrechnungen: action.payload };
+    case 'SET_LOHNBUERO_ANMELDUNGEN':
+      return { ...state, lohnbueroAnmeldungen: action.payload };
+    case 'SET_LOHNBUERO_DRIVE_LINKS':
+      return { ...state, lohnbueroDriveLinks: action.payload };
+    case 'SET_MITARBEITER_MEMOS':
+      return { ...state, mitarbeiterMemos: action.payload };
     case 'SET_AKTIVE_PERIODE':
       return { ...state, aktivePeriodeId: action.payload };
     case 'SET_ONLINE':
@@ -201,11 +222,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubLohnkonto = lohnkontoBuchungenListener((list) => {
       dispatch({ type: 'SET_LOHNKONTO_BUCHUNGEN', payload: list });
     });
-    const unsubWechsel = austraegerwechselListener((list) => {
-      dispatch({ type: 'SET_AUSTRAEGERWECHSEL', payload: list });
-    });
     const unsubStueckzahl = stueckzahlAnpassungenListener((list) => {
       dispatch({ type: 'SET_STUECKZAHL_ANPASSUNGEN', payload: list });
+    });
+    const unsubLohnbueroAbr = lohnbueroAbrechnungenListener((list) => {
+      dispatch({ type: 'SET_LOHNBUERO_ABRECHNUNGEN', payload: list });
+    });
+    const unsubLohnbueroAnm = lohnbueroAnmeldungenListener((list) => {
+      dispatch({ type: 'SET_LOHNBUERO_ANMELDUNGEN', payload: list });
+    });
+    const unsubMemos = mitarbeiterMemosListener((list) => {
+      dispatch({ type: 'SET_MITARBEITER_MEMOS', payload: list });
+    });
+    const unsubDriveLinks = lohnbueroDriveLinksListener((list) => {
+      dispatch({ type: 'SET_LOHNBUERO_DRIVE_LINKS', payload: list });
     });
 
     return () => {
@@ -216,8 +246,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubPerioden();
       unsubZusaetze();
       unsubLohnkonto();
-      unsubWechsel();
       unsubStueckzahl();
+      unsubLohnbueroAbr();
+      unsubLohnbueroAnm();
+      unsubMemos();
+      unsubDriveLinks();
     };
   }, []);
 

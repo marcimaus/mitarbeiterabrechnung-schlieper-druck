@@ -213,6 +213,7 @@ function TourForm({
   const [streckeKm, setStreckeKm] = useState<string>(
     initial?.streckeFahrkostenKm != null ? String(initial.streckeFahrkostenKm) : ''
   );
+  const [kartenLink, setKartenLink] = useState<string>(initial?.kartenLink ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -231,10 +232,22 @@ function TourForm({
     setSaving(true);
     setError('');
     try {
+      // Leerer Karten-Link: bei Update als leerer String speichern, damit
+      // ein zuvor gesetzter Wert beim Speichern verschwindet. Beim Neu-
+      // Anlegen leer lassen.
+      const kartenLinkValue = kartenLink.trim();
       if (initial) {
-        await aktualisiereTour(initial.id, { name, farbe, streckeFahrkostenKm });
+        await aktualisiereTour(initial.id, {
+          name,
+          farbe,
+          streckeFahrkostenKm,
+          kartenLink: kartenLinkValue || '',
+        });
       } else {
-        await erstelleTour({ name, farbe, streckeFahrkostenKm });
+        const payload: Omit<Tour, 'id' | 'erstelltAm'> = { name, farbe };
+        if (streckeFahrkostenKm != null) payload.streckeFahrkostenKm = streckeFahrkostenKm;
+        if (kartenLinkValue) payload.kartenLink = kartenLinkValue;
+        await erstelleTour(payload);
       }
       onSave();
     } catch (err) {
@@ -297,6 +310,43 @@ function TourForm({
         <p className="text-xs text-gray-400 mt-1">
           Regelmäßig gefahrene Strecke pro Tour. Wird in der Fahrtkosten-
           Erfassung summiert, sobald der Fahrer Touren statt Ziel auswählt.
+        </p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Karten-Link (Standard für alle TGs dieser Tour)
+          {!isAdmin && (
+            <span className="ml-1 text-xs text-gray-400 font-normal">— nur Admin</span>
+          )}
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            type="url"
+            value={kartenLink}
+            onChange={(e) => setKartenLink(e.target.value)}
+            placeholder="https://www.google.com/maps/d/u/1/viewer?mid=…"
+            readOnly={!isAdmin}
+            className={`flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+              !isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''
+            }`}
+          />
+          {kartenLink.trim() && (
+            <a
+              href={kartenLink.trim()}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1.5"
+              title="Link in neuem Tab öffnen"
+            >
+              🔗 öffnen
+            </a>
+          )}
+        </div>
+        <p className="text-xs text-gray-400 mt-1">
+          Default-Link zur Kartenansicht (Google My Maps o. ä.) für alle
+          Teilgebiete dieser Tour. Im Strassen-Tab des TGs sichtbar; pro TG
+          überschreibbar.
         </p>
       </div>
 

@@ -37,8 +37,9 @@ import type {
   VariablerPeriodenZusatz,
   AuslieferungsMemo,
   LohnkontoBuchung,
-  Austraegerwechsel,
   StueckzahlAnpassung,
+  LohnbueroAbrechnung,
+  LohnbueroAnmeldung,
 } from '../types';
 import { berechneStapel } from './berechnung';
 import { normalisiereRollen } from '../types';
@@ -1146,8 +1147,10 @@ export async function erstelleReklamation(
   // setzt leere optionale Felder (telefon, email, teilgebietId, …)
   // explizit auf undefined — ohne diesen Filter scheitert addDoc.
   const ts = now();
+  // stripUndefDeep: entfernt undefined auch innerhalb von `zeitraeume`
+  // (Array-Elemente) und `anruferMerkmale` — sonst lehnt Firestore ab.
   const ref = await addDoc(collection(db, 'reklamationen'), {
-    ...stripUndef(data as Record<string, unknown>),
+    ...stripUndefDeep(stripUndef(data as Record<string, unknown>)),
     erstelltAm: ts,
     aktualisiertAm: ts,
   });
@@ -1158,7 +1161,14 @@ export async function aktualisiereReklamation(
   id: string,
   data: Partial<Reklamation>
 ): Promise<void> {
-  await updateDoc(doc(db, 'reklamationen', id), stripUndef({ ...data as Record<string, unknown>, aktualisiertAm: now() }));
+  // Top-Level: geleerte Felder → deleteField() (verschwinden in Firestore).
+  // Nested (zeitraeume-Elemente, anruferMerkmale): undefined tief entfernen.
+  const src = { ...data as Record<string, unknown>, aktualisiertAm: now() };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(src)) {
+    out[k] = v === undefined ? deleteField() : stripUndefDeep(v);
+  }
+  await updateDoc(doc(db, 'reklamationen', id), out);
 }
 
 export async function loescheReklamation(id: string): Promise<void> {
@@ -1209,6 +1219,42 @@ export async function aktualisiereVariablenPeriodenZusatz(
 
 export async function loescheVariablenPeriodenZusatz(id: string): Promise<void> {
   await deleteDoc(doc(db, 'variablePeriodenZusatz', id));
+}
+
+// ---- Mitarbeiter-Memos (Abrechnungsvorbereitung) ----------
+
+export function mitarbeiterMemosListener(
+  cb: (list: import('../types').MitarbeiterMemo[]) => void,
+): Unsubscribe {
+  return onSnapshot(collection(db, 'mitarbeiterMemos'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as import('../types').MitarbeiterMemo)));
+  });
+}
+
+export async function erstelleMitarbeiterMemo(
+  data: Omit<import('../types').MitarbeiterMemo, 'id' | 'erstelltAm' | 'aktualisiertAm'>,
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'mitarbeiterMemos'), {
+    ...stripUndef(data as Record<string, unknown>),
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereMitarbeiterMemo(
+  id: string,
+  data: Partial<import('../types').MitarbeiterMemo>,
+): Promise<void> {
+  await updateDoc(doc(db, 'mitarbeiterMemos', id), {
+    ...undefAsDelete(data as Record<string, unknown>),
+    aktualisiertAm: now(),
+  });
+}
+
+export async function loescheMitarbeiterMemo(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'mitarbeiterMemos', id));
 }
 
 // ---- Lohnkonto-Buchungen -----------------------------------
@@ -1269,50 +1315,10 @@ export async function loescheLohnkontoBuchung(id: string): Promise<void> {
   await deleteDoc(doc(db, 'lohnkontoBuchungen', id));
 }
 
-// ---- Austrägerwechsel-Vorbereitung -------------------------
-
-export async function ladeAustraegerwechsel(): Promise<Austraegerwechsel[]> {
-  const snap = await getDocs(collection(db, 'austraegerwechsel'));
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Austraegerwechsel));
-}
-
-export function austraegerwechselListener(
-  cb: (list: Austraegerwechsel[]) => void
-): Unsubscribe {
-  return onSnapshot(collection(db, 'austraegerwechsel'), (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Austraegerwechsel)));
-  });
-}
-
-/**
- * Upsert pro Teilgebiet: jeder TG kann nur einen offenen Wechsel-Eintrag
- * haben — alte Einträge werden überschrieben.
- */
-export async function setzeAustraegerwechsel(
-  data: Omit<Austraegerwechsel, 'id' | 'erstelltAm' | 'aktualisiertAm'>
-): Promise<string> {
-  const ts = now();
-  const existing = await getDocs(query(
-    collection(db, 'austraegerwechsel'),
-    where('teilgebietId', '==', data.teilgebietId)
-  ));
-  const payload = { ...stripUndef(data as Record<string, unknown>), aktualisiertAm: ts };
-  if (!existing.empty) {
-    const id = existing.docs[0].id;
-    // Falls mehrere Doubletten existieren: ältere zusätzlich entfernen.
-    await Promise.all(
-      existing.docs.slice(1).map((d) => deleteDoc(doc(db, 'austraegerwechsel', d.id)))
-    );
-    await updateDoc(doc(db, 'austraegerwechsel', id), payload);
-    return id;
-  }
-  const ref = await addDoc(collection(db, 'austraegerwechsel'), { ...payload, erstelltAm: ts });
-  return ref.id;
-}
-
-export async function loescheAustraegerwechsel(id: string): Promise<void> {
-  await deleteDoc(doc(db, 'austraegerwechsel', id));
-}
+// ---- Austrägerwechsel-Vorbereitung (entfernt) --------------
+// Wurde durch `austraegerwechselPlan` in `src/lib/planung.ts` ersetzt —
+// die alte Collection `austraegerwechsel` wird nicht mehr gelesen/
+// geschrieben (Daten bleiben in Firestore unangetastet liegen).
 
 // ---- Stückzahl-Anpassung (Vorbereitung) --------------------
 
@@ -1356,6 +1362,139 @@ export async function setzeStueckzahlAnpassung(
 
 export async function loescheStueckzahlAnpassung(id: string): Promise<void> {
   await deleteDoc(doc(db, 'stueckzahlAnpassungen', id));
+}
+
+// ---- Lohnbüro-Abrechnungen (indizierte PDFs) ---------------
+
+export async function ladeLohnbueroAbrechnungen(): Promise<LohnbueroAbrechnung[]> {
+  const snap = await getDocs(collection(db, 'lohnbueroAbrechnungen'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as LohnbueroAbrechnung));
+}
+
+export function lohnbueroAbrechnungenListener(
+  cb: (list: LohnbueroAbrechnung[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'lohnbueroAbrechnungen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as LohnbueroAbrechnung)));
+  });
+}
+
+export async function ladeLohnbueroAnmeldungen(): Promise<LohnbueroAnmeldung[]> {
+  const snap = await getDocs(collection(db, 'lohnbueroAnmeldungen'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as LohnbueroAnmeldung));
+}
+
+export function lohnbueroAnmeldungenListener(
+  cb: (list: LohnbueroAnmeldung[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'lohnbueroAnmeldungen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as LohnbueroAnmeldung)));
+  });
+}
+
+// ---- Lohnbüro-Drive-Links ----------------------------------
+
+function driveLinkDocId(jahr: number, monat: number | null): string {
+  return monat == null ? `${jahr}` : `${jahr}-${monat}`;
+}
+
+export function lohnbueroDriveLinksListener(
+  cb: (list: import('../types').LohnbueroDriveLink[]) => void,
+): Unsubscribe {
+  return onSnapshot(collection(db, 'lohnbueroDriveLinks'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as import('../types').LohnbueroDriveLink)));
+  });
+}
+
+/** Upsert eines Drive-Links (Jahr- oder Monat-Ebene). Leerer URL → löschen. */
+export async function setzeLohnbueroDriveLink(
+  jahr: number,
+  monat: number | null,
+  url: string,
+  aktualisiertVon?: string,
+  kommentar?: string,
+): Promise<void> {
+  const id = driveLinkDocId(jahr, monat);
+  const ref = doc(db, 'lohnbueroDriveLinks', id);
+  const urlClean = url.trim();
+  if (!urlClean) {
+    await deleteDoc(ref).catch(() => {});
+    return;
+  }
+  await setDoc(ref, stripUndef({
+    jahr,
+    monat: monat ?? null,
+    url: urlClean,
+    kommentar: kommentar?.trim() || undefined,
+    aktualisiertAm: now(),
+    aktualisiertVon: aktualisiertVon || undefined,
+  }));
+}
+
+export async function loescheLohnbueroDriveLink(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'lohnbueroDriveLinks', id)).catch(() => {});
+}
+
+/**
+ * Legt einen Legacy-MA an. Dieser MA dient nur dazu, historische
+ * Lohnbüro-PDF-Daten einem Namen zuzuordnen, ohne dass er in aktiven
+ * Workflows erscheint. Daher:
+ *   - isActive=false
+ *   - abgemeldet=true
+ *   - istLegacy=true
+ *   - keine Rollen, kein Geburtsdatum, keine Adresse
+ */
+export async function erstelleLegacyMitarbeiter(
+  name: string,
+  nummer: string,
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'mitarbeiter'), {
+    nummer: nummer.trim(),
+    name: name.trim(),
+    adresse: { strasse: '', plz: '', ort: '' },
+    telefon: '',
+    geburtsdatum: '',
+    rollen: [],
+    hatFestgehalt: false,
+    isActive: false,
+    abgemeldet: true,
+    istLegacy: true,
+    nochNichtAngemeldet: false,
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+/**
+ * Weist ALLE Lohnbüro-Abrechnungen + -Anmeldungen mit identischem
+ * `nameRoh` einem MA zu (Bulk-Update). Verwendet wird das in der
+ * „Lohnbüro auswerten"-UI, wenn der User einen No-Match-Eintrag
+ * manuell auflöst — die Zuordnung soll dann auf alle anderen Monate
+ * mit demselben Rohnamen anwenden.
+ */
+export async function weiseLohnbueroNameRohZu(
+  nameRoh: string,
+  mitarbeiterId: string,
+): Promise<{ abrechnungen: number; anmeldungen: number }> {
+  const [snapA, snapM] = await Promise.all([
+    getDocs(query(
+      collection(db, 'lohnbueroAbrechnungen'),
+      where('nameRoh', '==', nameRoh),
+    )),
+    getDocs(query(
+      collection(db, 'lohnbueroAnmeldungen'),
+      where('nameRoh', '==', nameRoh),
+    )),
+  ]);
+  // Parallel schreiben — bei vielen Datensätzen drastisch schneller als
+  // serielles `for await`.
+  await Promise.all([
+    ...snapA.docs.map((d) => updateDoc(doc(db, 'lohnbueroAbrechnungen', d.id), { mitarbeiterId })),
+    ...snapM.docs.map((d) => updateDoc(doc(db, 'lohnbueroAnmeldungen', d.id), { mitarbeiterId })),
+  ]);
+  return { abrechnungen: snapA.size, anmeldungen: snapM.size };
 }
 
 // ---- Audit-Log (nur schreiben, nicht ändern) ---------------

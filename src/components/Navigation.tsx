@@ -31,7 +31,10 @@ const NAV_ITEMS: NavItem[] = [
   // Abrechnung & Parameter: nur Admin. Lieferscheine: ausgeblendet, Druck
   // erfolgt aus dem Einsätze-Screen heraus.
   { to: '/abrechnungsvorschau', label: 'Abrechnungsvorschau', icon: '🧮', roles: ['admin', 'abrechnung'] },
+  { to: '/abrechnungsvorbereitung', label: 'Abrechnungsvorbereitung', icon: '📝', roles: ['admin', 'abrechnung'] },
   { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin'] },
+  { to: '/abrechnung-auswerten', label: 'Abrechnung auswerten', icon: '🔎', roles: ['admin', 'abrechnung'] },
+  { to: '/abrechnung-lohnbuero', label: 'Abrechnungen Lohnbüro auswerten', icon: '🧾', roles: ['admin'] },
   { to: '/parameter', label: 'Parameter', icon: '⚙️', roles: ['admin'] },
 ];
 

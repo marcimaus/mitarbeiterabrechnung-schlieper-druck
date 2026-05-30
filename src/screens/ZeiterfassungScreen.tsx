@@ -86,9 +86,17 @@ export default function ZeiterfassungScreen() {
     return () => clearInterval(id);
   }, []);
 
-  // Auto-Schließen um Mitternacht prüfen beim Start
+  // Auto-Schließen um Mitternacht prüfen beim Start. Ergebnis (Liste der
+  // gerade automatisch geschlossenen Sessions) in State packen, damit ein
+  // Banner darüber informieren kann.
+  const [autoCloseSweep, setAutoCloseSweep] = useState<Arbeitszeit[]>([]);
+  const [autoCloseSweepDismissed, setAutoCloseSweepDismissed] = useState(false);
   useEffect(() => {
-    schliesseAbgelaufeneSessions().catch(console.error);
+    schliesseAbgelaufeneSessions()
+      .then((list) => {
+        if (list.length > 0) setAutoCloseSweep(list);
+      })
+      .catch(console.error);
   }, []);
 
   // Ausgaben für Vorarbeit-Zuordnung: NUR Ausgaben der aktuellen Kalenderwoche.
@@ -284,9 +292,50 @@ export default function ZeiterfassungScreen() {
     await verarbeiteScan(eigenerMa.id, 'manuell');
   }
 
+  const maNameById = (id: string) => mitarbeiter.find((m) => m.id === id)?.name ?? '?';
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Zeiterfassung</h1>
+
+      {/* Banner: gerade automatisch geschlossene Sessions (Mitternacht-
+          Aufräumen beim Screen-Öffnen). Zeigt MA + Datum, damit der User
+          sofort sieht, was passiert ist. Dismissable. */}
+      {autoCloseSweep.length > 0 && !autoCloseSweepDismissed && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="text-sm text-amber-900">
+              <p className="font-medium">
+                ⚠ {autoCloseSweep.length} vergessene{autoCloseSweep.length === 1 ? '' : ''}{' '}
+                Session{autoCloseSweep.length === 1 ? '' : 's'} wurde
+                {autoCloseSweep.length === 1 ? '' : 'n'} automatisch geschlossen.
+              </p>
+              <p className="text-xs text-amber-800 mt-0.5">
+                Endzeit wurde provisorisch auf 23:59 Uhr des Start-Tages
+                gesetzt. Bitte bei Gelegenheit in der Zeitübersicht
+                korrigieren.
+              </p>
+              <ul className="mt-2 text-xs text-amber-900 space-y-0.5">
+                {autoCloseSweep.map((s) => (
+                  <li key={s.id}>
+                    • <strong>{maNameById(s.mitarbeiterId)}</strong>{' '}
+                    — eingestempelt am {formatierDatum(s.startTime)} um{' '}
+                    {formatierZeit(s.startTime)} Uhr
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAutoCloseSweepDismissed(true)}
+              className="text-amber-700 hover:text-amber-900 text-lg leading-none"
+              title="Hinweis schließen"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* NFC-Bereich — drei Modi: nicht angemeldet, Mitarbeiter, Admin/Abrechnung */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">

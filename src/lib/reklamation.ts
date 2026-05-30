@@ -11,8 +11,22 @@ import type {
   Mitarbeiter,
   Abrechnungsperiode,
   Einsatz,
+  ReklamationGrundKey,
+  ReklamationZeitraum,
+  AnruferMerkmalKey,
 } from '../types';
-import { getISOWeek, getISOYear } from './kalender';
+import { getISOWeek, getISOYear, donnerstagDerKW } from './kalender';
+
+/** Ein beidseitig begrenztes (Jahr, KW)-Fenster. */
+export interface KwFenster {
+  von: { jahr: number; kw: number };
+  bis: { jahr: number; kw: number };
+}
+
+/** true, wenn (aJahr,aKw) <= (bJahr,bKw). */
+function kwLeq(aJahr: number, aKw: number, bJahr: number, bKw: number): boolean {
+  return aJahr < bJahr || (aJahr === bJahr && aKw <= bKw);
+}
 
 // ---- Normalisierung -------------------------------------------------------
 
@@ -161,16 +175,19 @@ interface MaVorschlagContext {
 }
 
 /**
- * Sammelt alle Mitarbeiter, die im Zeitraum `[seitWann, heute]` einem der
- * gewählten Teilgebiete zugeordnet waren — als aktueller Standardausträger,
- * als historischer Standard (aus den Periodensnapshots) oder als Springer
- * (aus den Einsätzen). MAs werden über die mitarbeiterId dedupliziert und
- * mit dem Set ihrer aufgetretenen Rollen versehen.
+ * Sammelt alle Mitarbeiter, die im **begrenzten** Fenster `fenster`
+ * (von..bis, jeweils Jahr+KW) einem der gewählten Teilgebiete zugeordnet
+ * waren — als aktueller Standardausträger (nur wenn „heute" im Fenster
+ * liegt), als historischer Standard (aus den Periodensnapshots) oder als
+ * Springer (aus den Einsätzen). MAs werden über die mitarbeiterId
+ * dedupliziert und mit dem Set ihrer aufgetretenen Rollen versehen.
  *
- * `seitWannIso` leer → es zählt nur der aktuelle Standardausträger pro TG.
+ * Wichtig: Das Fenster ist IMMER beidseitig begrenzt — kein offenes Ende
+ * in die Vergangenheit. So werden nur die im Zeitraum tatsächlich
+ * Austragenden vorgeschlagen.
  */
 export function findePassendeMitarbeiter(
-  seitWannIso: string,
+  fenster: KwFenster,
   teilgebietIds: string[],
   ctx: MaVorschlagContext
 ): MaVorschlag[] {
@@ -179,9 +196,13 @@ export function findePassendeMitarbeiter(
   const heute = new Date();
   const heuteJahr = getISOYear(heute);
   const heuteKw = getISOWeek(heute);
-  const seitWannDate = seitWannIso ? new Date(seitWannIso) : null;
-  const seitWannJahr = seitWannDate ? getISOYear(seitWannDate) : null;
-  const seitWannKw = seitWannDate ? getISOWeek(seitWannDate) : null;
+  const { von, bis } = fenster;
+
+  const istImZeitfenster = (jahr: number, kw: number): boolean =>
+    kwLeq(von.jahr, von.kw, jahr, kw) && kwLeq(jahr, kw, bis.jahr, bis.kw);
+
+  // „heute" im Fenster? (steuert, ob der aktuelle Standardausträger zählt)
+  const heuteImFenster = istImZeitfenster(heuteJahr, heuteKw);
 
   // mitarbeiterId → Set<Rolle>
   const treffer = new Map<string, Set<'standard' | 'springer'>>();
@@ -192,45 +213,39 @@ export function findePassendeMitarbeiter(
     treffer.set(maId, set);
   };
 
-  // (a) aktueller Standardausträger der gewählten TGs
-  for (const tg of ctx.teilgebiete) {
-    if (!tgSet.has(tg.id)) continue;
-    if (tg.standardAustraegerId) add(tg.standardAustraegerId, 'standard');
-  }
-
-  // (b) Historische Standardausträger aus Snapshots der Perioden, deren
-  //     Monat sich mit dem Zeitfenster überlappt. Bei leerem seitWann
-  //     überspringen.
-  if (seitWannJahr !== null && seitWannKw !== null) {
-    for (const p of ctx.abrechnungsperioden) {
-      // Periode auf Monatsebene vergleichen — wir wollen alle Perioden,
-      // deren Ende ≥ seitWann und Anfang ≤ heute liegt.
-      const periodEnde = new Date(p.jahr, p.monat, 0); // letzter Tag des Monats
-      const periodStart = new Date(p.jahr, p.monat - 1, 1);
-      if (seitWannDate && periodEnde.getTime() < seitWannDate.getTime()) continue;
-      if (periodStart.getTime() > heute.getTime()) continue;
-
-      // Snapshot bevorzugen — periodeSnapshot (Abschluss), sonst monatswechselSnapshot
-      const teilgebietSnaps =
-        p.periodeSnapshot?.teilgebietSnapshots
-        ?? p.monatswechselSnapshot?.teilgebietSnapshots
-        ?? [];
-      for (const tgSnap of teilgebietSnaps) {
-        if (!tgSet.has(tgSnap.id)) continue;
-        if (tgSnap.standardAustraegerId) add(tgSnap.standardAustraegerId, 'standard');
-      }
+  // (a) aktueller Standardausträger der gewählten TGs — nur wenn „heute"
+  //     ins Fenster fällt (sonst war dieser Standard im Zeitraum nicht
+  //     zwingend zuständig; historische Standards kommen über (b)).
+  if (heuteImFenster) {
+    for (const tg of ctx.teilgebiete) {
+      if (!tgSet.has(tg.id)) continue;
+      if (tg.standardAustraegerId) add(tg.standardAustraegerId, 'standard');
     }
   }
 
-  // (c) Springer-Einsätze: typ === 'springer', TG passt, KW im Zeitfenster
-  const istImZeitfenster = (jahr: number, kw: number): boolean => {
-    if (jahr > heuteJahr) return false;
-    if (jahr === heuteJahr && kw > heuteKw) return false;
-    if (seitWannJahr === null || seitWannKw === null) return true;
-    if (jahr < seitWannJahr) return false;
-    if (jahr === seitWannJahr && kw < seitWannKw) return false;
-    return true;
-  };
+  // (b) Historische Standardausträger aus Snapshots der Perioden, deren
+  //     Monat sich mit dem Fenster überlappt (auf Tagesebene über den
+  //     Donnerstag der jeweiligen KW bestimmt).
+  const fensterStart = donnerstagDerKW(von.kw, von.jahr);
+  const fensterEnde = donnerstagDerKW(bis.kw, bis.jahr);
+  for (const p of ctx.abrechnungsperioden) {
+    const periodEnde = new Date(p.jahr, p.monat, 0); // letzter Tag des Monats
+    const periodStart = new Date(p.jahr, p.monat - 1, 1);
+    if (periodEnde.getTime() < fensterStart.getTime()) continue;
+    if (periodStart.getTime() > fensterEnde.getTime()) continue;
+
+    // Snapshot bevorzugen — periodeSnapshot (Abschluss), sonst monatswechselSnapshot
+    const teilgebietSnaps =
+      p.periodeSnapshot?.teilgebietSnapshots
+      ?? p.monatswechselSnapshot?.teilgebietSnapshots
+      ?? [];
+    for (const tgSnap of teilgebietSnaps) {
+      if (!tgSet.has(tgSnap.id)) continue;
+      if (tgSnap.standardAustraegerId) add(tgSnap.standardAustraegerId, 'standard');
+    }
+  }
+
+  // (c) Springer-Einsätze: typ === 'springer', TG passt, KW im Fenster
   for (const e of ctx.einsaetze) {
     if (e.typ !== 'springer') continue;
     if (!e.mitarbeiterId) continue;
@@ -248,6 +263,76 @@ export function findePassendeMitarbeiter(
   }
   out.sort((a, b) => a.ma.name.localeCompare(b.ma.name, 'de'));
   return out;
+}
+
+// ---- Zeitfenster aus Zeiträumen -------------------------------------------
+
+/**
+ * Berechnet das Vereinigungs-Zeitfenster (Jahr+KW) über alle erfassten
+ * Zeiträume — Basis für die Austräger-/Springer-Vorauswahl.
+ *
+ *  - `kw`        : [von .. bis] (bis fehlt → einzelne Ausgabe = von)
+ *  - `geschaetzt`: [heute − anzahl·Einheit .. heute]
+ *  - `datum`     : [datum .. heute]
+ *
+ * Keine Zeiträume → [heute .. heute]. Das Ende wird stets auf „heute"
+ * gedeckelt (zukünftige KW ergeben keine Austräger-Historie).
+ */
+export function zeitfensterFuerVorschlag(
+  zeitraeume: ReklamationZeitraum[] | undefined,
+  heuteArg?: Date
+): KwFenster {
+  const heute = heuteArg ?? new Date();
+  const heuteJahr = getISOYear(heute);
+  const heuteKw = getISOWeek(heute);
+  const heutePunkt = { jahr: heuteJahr, kw: heuteKw };
+
+  if (!zeitraeume || zeitraeume.length === 0) {
+    return { von: { ...heutePunkt }, bis: { ...heutePunkt } };
+  }
+
+  // Sammle Start- und Endpunkte; Vereinigung = frühester Start .. spätestes Ende.
+  const starts: Array<{ jahr: number; kw: number }> = [];
+  const enden: Array<{ jahr: number; kw: number }> = [];
+
+  for (const z of zeitraeume) {
+    if (z.typ === 'kw') {
+      if (z.vonJahr != null && z.vonKw != null) {
+        starts.push({ jahr: z.vonJahr, kw: z.vonKw });
+        if (z.bisJahr != null && z.bisKw != null) {
+          enden.push({ jahr: z.bisJahr, kw: z.bisKw });
+        } else {
+          enden.push({ jahr: z.vonJahr, kw: z.vonKw });
+        }
+      }
+    } else if (z.typ === 'geschaetzt') {
+      const anzahl = z.anzahl && z.anzahl > 0 ? z.anzahl : 1;
+      const tage = z.einheit === 'monate' ? anzahl * 30 : anzahl * 7;
+      const start = new Date(heute.getTime() - tage * 24 * 60 * 60 * 1000);
+      starts.push({ jahr: getISOYear(start), kw: getISOWeek(start) });
+      enden.push({ ...heutePunkt });
+    } else if (z.typ === 'datum' && z.datum) {
+      const d = new Date(z.datum);
+      if (!isNaN(d.getTime())) {
+        starts.push({ jahr: getISOYear(d), kw: getISOWeek(d) });
+        enden.push({ ...heutePunkt });
+      }
+    }
+  }
+
+  if (starts.length === 0) {
+    return { von: { ...heutePunkt }, bis: { ...heutePunkt } };
+  }
+
+  // Frühester Start
+  let von = starts[0];
+  for (const s of starts) if (kwLeq(s.jahr, s.kw, von.jahr, von.kw)) von = s;
+  // Spätestes Ende, aber max. „heute"
+  let bis = enden[0];
+  for (const e of enden) if (kwLeq(bis.jahr, bis.kw, e.jahr, e.kw)) bis = e;
+  if (kwLeq(heutePunkt.jahr, heutePunkt.kw, bis.jahr, bis.kw)) bis = { ...heutePunkt };
+
+  return { von: { ...von }, bis: { ...bis } };
 }
 
 // ---- Ort → PLZ-Lookup -----------------------------------------------------
@@ -360,13 +445,7 @@ export function buildGoogleMapsUrl(
 
 // ---- Form-State-Migration -------------------------------------------------
 
-/**
- * Liest eine `Reklamation` aus Firestore und liefert die Form-Felder mit
- * Plural-Werten — alte Datensätze (mit `teilgebietId`/`mitarbeiterId`)
- * werden transparent migriert. Der Aufrufer spread'ed das Ergebnis in
- * sein lokales State-Default.
- */
-export function reklamationFormState(initial: Reklamation | null): {
+export interface ReklamationFormState {
   anruferName: string;
   telefon: string;
   email: string;
@@ -374,16 +453,28 @@ export function reklamationFormState(initial: Reklamation | null): {
   hausnummer: string;
   plz: string;
   ort: string;
-  briefkastenVorhanden: boolean;
-  aufkleberKeineWerbung: boolean;
   anmerkung: string;
   teilgebietIds: string[];
   mitarbeiterIds: string[];
   mitgeteilt: boolean;
-  seitWann: string;
-  schonMalMitgeteilt: boolean;
   mailLink: string;
-} {
+  archiviert: boolean;
+  gruende: ReklamationGrundKey[];
+  gruendeFreitext: string[];
+  anruferMerkmale: Partial<Record<AnruferMerkmalKey, 'ja' | 'nein'>>;
+  zeitraeume: ReklamationZeitraum[];
+}
+
+/**
+ * Liest eine `Reklamation` aus Firestore und liefert die Form-Felder.
+ * Alte Datensätze werden transparent migriert:
+ *  - `teilgebietId`/`mitarbeiterId` (Singular) → Plural-Arrays
+ *  - `nichtBeliefert`/`zuSpaetBeliefert` → `gruende`
+ *  - `briefkastenVorhanden`/`aufkleberKeineWerbung`/`schonMalMitgeteilt`
+ *    → `anruferMerkmale` (Tri-State)
+ *  - `seitWann` → ein `zeitraeume`-Eintrag (typ='datum')
+ */
+export function reklamationFormState(initial: Reklamation | null): ReklamationFormState {
   if (!initial) {
     return {
       anruferName: '',
@@ -393,15 +484,16 @@ export function reklamationFormState(initial: Reklamation | null): {
       hausnummer: '',
       plz: '',
       ort: '',
-      briefkastenVorhanden: true,
-      aufkleberKeineWerbung: false,
       anmerkung: '',
       teilgebietIds: [],
       mitarbeiterIds: [],
       mitgeteilt: false,
-      seitWann: '',
-      schonMalMitgeteilt: false,
       mailLink: '',
+      archiviert: false,
+      gruende: [],
+      gruendeFreitext: [],
+      anruferMerkmale: {},
+      zeitraeume: [],
     };
   }
   return {
@@ -412,15 +504,16 @@ export function reklamationFormState(initial: Reklamation | null): {
     hausnummer: initial.hausnummer ?? '',
     plz: initial.plz ?? '',
     ort: initial.ort ?? '',
-    briefkastenVorhanden: initial.briefkastenVorhanden,
-    aufkleberKeineWerbung: initial.aufkleberKeineWerbung,
     anmerkung: initial.anmerkung ?? '',
     teilgebietIds: initial.teilgebietIds ?? (initial.teilgebietId ? [initial.teilgebietId] : []),
     mitarbeiterIds: initial.mitarbeiterIds ?? (initial.mitarbeiterId ? [initial.mitarbeiterId] : []),
     mitgeteilt: initial.mitgeteilt,
-    seitWann: initial.seitWann ?? '',
-    schonMalMitgeteilt: initial.schonMalMitgeteilt,
     mailLink: initial.mailLink ?? '',
+    archiviert: initial.archiviert ?? false,
+    gruende: reklamationGruende(initial),
+    gruendeFreitext: initial.gruendeFreitext ?? [],
+    anruferMerkmale: migriereMerkmale(initial),
+    zeitraeume: reklamationZeitraeume(initial),
   };
 }
 
@@ -432,4 +525,47 @@ export function reklamationTgIds(r: Reklamation): string[] {
 /** Liefert alle MA-IDs einer Reklamation (Plural + Legacy-Singular). */
 export function reklamationMaIds(r: Reklamation): string[] {
   return r.mitarbeiterIds ?? (r.mitarbeiterId ? [r.mitarbeiterId] : []);
+}
+
+/**
+ * Reklamationsgründe migrations-tolerant: neue `gruende` ODER abgeleitet
+ * aus den deprecateten Booleans `nichtBeliefert`/`zuSpaetBeliefert`.
+ */
+export function reklamationGruende(r: Reklamation): ReklamationGrundKey[] {
+  if (r.gruende && r.gruende.length > 0) return r.gruende;
+  const out: ReklamationGrundKey[] = [];
+  if (r.nichtBeliefert) out.push('nichtBeliefert');
+  if (r.zuSpaetBeliefert) out.push('zuSpaetBeliefert');
+  return out;
+}
+
+/** Liefert den Tri-State-Wert eines Anrufer-Merkmals (oder undefined = nicht gefragt). */
+export function reklamationMerkmal(
+  r: Reklamation,
+  key: AnruferMerkmalKey
+): 'ja' | 'nein' | undefined {
+  return migriereMerkmale(r)[key];
+}
+
+/** Zeiträume migrations-tolerant: neue `zeitraeume` ODER aus `seitWann`. */
+export function reklamationZeitraeume(r: Reklamation): ReklamationZeitraum[] {
+  if (r.zeitraeume && r.zeitraeume.length > 0) return r.zeitraeume;
+  if (r.seitWann) return [{ typ: 'datum', datum: r.seitWann }];
+  return [];
+}
+
+/** Baut die Merkmals-Map aus neuem Feld ODER den deprecateten Booleans. */
+function migriereMerkmale(
+  r: Reklamation
+): Partial<Record<AnruferMerkmalKey, 'ja' | 'nein'>> {
+  if (r.anruferMerkmale && Object.keys(r.anruferMerkmale).length > 0) {
+    return r.anruferMerkmale;
+  }
+  const out: Partial<Record<AnruferMerkmalKey, 'ja' | 'nein'>> = {};
+  if (typeof r.briefkastenVorhanden === 'boolean') {
+    out.hatBriefkasten = r.briefkastenVorhanden ? 'ja' : 'nein';
+  }
+  if (r.aufkleberKeineWerbung) out.aufkleberKeineWerbung = 'ja';
+  if (r.schonMalMitgeteilt) out.schonMalMitgeteilt = 'ja';
+  return out;
 }

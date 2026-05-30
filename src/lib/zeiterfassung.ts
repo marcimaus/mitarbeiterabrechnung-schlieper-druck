@@ -147,13 +147,22 @@ export async function pauseBeenden(session: Arbeitszeit): Promise<void> {
 
 // ---- Auto-Schließen um Mitternacht ------------------------
 
-export async function schliesseAbgelaufeneSessions(): Promise<void> {
+/**
+ * Schließt alle Sessions, die an einem früheren Tag gestartet und nicht
+ * ausgestempelt wurden. endTime wird auf 23:59 Uhr des Start-Tages
+ * gesetzt, Flag `autoGeschlossenUm24` aktiviert, ein Audit-Eintrag im
+ * `korrekturLog` hinterlegt. Rückgabe: Liste der gerade geschlossenen
+ * Sessions (für UI-Banner). Bereits zuvor geschlossene Sessions werden
+ * NICHT erneut angefasst und NICHT zurückgegeben.
+ */
+export async function schliesseAbgelaufeneSessions(): Promise<Arbeitszeit[]> {
   const q = query(
     collection(db, 'arbeitszeiten'),
     where('status', 'in', ['aktiv', 'pause'])
   );
   const snap = await getDocs(q);
   const heute = new Date();
+  const geschlossene: Arbeitszeit[] = [];
 
   for (const d of snap.docs) {
     const session = { id: d.id, ...d.data() } as Arbeitszeit;
@@ -168,16 +177,35 @@ export async function schliesseAbgelaufeneSessions(): Promise<void> {
       if (offenePause >= 0) {
         pausen[offenePause] = { ...pausen[offenePause], ende: schliesszeit };
       }
+      const autoLog: AuditEintrag = {
+        zeitstempel: now(),
+        adminName: '— System —',
+        aktion: 'Auto-Close: vergessen auszustempeln, geschlossen um 23:59',
+        vorher: JSON.stringify({ endTime: null, status: session.status }),
+        nachher: JSON.stringify({ endTime: schliesszeit, status: 'abgeschlossen' }),
+      };
+      const naechstesGesamtPause = berechnePausenminuten(pausen);
       await updateDoc(d.ref, {
         endTime: schliesszeit,
         status: 'abgeschlossen',
         pausen,
-        gesamtPauseMinuten: berechnePausenminuten(pausen),
+        gesamtPauseMinuten: naechstesGesamtPause,
         autoGeschlossenUm24: true,
+        korrekturLog: [...(session.korrekturLog ?? []), autoLog],
         aktualisiertAm: now(),
+      });
+      geschlossene.push({
+        ...session,
+        endTime: schliesszeit,
+        status: 'abgeschlossen',
+        pausen,
+        gesamtPauseMinuten: naechstesGesamtPause,
+        autoGeschlossenUm24: true,
+        korrekturLog: [...(session.korrekturLog ?? []), autoLog],
       });
     }
   }
+  return geschlossene;
 }
 
 // ---- Auto-geschlossene Session vom Vortag laden ------------
@@ -247,12 +275,19 @@ export async function korrigiereSession(
   };
 
   const neuerPausenstand = aenderungen.pausen ?? session.pausen;
-  await updateDoc(doc(db, 'arbeitszeiten', session.id), {
+  const update: Record<string, unknown> = {
     ...aenderungen,
     gesamtPauseMinuten: berechnePausenminuten(neuerPausenstand),
     korrekturLog: [...session.korrekturLog, logEintrag],
     aktualisiertAm: now(),
-  });
+  };
+  // Wenn die endTime überschrieben wird, ist das automatisch gesetzte
+  // 23:59-Ende der Auto-Close-Routine nicht mehr „aktiv" — das Flag
+  // soll dann zurück, damit Amber-Highlight & ⚠-Symbol verschwinden.
+  if (aenderungen.endTime != null && session.autoGeschlossenUm24) {
+    update.autoGeschlossenUm24 = false;
+  }
+  await updateDoc(doc(db, 'arbeitszeiten', session.id), update);
 }
 
 // ---- NFC-Tag beschreiben -----------------------------------

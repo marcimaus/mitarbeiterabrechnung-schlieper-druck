@@ -189,6 +189,17 @@ export interface Mitarbeiter {
   anmeldungUebermittlungDatum?: string;
   /** MA wurde beim Lohnbüro abgemeldet. */
   abgemeldet?: boolean;
+  /**
+   * „Vorläufig nicht abmelden": Bedarfs-Springer, der mehrere Monate
+   * nicht eingesetzt wird, soll vom Lohnbüro NICHT automatisch
+   * abgemeldet werden. Wirkung:
+   *   · MA wird beim Periodenabschluss nicht zur Abmeldung vorgeschlagen
+   *     (auch wenn keine Auszahlung in dieser Periode).
+   *   · In der Lohnübermittlung erscheint ein expliziter Hinweis, sobald
+   *     der MA keinen Bruttolohn in dieser Periode hat — damit das
+   *     Lohnbüro die Karte nicht selbsttätig schließt.
+   */
+  vorlaeufigNichtAbmelden?: boolean;
   /** Datum der Abmelde-Übermittlung ans Lohnbüro. */
   abmeldungUebermittlungDatum?: string;
   /** Letzte Abrechnungsperiode des MA. */
@@ -225,6 +236,17 @@ export interface Mitarbeiter {
    * dann fortlaufend berechnet (kontaktDatum + n Jahre).
    */
   interessentAlterBeiErfassung?: number;
+  /**
+   * Legacy-MA: nur zur Zuordnung historischer Lohnbüro-Daten angelegt.
+   * Wird ausschließlich aus dem „Lohnbüro auswerten"-Screen erzeugt
+   * (manuelles Mapping von „kein Match"-Einträgen). Plausibilitäts-
+   * Prüfungen (Alter, Pflichtfelder etc.) entfallen; der MA wird beim
+   * Anlegen automatisch deaktiviert und abgemeldet. Erscheint NICHT in
+   * der Personalplanung, NICHT in der Stempeluhr, NICHT in der Abrechnung
+   * — er existiert nur als Auflöser für Namens-Treffer in den
+   * historischen PDF-Daten.
+   */
+  istLegacy?: boolean;
   erstelltAm: number;     // Unix-Timestamp ms
   aktualisiertAm: number;
 }
@@ -264,6 +286,13 @@ export interface Tour {
    * Fahrtkosten) bleiben unberührt — die Tour existiert weiter.
    */
   fahrerplanungAusgeblendet?: boolean;
+  /**
+   * Standard-Karten-Link (z. B. Google My Maps) für alle TGs dieser Tour.
+   * Wird vom Teilgebiete-Strassen-Tab als Default angezeigt; pro TG kann
+   * der Admin diesen über `Teilgebiet.kartenLink` weiterhin überschreiben.
+   * Nur Admin darf den Wert pflegen.
+   */
+  kartenLink?: string;
   erstelltAm: number;
 }
 
@@ -326,6 +355,13 @@ export interface Teilgebiet {
   auslagestelleKontaktEmail?: string;
   /** Memo für Absprachen mit der Kontaktperson. */
   auslagestelleMemo?: string;
+  /**
+   * Optionaler externer Link zur Kartenansicht (z. B. Google My Maps).
+   * Wenn nicht gesetzt, greift ein Tour-spezifischer Default (siehe
+   * `defaultKartenLink()` in TeilgebieteScreen). Nur Admin darf den
+   * pro-TG-Wert setzen/überschreiben.
+   */
+  kartenLink?: string;
   erstelltAm: number;
   aktualisiertAm: number;
 }
@@ -451,20 +487,11 @@ export interface Abrechnungsperiode {
   erstelltAm: number;
 }
 
-// ---- Austrägerwechsel-Vorbereitung -------------------------
+// ---- Austrägerwechsel-Vorbereitung (entfernt) --------------
 //
-// Liste vorgemerkter Standardausträger-Wechsel: pro Teilgebiet ein Eintrag
-// (Upsert auf teilgebietId). Beim nächsten Monatswechsel werden die
-// Vorschläge dem Admin zur Einzel-Bestätigung angeboten.
-
-export interface Austraegerwechsel {
-  id: string;
-  teilgebietId: string;
-  neuerMitarbeiterId: string;
-  erstelltVon?: string;
-  erstelltAm: number;
-  aktualisiertAm: number;
-}
+// Der separate Reiter „Austrägerwechsel vorbereiten" wurde abgeschafft —
+// dauerhafte Wechsel werden ausschließlich über `StandardAustraegerWechselPlan`
+// in der Personalplanung gepflegt (siehe weiter unten).
 
 // ---- Stückzahl-Anpassung vorbereiten -----------------------
 //
@@ -525,6 +552,18 @@ export interface Einsatz {
    * und warnt mit ⚡, falls sich dieser zwischenzeitlich geändert hat.
    */
   standardAustraegerSnapshot?: string | null;
+  /**
+   * Markierung „auto vom Wechselplan": Einsatz wurde automatisch vom
+   * Speichern eines `StandardAustraegerWechselPlan` angelegt — damit der
+   * neue Austräger in den Ausgaben zwischen `abAusgabe` und dem
+   * Periodenende bereits als Springer geführt wird (vor dem
+   * Monatswechsel, der ihn offiziell zum Standardausträger macht).
+   *
+   * Wird beim Löschen / Editieren des Wechselplans wieder eingesammelt
+   * — vom User manuell gepflegte Springer (ohne dieses Flag) bleiben
+   * unberührt.
+   */
+  autoVomWechselplan?: boolean;
   // Selbstmeldung durch den Austräger (ohne Login, via QR-Code)
   arbeitszeit?: AustraegerArbeitszeit;
   restmenge?: number;           // nicht ausgetragene Stücke (Überschuss)
@@ -731,6 +770,63 @@ export interface LohnkontoBuchung {
   aktualisiertAm: number;
 }
 
+// ---- Mitarbeiter-Memo (Abrechnungsvorbereitung) ------------
+//
+// Hinweise / Mitteilungen ans Lohnbüro, die zu einer bestimmten
+// Abrechnungsperiode übermittelt werden sollen. Beispiele:
+//   - IBAN-Änderung
+//   - Adress-Änderung
+//   - Abrechnungs-Parameter (Stundenlohn, Festgehalt etc.)
+//   - Anforderung spezieller Auswertungen / Meldungen
+//   - Krankmeldungen
+//
+// `abrechnungsperiodeId` optional: bevor klar ist, in welcher Periode
+// das Memo übermittelt werden soll, bleibt das Memo „nicht zugeordnet"
+// und wird im AbrechnungScreen entsprechend angezeigt.
+//
+// `nurAdmin`: vom Admin als „privat" markiertes Memo. Wird der Rolle
+// `abrechnung` nicht angezeigt und auch nicht im Export gelistet.
+// Standardmäßig false. Nur Admin darf das Flag setzen.
+
+export type MemoKategorie =
+  | 'iban'
+  | 'adresse'
+  | 'parameter'
+  | 'auswertung'
+  | 'krankmeldung'
+  | 'sonstiges';
+
+export const MEMO_KATEGORIE_LABELS: Record<MemoKategorie, string> = {
+  iban: 'IBAN-Änderung',
+  adresse: 'Adress-Änderung',
+  parameter: 'Abrechnungs-Parameter',
+  auswertung: 'Auswertung / Meldung',
+  krankmeldung: 'Krankmeldung',
+  sonstiges: 'Sonstiges',
+};
+
+export interface MitarbeiterMemo {
+  id: string;
+  mitarbeiterId: string;
+  kategorie: MemoKategorie;
+  text: string;
+  /** Optional: Abrechnungsperiode, in der das Memo übermittelt werden soll. */
+  abrechnungsperiodeId?: string;
+  /**
+   * Optionaler externer Link (z. B. Mail-Thread, Bestätigungs-PDF,
+   * Drive-Datei). Wird in der Abrechnung als anklickbares Icon
+   * angezeigt — **nicht** Teil des Excel-Exports zur Lohnübermittlung
+   * (der Inhalt des Links bleibt intern).
+   */
+  externerLink?: string;
+  /** Nur sichtbar für Admin — vom Admin gesetzt. Standard false. */
+  nurAdmin: boolean;
+  erstellerName: string;
+  erstellerRolle: 'admin' | 'abrechnung';
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
 // ---- Variabler Periodenzusatz ------------------------------
 
 export interface VariablerPeriodenZusatz {
@@ -768,6 +864,73 @@ export interface BeilagenPreis {
 
 // ---- Reklamation -------------------------------------------
 
+/**
+ * Feste Liste der Reklamationsgründe (Mehrfachauswahl). Zusätzlich kann
+ * pro Reklamation ein Freitext-Grund erfasst werden (`gruendeFreitext`).
+ */
+export const REKLAMATION_GRUND_KEYS = [
+  'nichtBeliefert',
+  'zuSpaetBeliefert',
+  'exemplareZerknueddelt',
+  'gbImZaun',
+  'gbAufsGrundstueck',
+  'willNichtBeliefert',
+  'zuVieleExemplare',
+  'zuWenigExemplare',
+] as const;
+export type ReklamationGrundKey = (typeof REKLAMATION_GRUND_KEYS)[number];
+export const REKLAMATION_GRUND_LABELS: Record<ReklamationGrundKey, string> = {
+  nichtBeliefert: 'Nicht beliefert',
+  zuSpaetBeliefert: 'Zu spät beliefert',
+  exemplareZerknueddelt: 'Exemplare zerknüddelt',
+  gbImZaun: 'GB steckt im Zaun',
+  gbAufsGrundstueck: 'GB aufs Grundstück geworfen',
+  willNichtBeliefert: 'Will nicht beliefert werden',
+  zuVieleExemplare: 'Zu viele Exemplare erhalten',
+  zuWenigExemplare: 'Zu wenig Exemplare erhalten',
+};
+
+/**
+ * Anrufer-Merkmale als Tri-State: Schlüssel fehlt = Frage wurde dem
+ * Anrufer nicht gestellt; 'ja' / 'nein' = gestellt und beantwortet.
+ */
+export const ANRUFER_MERKMAL_KEYS = [
+  'hatHund',
+  'hatBriefkasten',
+  'aufkleberKeineWerbung',
+  'briefkastenEingezaeunt',
+  'schonMalMitgeteilt',
+] as const;
+export type AnruferMerkmalKey = (typeof ANRUFER_MERKMAL_KEYS)[number];
+export const ANRUFER_MERKMAL_LABELS: Record<AnruferMerkmalKey, string> = {
+  hatHund: 'Hat Hund',
+  hatBriefkasten: 'Hat Briefkasten',
+  aufkleberKeineWerbung: 'Hat Aufkleber „Keine Werbung"',
+  briefkastenEingezaeunt: 'Briefkasten auf eingezäuntem Bereich',
+  schonMalMitgeteilt: 'Problem schon mal mitgeteilt',
+};
+
+/**
+ * Ein Zeitbezug der Reklamation. Mehrere Einträge möglich. Steuert das
+ * Zeitfenster für die Austräger-/Springer-Vorauswahl.
+ *  - `kw`        : betrifft eine bestimmte Ausgabe (von) oder Range (von..bis).
+ *  - `geschaetzt`: Anrufer kennt die KW nicht — „seit N Wochen/Monaten".
+ *  - `datum`     : einzelnes „Problem bekannt am"-Datum.
+ */
+export interface ReklamationZeitraum {
+  typ: 'kw' | 'geschaetzt' | 'datum';
+  // typ === 'kw'
+  vonJahr?: number;
+  vonKw?: number;
+  bisJahr?: number;
+  bisKw?: number;
+  // typ === 'geschaetzt'
+  einheit?: 'wochen' | 'monate';
+  anzahl?: number;
+  // typ === 'datum'
+  datum?: string; // ISO YYYY-MM-DD
+}
+
 export interface Reklamation {
   id: string;
   anruferName: string;
@@ -778,8 +941,6 @@ export interface Reklamation {
   hausnummer?: string;
   plz?: string;
   ort?: string;
-  briefkastenVorhanden: boolean;
-  aufkleberKeineWerbung: boolean;
   anmerkung?: string;
   /**
    * Aktuell genutztes Plural-Feld: ein Reklamationsfall kann mehrere
@@ -794,8 +955,21 @@ export interface Reklamation {
   /** @deprecated — siehe teilgebietId. */
   mitarbeiterId?: string;
   mitgeteilt: boolean;          // dem Mitarbeiter mitgeteilt
-  seitWann?: string;            // ISO-Date: seit wann besteht das Problem
-  schonMalMitgeteilt: boolean;  // wurde es schon mal mitgeteilt
+  /**
+   * Archiviert: Reklamation ist abgeschlossen und erscheint nicht mehr in
+   * der „offen"-Liste der Startseite. Unabhängig vom „mitgeteilt"-Flag —
+   * eine Reklamation kann auch ohne MA-Mitteilung archiviert werden, z. B.
+   * wenn sich der Anrufer als Falschmeldung erweist.
+   */
+  archiviert?: boolean;
+  /** Reklamationsgründe (Mehrfachauswahl, feste Liste). */
+  gruende?: ReklamationGrundKey[];
+  /** Zusätzliche frei erfasste Gründe (Freitext). */
+  gruendeFreitext?: string[];
+  /** Anrufer-Merkmale als Tri-State (Schlüssel fehlt = nicht gefragt). */
+  anruferMerkmale?: Partial<Record<AnruferMerkmalKey, 'ja' | 'nein'>>;
+  /** Zeitbezüge der Reklamation (KW / geschätzt / Datum). */
+  zeitraeume?: ReklamationZeitraum[];
   /**
    * Optionaler Link auf einen E-Mail-Thread (Gmail, Outlook, …), in dem die
    * Verarbeitung der Reklamation dokumentiert ist.
@@ -803,6 +977,20 @@ export interface Reklamation {
   mailLink?: string;
   erstelltAm: number;
   aktualisiertAm: number;
+
+  // ---- @deprecated Legacy-Felder (nur noch lesbar, migriert beim Laden) ----
+  /** @deprecated → anruferMerkmale.hatBriefkasten */
+  briefkastenVorhanden?: boolean;
+  /** @deprecated → anruferMerkmale.aufkleberKeineWerbung */
+  aufkleberKeineWerbung?: boolean;
+  /** @deprecated → anruferMerkmale.schonMalMitgeteilt */
+  schonMalMitgeteilt?: boolean;
+  /** @deprecated → gruende.nichtBeliefert */
+  nichtBeliefert?: boolean;
+  /** @deprecated → gruende.zuSpaetBeliefert */
+  zuSpaetBeliefert?: boolean;
+  /** @deprecated → zeitraeume (typ='datum') */
+  seitWann?: string;
 }
 
 // ---- Vorschuss (Abschlagszahlung) --------------------------
@@ -815,6 +1003,90 @@ export interface Vorschuss {
   bemerkung?: string;
   erstelltAm: number;
   aktualisiertAm: number;
+}
+
+// ---- Lohnbüro-Abrechnungen (indizierte PDFs) ---------------
+//
+// Das Steuer-/Lohnbüro liefert pro Monat ein PDF mit einer Seite je
+// Mitarbeiter (Brutto-/Netto-Abrechnung). Diese Records repräsentieren
+// das Ergebnis der Indizierung dieser PDFs — ein Record pro
+// (Datei, Seite, MA). Quell-PDFs liegen im Google-Drive und werden via
+// Deep-Link `…/view#page=N` aufgerufen. Bei Korrektur-PDFs
+// ("Nachberechnung…") wird `istKorrektur=true` gesetzt.
+//
+// Privacy: Bewusst nur die 4 angeforderten Beträge + Name + Drive-Link.
+// SV-Nummer, IBAN, Adresse bleiben ausschließlich im PDF.
+export interface LohnbueroAbrechnung {
+  id: string;
+  // Quelle
+  fileId: string;
+  fileName: string;
+  fileUrl: string;            // https://drive.google.com/file/d/<id>/view
+  seite: number;              // 1-basiert
+  // Periode
+  jahr: number;
+  monat: number;              // 1..12
+  istKorrektur: boolean;
+  // MA
+  mitarbeiterId: string | null;
+  nameRoh: string;
+  personalNrLohnbuero?: string;
+  // Werte (EUR)
+  gesamtBrutto: number;
+  nettoVerdienst: number;
+  svAbzuege: number;
+  auszahlungsbetrag: number;
+  // Weitere Werte aus der Abrechnung (per Lohnart-Schlüssel des Steuerbüros):
+  /** Fahrtkosten (Lohnart-Schlüssel 9074). */
+  fahrtkosten?: number;
+  /** Vorschuss / „Abschlag" (Lohnart-Schlüssel 9001). */
+  vorschuss?: number;
+  /** Darlehensrückzahlung im Monat (Lohnart-Schlüssel 9993). */
+  darlehensRueckzahlung?: number;
+  /** Darlehen Restbetrag (Label „Darlehen Rest", kein fester Schlüssel). */
+  darlehenRest?: number;
+  // Optional
+  eintritt?: string;          // ISO YYYY-MM-DD
+  austritt?: string;
+  // Audit
+  indiziertAm: number;
+  indizierVersion: number;
+}
+
+// ---- Lohnbüro-Drive-Links (externer Speicher) --------------
+//
+// Pro Abrechnungsmonat (bzw. -jahr) ein Link in das Google Drive, in dem
+// die vom Steuer-/Lohnbüro gelieferten Original-Abrechnungen liegen.
+//   - `monat = null` → Link zum Jahres-Ordner
+//   - `monat = 1..12` → Link zum Monats-Ordner
+// Doc-ID: `${jahr}` für Jahres-Links, `${jahr}-${monat}` für Monats-Links.
+export interface LohnbueroDriveLink {
+  id: string;
+  jahr: number;
+  monat: number | null;
+  url: string;
+  kommentar?: string;
+  aktualisiertAm: number;
+  aktualisiertVon?: string;
+}
+
+export interface LohnbueroAnmeldung {
+  id: string;
+  fileId: string;
+  fileName: string;
+  fileUrl: string;
+  seite: number;
+  jahr: number;
+  monat: number;
+  mitarbeiterId: string | null;
+  nameRoh: string;
+  personalNrLohnbuero?: string;
+  typ: 'anmeldung' | 'abmeldung';
+  grundDerAbgabe?: string;     // Schlüsselzahl + Klartext
+  beschaeftigungVon?: string;  // ISO
+  beschaeftigungBis?: string;
+  indiziertAm: number;
+  indizierVersion: number;
 }
 
 // ---- Audit-Log (unveränderlich) ----------------------------
@@ -923,6 +1195,8 @@ export interface ZusammentragerPlanung {
    */
   status?: ZusammentragerStatus;
   kommentar?: string;
+  /** Optionaler externer Link (z. B. Mail-Thread, Bestätigungs-PDF). */
+  externerLink?: string;
   erstelltAm: number;
   aktualisiertAm: number;
 }
@@ -1009,12 +1283,21 @@ export interface UrlaubsEintrag {
 export interface StandardAustraegerWechselPlan {
   id: string;
   teilgebietId: string;
-  letzteAusgabeJahr: number;
-  letzteAusgabeKw: number;
+  /**
+   * Letzte Ausgabe, die der BISHERIGE Standardausträger noch verteilt.
+   * OPTIONAL: bei Teilgebieten, die seit Beginn unbesetzt sind (kein
+   * Standardausträger jemals gesetzt), gibt es keine letzte Ausgabe.
+   * In diesem Fall bleibt das Feld leer und der Lücken-Bereich beginnt
+   * effektiv ab KW 1 des sichtbaren Jahres.
+   */
+  letzteAusgabeJahr?: number;
+  letzteAusgabeKw?: number;
   neuerAustraegerId?: string;
   abAusgabeJahr?: number;
   abAusgabeKw?: number;
   kommentar?: string;
+  /** Optionaler externer Link (z. B. Mail-Thread). */
+  externerLink?: string;
   erstelltAm: number;
   aktualisiertAm: number;
 }

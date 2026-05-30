@@ -212,7 +212,9 @@ import {
   type Teilgebiet,
   type Ausgabe,
 } from '../types';
-import { ausgabenListener } from '../lib/db';
+import { ausgabenListener, ladeBeilagen } from '../lib/db';
+import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
+import type { Beilage } from '../types';
 
 const TAETIGKEITEN: DrucksaalTaetigkeit[] = [
   'drucken',
@@ -242,6 +244,11 @@ export default function PlanungScreen() {
 function PlanungContent() {
   const { mitarbeiter, touren, teilgebiete, userRole, adminName, parameter, abrechnungsperioden } = useApp();
   const istAdmin = userRole === 'admin';
+  // Wechselpläne (Standardausträger-Wechsel) dürfen sowohl Admin als
+  // auch Abrechnung anlegen/bearbeiten/löschen. Die *Übernahme* beim
+  // Monatswechsel (TG.standardAustraegerId setzen) bleibt admin-only —
+  // das passiert separat im AbrechnungScreen-Übernahme-Dialog.
+  const darfWechselplanPflegen = userRole === 'admin' || userRole === 'abrechnung';
   const currentKW = getCurrentKW();
   const [jahr, setJahr] = useState<number>(currentKW.jahr);
   const kws = useMemo(() => alleKWsImJahr(jahr), [jahr]);
@@ -284,32 +291,38 @@ function PlanungContent() {
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [wechselplan, setWechselplan] = useState<StandardAustraegerWechselPlan[]>([]);
 
-  // TGs, die aktuell keinen Standardausträger haben → automatisch in der
-  // Wechsel-Sektion sichtbar (Anforderung: dauerhaft unbesetzte TGs werden
-  // wie ein Wechselplan-Eintrag behandelt, nur ohne explizite Planung).
-  const unbesetzteTgs = useMemo(
-    () => teilgebiete
+  // Vereinheitlichte Liste der Wechsel-Sektion: enthält ALLE Zeilen,
+  // die in „🔁 Standard-Wechsel" angezeigt werden — sowohl persistierte
+  // Wechselpläne als auch „virtuelle" Pläne für dauerhaft unbesetzte
+  // Teilgebiete. Virtuelle Pläne haben `id` mit Präfix `virtual-` und
+  // keine `letzteAusgabe*`-Felder. So wird nur EIN Render-Pfad
+  // (`WechselCell`) gepflegt und getestet.
+  const effektivePlaene = useMemo<StandardAustraegerWechselPlan[]>(() => {
+    const echtTgIds = new Set(wechselplan.map((w) => w.teilgebietId));
+    const virtuelle: StandardAustraegerWechselPlan[] = teilgebiete
       .filter(
         (t) =>
           t.isActive &&
           !t.istAuslagestelle &&
           !t.standardAustraegerId &&
-          !wechselplan.some((w) => w.teilgebietId === t.id),
+          !echtTgIds.has(t.id),
       )
-      .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true })),
-    [teilgebiete, wechselplan],
-  );
+      .map((t) => ({
+        id: `virtual-${t.id}`,
+        teilgebietId: t.id,
+        erstelltAm: 0,
+        aktualisiertAm: 0,
+      } as StandardAustraegerWechselPlan));
+    return [...wechselplan, ...virtuelle];
+  }, [wechselplan, teilgebiete]);
 
-  // TG-IDs, die der Wechsel-Sektion zugeordnet sind (Wechselplan ODER
-  // dauerhaft unbesetzt). Ihre Einsätze tauchen NUR in der
-  // Wechsel-Sektion auf, nicht zusätzlich in der Ausfälle-Sektion —
-  // sonst hätte man jeden Springer doppelt gesehen.
-  const wechselTgIds = useMemo(() => {
-    const s = new Set<string>();
-    for (const w of wechselplan) s.add(w.teilgebietId);
-    for (const t of unbesetzteTgs) s.add(t.id);
-    return s;
-  }, [wechselplan, unbesetzteTgs]);
+  // TG-IDs, die der Wechsel-Sektion zugeordnet sind. Ihre Einsätze
+  // tauchen NUR in der Wechsel-Sektion auf, nicht zusätzlich in der
+  // Ausfälle-Sektion — sonst hätte man jeden Springer doppelt.
+  const wechselTgIds = useMemo(
+    () => new Set(effektivePlaene.map((p) => p.teilgebietId)),
+    [effektivePlaene],
+  );
 
   // Untermenge für die Ausfälle-Sektion: alle Ausfall-/Springer-Einsätze
   // OHNE die, die in der Wechsel-Sektion bereits sichtbar sind.
@@ -329,6 +342,18 @@ function PlanungContent() {
     const u7 = austraegerwechselPlanListener(setWechselplan);
     return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
   }, [jahr]);
+
+  // Beilagen einmal global laden — wird für die Soll-Zeit-Berechnung
+  // pro KW gebraucht. Refetch nur, wenn sich die Ausgaben-Liste ändert
+  // (= jemand legt neue Ausgaben oder Beilagen an).
+  const [alleBeilagen, setAlleBeilagen] = useState<Beilage[]>([]);
+  useEffect(() => {
+    let abgebrochen = false;
+    ladeBeilagen().then((list) => {
+      if (!abgebrochen) setAlleBeilagen(list);
+    });
+    return () => { abgebrochen = true; };
+  }, [ausgaben.length]);
 
   // ---- Indizes für O(1)-Lookup in den Zellen ----
   const drucksaalIdx = useMemo(() => {
@@ -363,6 +388,43 @@ function PlanungContent() {
     for (const u of urlaube) m.set(`${u.kw}-${u.mitarbeiterId}`, u);
     return m;
   }, [urlaube]);
+
+  /**
+   * Soll-Zeit Zusammentragen pro KW (in Stunden). Summiert über alle
+   * aktiven, nicht-Auslagestellen-TGs unter Berücksichtigung der
+   * internen Beilagen der jeweiligen Ausgabe.
+   * Pro KW: erforderliche Personalressource für das Zusammentragen.
+   */
+  const sollZusammenProKw = useMemo(() => {
+    const m = new Map<number, number>();
+    if (!parameter) return m;
+    // Index Beilagen je Ausgabe (für Lookup pro TG).
+    const beilagenByAusgabe = new Map<string, Beilage[]>();
+    for (const b of alleBeilagen) {
+      const arr = beilagenByAusgabe.get(b.ausgabeId) ?? [];
+      arr.push(b);
+      beilagenByAusgabe.set(b.ausgabeId, arr);
+    }
+    for (const a of ausgaben) {
+      if (a.jahr !== jahr) continue;
+      const ausgabeBeilagen = beilagenByAusgabe.get(a.id) ?? [];
+      let summe = 0;
+      for (const tg of teilgebiete) {
+        if (!tg.isActive || tg.istAuslagestelle) continue;
+        const intBeilagenTg = ausgabeBeilagen.filter(
+          (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id),
+        ).length;
+        summe += berechneZusammentragZeit(
+          tg.stueckzahl,
+          a.stapelAnzahl,
+          intBeilagenTg,
+          parameter,
+        );
+      }
+      m.set(a.kw, summe);
+    }
+    return m;
+  }, [parameter, ausgaben, alleBeilagen, teilgebiete, jahr]);
 
   // Mapping KW → zugehörige Abrechnungsperiode (für visuelle Gruppierung
   // im KW-Header: alternierender Hintergrund pro Periode + dicker
@@ -433,35 +495,12 @@ function PlanungContent() {
     await aktualisiereMitarbeiter(maId, { zusammenAufAbruf: neu });
   }
 
-  /**
-   * Bulk-Aktion für dauerhaft unbesetzte TGs: legt für alle KWs des
-   * aktuellen Jahres ab der aktuellen KW, in denen noch kein Einsatz für
-   * dieses TG existiert, einen Lücken-Einsatz mit `typ='ungeklärt'` an.
-   * Idempotent — bereits existierende Einsätze werden nicht angefasst.
-   */
-  async function markiereUnbesetzteAusgabenAlsLuecke(teilgebietId: string) {
-    if (!parameter) return;
-    const startKw = currentKW.jahr === jahr ? currentKW.kw : 1;
-    // Bereits vorhandene (kw, tg)-Kombis aus dem Live-State auslesen.
-    const belegt = new Set<number>();
-    for (const e of einsaetze) {
-      if (e.teilgebietId === teilgebietId) belegt.add(e.kw);
-    }
-    for (const kw of kws) {
-      if (kw < startKw) continue;
-      if (belegt.has(kw)) continue;
-      const ausgabeId = await getOrCreateAusgabe(jahr, kw, parameter);
-      await setzeEinsatz({
-        ausgabeId,
-        jahr,
-        kw,
-        teilgebietId,
-        mitarbeiterId: null,
-        typ: 'ungeklärt',
-        standardAustraegerSnapshot: null,
-      });
-    }
-  }
+  // Hinweis: Die frühere Bulk-Aktion `markiereUnbesetzteAusgabenAlsLuecke`
+  // (📌 „alle KWs als unbesetzt markieren" bei dauerhaft unbesetzten TGs)
+  // wurde entfernt. Begründung: ein TG ohne Standardausträger ist per se
+  // unbesetzt — zusätzliche `typ='ungeklärt'`-Einsätze waren redundant und
+  // bliesen die Collection auf. Springer werden weiterhin pro KW über das
+  // AusfallModal erfasst.
 
   // Die Bulk-Übernahme `uebernehmeAlleAusfaelleInKw` wurde entfernt:
   // Da PlanungScreen jetzt direkt in `einsaetze` schreibt, sind alle
@@ -1038,7 +1077,7 @@ function PlanungContent() {
                     <span className="font-bold text-gray-800">Σ Zusammenträger</span>
                   </span>
                 }
-                sublabel="fest + zugesagte auf Abruf"
+                sublabel="fest + zugesagte / Soll-Zeit-Bedarf"
                 kws={kws}
                 renderCell={(kw) => {
                   const fest = zusammenFest.reduce((acc, ma) => {
@@ -1053,22 +1092,45 @@ function PlanungContent() {
                   }, 0);
                   const count = fest + abruf;
                   const ok = fest >= zusammenFest.length;
+                  // Soll-Zeit der Ausgabe (= KW). 0/undefined wenn noch keine
+                  // Ausgabe angelegt ist oder kein TG zusammenzutragen ist.
+                  const sollH = sollZusammenProKw.get(kw) ?? 0;
+                  const proPerson = count > 0 && sollH > 0 ? sollH / count : 0;
                   return (
                     <div
-                      className={`w-full text-center text-sm font-bold rounded py-1 ${
+                      className={`w-full text-center text-xs font-bold rounded py-1 leading-tight ${
                         count === 0
                           ? 'text-gray-300'
                           : ok
                           ? 'bg-green-100 text-green-800'
                           : 'bg-blue-50 text-blue-800'
                       }`}
-                      title={`fest eingeplant ohne Abmeldung: ${fest}\nauf Abruf, zugesagt: ${abruf}`}
+                      title={
+                        `fest eingeplant ohne Abmeldung: ${fest}\n` +
+                        `auf Abruf, zugesagt: ${abruf}\n` +
+                        (sollH > 0
+                          ? `Soll-Zeit gesamt: ${formatierStunden(sollH)}\n` +
+                            (count > 0
+                              ? `pro verfügbarer Person: ${formatierStunden(proPerson)}`
+                              : 'keine verfügbare Person')
+                          : 'Soll-Zeit: —')
+                      }
                     >
-                      {count}
-                      {abruf > 0 && (
-                        <span className="text-[10px] font-normal opacity-70 ml-1">
-                          (+{abruf})
-                        </span>
+                      <div className="text-sm">
+                        {count}
+                        {abruf > 0 && (
+                          <span className="text-[10px] font-normal opacity-70 ml-1">
+                            (+{abruf})
+                          </span>
+                        )}
+                      </div>
+                      {sollH > 0 && (
+                        <div className="text-[10px] font-normal opacity-80">
+                          {formatierStunden(sollH)}
+                          {proPerson > 0 && (
+                            <span className="ml-1 opacity-70">/ {formatierStunden(proPerson)}/MA</span>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
@@ -1239,7 +1301,12 @@ function PlanungContent() {
                     (t) =>
                       t.isActive &&
                       !t.istAuslagestelle &&
-                      !wechselplan.some((w) => w.teilgebietId === t.id),
+                      // TGs, die ohnehin schon in der Wechsel-Liste
+                      // erscheinen (echter Plan oder virtueller Eintrag
+                      // wegen Unbesetzt-Status), dürfen nicht zusätzlich
+                      // im Dropdown auftauchen — sonst überschreibt die
+                      // Auswahl die bestehende Zeile.
+                      !effektivePlaene.some((p) => p.teilgebietId === t.id),
                   )
                   .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }))
                   .map((t) => (
@@ -1252,14 +1319,17 @@ function PlanungContent() {
               <div className="text-[10px] text-gray-200 text-center py-1">·</div>
             )}
           />
-          {openSections.wechsel && wechselplan.length === 0 && unbesetzteTgs.length === 0 && (
+          {openSections.wechsel && effektivePlaene.length === 0 && (
             <div className="px-3 py-2 text-xs text-gray-400 italic">
               Keine Wechsel geplant und keine dauerhaft unbesetzten Teilgebiete.
             </div>
           )}
-          {/* Pläne mit Wechseldatum */}
+          {/* Wechselpläne (persistiert) UND virtuelle Pläne für
+              dauerhaft unbesetzte TGs — ein gemeinsamer Render-Pfad,
+              damit Sonderfälle des „unbesetzt"-Typs nicht mehr separat
+              gepflegt werden müssen. */}
           {openSections.wechsel &&
-            [...wechselplan]
+            [...effektivePlaene]
               .sort((a, b) => {
                 const ta = teilgebietById.get(a.teilgebietId)?.name ?? '';
                 const tb = teilgebietById.get(b.teilgebietId)?.name ?? '';
@@ -1268,24 +1338,92 @@ function PlanungContent() {
               .map((plan) => {
                 const tg = teilgebietById.get(plan.teilgebietId);
                 if (!tg) return null;
+                const istVirtuell = plan.id.startsWith('virtual-');
                 return (
                   <TaetigkeitRow
                     key={plan.id}
-                    label={tg.name}
+                    label={
+                      istVirtuell ? (
+                        <span className="flex items-baseline gap-1.5">
+                          <span className="truncate">{tg.name}</span>
+                          <span className="text-[10px] text-red-600 shrink-0">unbesetzt</span>
+                        </span>
+                      ) : (
+                        tg.name
+                      )
+                    }
                     sublabel={
                       plan.neuerAustraegerId
                         ? `→ ${mitarbeiterById.get(plan.neuerAustraegerId)?.name ?? '?'}`
+                        : istVirtuell
+                        ? 'kein Standardausträger'
                         : 'kein Nachfolger'
                     }
                     kws={kws}
                     labelExtra={
-                      istAdmin ? (
-                        <button
-                          type="button"
-                          onClick={() => loescheAustraegerwechselPlan(plan.teilgebietId)}
-                          className="text-[11px] text-gray-300 hover:text-red-500 leading-none px-1"
-                          title="Wechselplan löschen"
-                        >✕</button>
+                      darfWechselplanPflegen ? (
+                        <span className="flex items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => setWechselModal({ teilgebietId: plan.teilgebietId })}
+                            className="text-[11px] text-gray-300 hover:text-blue-600 leading-none px-1"
+                            title="Wechselplan bearbeiten"
+                          >✎</button>
+                          {!istVirtuell && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                // G: Confirm-Dialog vor dem Löschen — schützt
+                                // vor versehentlichem Klick. Bestehende
+                                // manuelle Springer-Einsätze bleiben in
+                                // jedem Fall erhalten; ungeklärte Lücken
+                                // sowie automatisch vom Wechselplan
+                                // erzeugte Springer (L) werden mit gelöscht.
+                                const luecken = einsaetze.filter(
+                                  (e) =>
+                                    e.teilgebietId === plan.teilgebietId &&
+                                    e.typ === 'ungeklärt' &&
+                                    !e.mitarbeiterId,
+                                );
+                                const autoSpringer = einsaetze.filter(
+                                  (e) =>
+                                    e.teilgebietId === plan.teilgebietId &&
+                                    e.autoVomWechselplan === true,
+                                );
+                                const hinweisTeile: string[] = [];
+                                if (luecken.length > 0) {
+                                  hinweisTeile.push(
+                                    `${luecken.length} unbearbeitete Lücken-Einsätze`,
+                                  );
+                                }
+                                if (autoSpringer.length > 0) {
+                                  hinweisTeile.push(
+                                    `${autoSpringer.length} automatisch angelegte Springer-Einsätze`,
+                                  );
+                                }
+                                const hinweis = hinweisTeile.length > 0
+                                  ? `\n\nFolgendes wird mit gelöscht: ${hinweisTeile.join(', ')}. Manuell gepflegte Springer bleiben erhalten.`
+                                  : '';
+                                if (
+                                  !confirm(
+                                    `Wechselplan für dieses Teilgebiet wirklich löschen?${hinweis}`,
+                                  )
+                                ) {
+                                  return;
+                                }
+                                await loescheAustraegerwechselPlan(plan.teilgebietId);
+                                for (const e of luecken) {
+                                  await loescheEinsatz(e.id);
+                                }
+                                for (const e of autoSpringer) {
+                                  await loescheEinsatz(e.id);
+                                }
+                              }}
+                              className="text-[11px] text-gray-300 hover:text-red-500 leading-none px-1"
+                              title="Wechselplan löschen"
+                            >✕</button>
+                          )}
+                        </span>
                       ) : undefined
                     }
                     renderCell={(kw) => (
@@ -1302,46 +1440,8 @@ function PlanungContent() {
                   />
                 );
               })}
-          {/* Dauerhaft unbesetzte TGs ohne expliziten Plan — automatisch
-              eingereiht. Klick auf eine Zelle öffnet das Ausfall-Modal,
-              damit für einzelne KWs Springer zugewiesen werden können.
-              Der Bulk-Button am Zeilenanfang legt Lücken-Einsätze für alle
-              KWs ab der aktuellen KW im Jahr an. */}
-          {openSections.wechsel &&
-            unbesetzteTgs.map((tg) => (
-              <TaetigkeitRow
-                key={`unbesetzt-${tg.id}`}
-                label={
-                  <span className="flex items-baseline gap-1.5">
-                    <span className="truncate">{tg.name}</span>
-                    <span className="text-[10px] text-red-600 shrink-0">unbesetzt</span>
-                  </span>
-                }
-                sublabel="kein Standardausträger"
-                kws={kws}
-                labelExtra={
-                  <button
-                    type="button"
-                    onClick={() => markiereUnbesetzteAusgabenAlsLuecke(tg.id)}
-                    disabled={!parameter}
-                    className="text-[10px] text-amber-600 hover:text-amber-800 leading-none px-1 disabled:text-gray-300"
-                    title={'Alle KWs ab heute (ohne Eintrag) als „unbesetzt" markieren'}
-                  >📌</button>
-                }
-                renderCell={(kw) => (
-                  <UnbesetztOhnePlanCell
-                    teilgebietId={tg.id}
-                    jahr={jahr}
-                    kw={kw}
-                    aktuelleKw={currentKW.jahr === jahr ? currentKW.kw : 1}
-                    einsatz={ausfallIdx.get(`${kw}-${tg.id}`)}
-                    mitarbeiterById={mitarbeiterById}
-                    gesperrt={gesperrteKws.has(kw)}
-                    onClick={() => setAusfallModal({ kw, teilgebietId: tg.id })}
-                  />
-                )}
-              />
-            ))}
+          {/* Doppelpfad „dauerhaft unbesetzte TGs" entfernt — siehe
+              effektivePlaene oben. */}
         </div>
       </div>
 
@@ -1357,6 +1457,7 @@ function PlanungContent() {
           mitarbeiterById={mitarbeiterById}
           maxKwImJahr={kws[kws.length - 1]}
           jahr={jahr}
+          abrechnungsperioden={abrechnungsperioden}
           onClose={() => setWechselModal(null)}
         />
       )}
@@ -1833,8 +1934,8 @@ function ZusammenZeile({
           >
             <ZusammenCell
               entry={entry}
-              onChange={(status, kommentar) =>
-                setzeZusammentragerPlanung(jahr, kw, ma.id, status, kommentar)
+              onChange={(status, kommentar, externerLink) =>
+                setzeZusammentragerPlanung(jahr, kw, ma.id, status, kommentar, externerLink)
               }
             />
           </div>
@@ -1849,9 +1950,18 @@ function ZusammenCell({
   onChange,
 }: {
   entry: ZusammentragerPlanung | undefined;
-  onChange: (status: ZusammentragerStatus | null, kommentar?: string) => void;
+  onChange: (
+    status: ZusammentragerStatus | null,
+    kommentar?: string,
+    externerLink?: string,
+  ) => void;
 }) {
-  const [showKommentar, setShowKommentar] = useState(false);
+  const [showPopover, setShowPopover] = useState(false);
+  // Lokaler Bearbeitungsstand für Kommentar + Link. Wird beim Öffnen
+  // aus `entry` initialisiert; gespeichert wird erst beim Klick auf
+  // „Speichern" oder beim Verlassen (Blur außerhalb des Popovers).
+  const [kommentarDraft, setKommentarDraft] = useState(entry?.kommentar ?? '');
+  const [linkDraft, setLinkDraft] = useState(entry?.externerLink ?? '');
   const status = entry?.status;
 
   // Klick-Cycle: leer → kommt → kommt-ggf → kommt-nicht → unabgemeldet nicht erschienen → leer
@@ -1883,38 +1993,86 @@ function ZusammenCell({
     ? '✕'
     : '!';
 
+  const hatLink = !!entry?.externerLink?.trim();
+  const hatKommentar = !!entry?.kommentar?.trim();
+
   return (
     <div className="relative">
       <button
         type="button"
-        onClick={() => onChange(next[status ?? ''], entry?.kommentar)}
-        onContextMenu={(e) => { e.preventDefault(); setShowKommentar((v) => !v); }}
-        title={`${status ? ZUSAMMENTRAGER_STATUS_LABELS[status] : 'leer'} · Rechtsklick für Kommentar${entry?.kommentar ? `: ${entry.kommentar}` : ''}`}
+        onClick={() => onChange(next[status ?? ''], entry?.kommentar, entry?.externerLink)}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          if (!showPopover) {
+            // Beim Öffnen die Draft-States aus dem letzten gespeicherten
+            // Stand frisch laden — sonst hängt evtl. ein alter Wert.
+            setKommentarDraft(entry?.kommentar ?? '');
+            setLinkDraft(entry?.externerLink ?? '');
+          }
+          setShowPopover((v) => !v);
+        }}
+        title={`${status ? ZUSAMMENTRAGER_STATUS_LABELS[status] : 'leer'} · Rechtsklick für Kommentar / Link${entry?.kommentar ? `\n💬 ${entry.kommentar}` : ''}${entry?.externerLink ? `\n🔗 ${entry.externerLink}` : ''}`}
         className={`w-full text-xs font-bold py-1 rounded border ${bg}`}
       >
         {symbol}
-        {entry?.kommentar && <span className="ml-1 text-[10px]">💬</span>}
+        {hatKommentar && <span className="ml-1 text-[10px]">💬</span>}
+        {hatLink && <span className="ml-0.5 text-[10px]">🔗</span>}
       </button>
-      {showKommentar && (
-        <div className="absolute top-full left-0 z-30 mt-1 w-48 bg-white border border-gray-300 rounded shadow-lg p-2">
-          <textarea
-            defaultValue={entry?.kommentar ?? ''}
-            // Status as-is weitergeben — wenn vorher leer, bleibt leer.
-            // Sonst würde ein reiner Kommentar-Eintrag den Chip versehentlich
-            // auf „kommt" setzen.
-            onBlur={(e) => { onChange(status ?? null, e.target.value); setShowKommentar(false); }}
-            placeholder="Kommentar…"
-            className="w-full text-xs border border-gray-200 rounded px-1 py-0.5"
-            rows={2}
-            autoFocus
-          />
-          <button
-            type="button"
-            onClick={() => setShowKommentar(false)}
-            className="text-[10px] text-gray-500 hover:text-gray-700 mt-1"
-          >
-            Schließen
-          </button>
+      {showPopover && (
+        <div className="absolute top-full left-0 z-30 mt-1 w-56 bg-white border border-gray-300 rounded shadow-lg p-2 space-y-1.5">
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-0.5">Kommentar</label>
+            <textarea
+              value={kommentarDraft}
+              onChange={(e) => setKommentarDraft(e.target.value)}
+              placeholder="Kommentar…"
+              className="w-full text-xs border border-gray-200 rounded px-1 py-0.5"
+              rows={2}
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-[10px] font-medium text-gray-500 mb-0.5">Externer Link</label>
+            <div className="flex items-center gap-1">
+              <input
+                type="url"
+                value={linkDraft}
+                onChange={(e) => setLinkDraft(e.target.value)}
+                placeholder="https://…"
+                className="flex-1 text-xs border border-gray-200 rounded px-1 py-0.5"
+              />
+              {linkDraft.trim() && (
+                <a
+                  href={linkDraft.trim()}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0 text-[10px] border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-1.5 py-0.5"
+                  title="Link in neuem Tab öffnen"
+                >
+                  🔗
+                </a>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                onChange(status ?? null, kommentarDraft, linkDraft);
+                setShowPopover(false);
+              }}
+              className="text-[10px] bg-blue-600 hover:bg-blue-700 text-white rounded px-2 py-0.5"
+            >
+              Speichern
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPopover(false)}
+              className="text-[10px] text-gray-500 hover:text-gray-700"
+            >
+              Abbrechen
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -2600,11 +2758,21 @@ function AusfallModal({
    */
   function findeGruppe(): Einsatz[] {
     if (!existing) return [];
+    // Vermerk-Einsätze (K) und Auto-Springer aus Wechselplan (L) sind
+    // pro KW unabhängige Marker — sie bilden keine „Ausfall-Gruppe".
+    // Würden wir hier siblings einsammeln, würde das Bearbeiten einer
+    // einzelnen Marker-KW andere Marker desselben TGs mit löschen.
+    if (existing.autoVomWechselplan === true) {
+      return [existing];
+    }
     return einsaetzeImJahr.filter(
       (e) =>
         e.teilgebietId === existing.teilgebietId &&
         (e.ausfallBisJahr ?? null) === (existing.ausfallBisJahr ?? null) &&
-        (e.ausfallBisKw ?? null) === (existing.ausfallBisKw ?? null),
+        (e.ausfallBisKw ?? null) === (existing.ausfallBisKw ?? null) &&
+        // Auto-Springer-Einsätze (L) niemals als Geschwister
+        // einsammeln — sie werden vom WechselModal separat verwaltet.
+        e.autoVomWechselplan !== true,
     );
   }
 
@@ -2687,6 +2855,7 @@ function AusfallModal({
           standardAustraegerSnapshot: standardSnapshot,
         });
       }
+
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Speichern fehlgeschlagen.');
@@ -2903,6 +3072,13 @@ function AusfallModal({
           </select>
         </div>
 
+        {/* Hinweis: die frühere „übernimmt dauerhaft"-Checkbox wurde
+            entfernt. Dauerhafte Übernahmen laufen ausschließlich über
+            den Wechselplan (✎-Icon am Zeilenkopf der Wechsel-Sektion).
+            Dort wird `neuerAustraegerId` + `abAusgabe` gesetzt; die
+            Folge-KWs der laufenden Periode bekommen automatisch
+            Springer-Einsätze (L-Logik). */}
+
         {error && <p className="text-red-600 text-sm">{error}</p>}
 
         {/* Aktionen — direkt in die Abrechnung wirkend.
@@ -2952,70 +3128,9 @@ function cmpJahrKw(aJ: number, aK: number, bJ: number, bK: number): number {
   return aK - bK;
 }
 
-/**
- * Zelle für ein TG ohne Standardausträger (kein Plan-Eintrag).
- * Vor der aktuellen KW: dezenter Platzhalter (Vergangenheit ignorieren).
- * Ab aktueller KW:
- *  - Existiert ein Einsatz mit Springer (typ='springer', MA) → 🟢
- *  - Existiert ein Lücken-Einsatz (typ='ungeklärt' / kein MA) → 🔴 unbesetzt
- *  - Kein Einsatz → schwacher Hinweis „—" (User kann via Bulk-Button
- *    oder Klick auf eine andere Zelle die Lücke explizit setzen).
- * Klick öffnet das Ausfall-Modal mit vorausgewähltem TG, damit pro KW
- * einzeln ein Springer zugewiesen werden kann.
- */
-function UnbesetztOhnePlanCell({
-  jahr,
-  kw,
-  aktuelleKw,
-  einsatz,
-  mitarbeiterById,
-  gesperrt,
-  onClick,
-}: {
-  teilgebietId: string;
-  jahr: number;
-  kw: number;
-  aktuelleKw: number;
-  einsatz: Einsatz | undefined;
-  mitarbeiterById: Map<string, Mitarbeiter>;
-  gesperrt: boolean;
-  onClick: () => void;
-}) {
-  void jahr;
-  if (kw < aktuelleKw && !einsatz) {
-    return <div className="text-[10px] text-gray-200 text-center py-1">·</div>;
-  }
-  if (einsatz && einsatz.typ === 'springer' && einsatz.mitarbeiterId) {
-    const ma = mitarbeiterById.get(einsatz.mitarbeiterId);
-    const kurz = ma?.kuerzel || ma?.name?.split(' ')[0] || '?';
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
-        title={`Springer: ${ma?.name ?? '?'}`}
-      >
-        🟢 {kurz}
-      </button>
-    );
-  }
-  // Lücken-Einsatz (typ='ungeklärt' o. ä.) ODER kein Einsatz, aber KW ≥ heute
-  const bg = gesperrt
-    ? 'bg-gray-100 border-gray-300 text-gray-500'
-    : 'bg-red-100 border-red-300 text-red-800';
-  const ico = gesperrt ? '🔒' : '🔴';
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={gesperrt}
-      className={`w-full text-[11px] font-medium py-1 rounded border ${bg} leading-tight disabled:cursor-not-allowed`}
-      title={einsatz ? 'Unbesetzt — Klick öffnet die Ausfall-Maske' : 'Klick öffnet die Ausfall-Maske, um einen Springer einzutragen'}
-    >
-      {ico} {einsatz ? 'unbesetzt' : '+'}
-    </button>
-  );
-}
+// `UnbesetztOhnePlanCell` wurde entfernt — alle Fälle werden jetzt
+// durch `WechselCell` abgedeckt (mit `plan.letzteAusgabe* == null`
+// für dauerhaft unbesetzte TGs).
 
 function WechselCell({
   plan,
@@ -3043,9 +3158,62 @@ function WechselCell({
   //   letzte+1 … ab-1 (oder ab leer) → 🔴 unbesetzt / 🟢 Springer
   //                                     → Ausfall-Modal (Springer setzen)
   //   >= abAusgabe            → 🟢 neuer Austräger (grün) → Plan-Modal
-  const cmpLetzte = cmpJahrKw(jahr, kw, plan.letzteAusgabeJahr, plan.letzteAusgabeKw);
+  //
+  // Sonderfall: kein `letzteAusgabe` gesetzt (TG ist seit Beginn
+  // unbesetzt → virtueller Plan ODER persistierter Plan ohne
+  // letzteAusgabe). Dann gibt es keine „⏳ letzte"-KW; jede KW gilt
+  // als „nach letzte" und folgt der Lücken-/abAusgabe-Logik darunter.
+  const hatLetzte =
+    plan.letzteAusgabeJahr !== undefined && plan.letzteAusgabeKw !== undefined;
+  const cmpLetzte = hatLetzte
+    ? cmpJahrKw(jahr, kw, plan.letzteAusgabeJahr!, plan.letzteAusgabeKw!)
+    : 1;
   if (cmpLetzte < 0) {
-    return <div className="text-[10px] text-gray-200 text-center py-1">·</div>;
+    // KW liegt VOR der letzten Ausgabe des bisherigen Austrägers —
+    // normalerweise verteilt er noch selbst. Liegt aber für diese KW
+    // ein abweichender Einsatz vor (Springer-Vertretung oder einmaliger
+    // Ausfall), muss dieser in der Personalplanung sichtbar + per Klick
+    // bearbeitbar sein. Leere Zellen werden klickbar gemacht, damit man
+    // direkt einen Ausfall erfassen kann.
+    if (einsatz && einsatz.typ === 'springer' && einsatz.mitarbeiterId) {
+      const springerMa = mitarbeiterById.get(einsatz.mitarbeiterId);
+      const kurz = springerMa?.kuerzel || springerMa?.name?.split(' ')[0] || '?';
+      return (
+        <button
+          type="button"
+          onClick={onClickAusfall}
+          className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
+          title={`Springer: ${springerMa?.name ?? '?'} (vor geplantem Wechsel) — Klick öffnet die Ausfall-Maske`}
+        >
+          🟢 {kurz}
+        </button>
+      );
+    }
+    if (einsatz && (einsatz.typ === 'ungeklärt' || einsatz.typ === 'ausfall')) {
+      return (
+        <button
+          type="button"
+          onClick={onClickAusfall}
+          className="w-full text-[11px] font-medium py-1 rounded border bg-red-100 border-red-300 text-red-800 leading-tight"
+          title="Einmalig unbesetzt (vor geplantem Wechsel) — Klick öffnet die Ausfall-Maske"
+        >
+          🔴 unbesetzt
+        </button>
+      );
+    }
+    // Keine Abweichung — bisheriger Austräger im Einsatz. Trotzdem
+    // klickbar, damit ein Ausfall pro KW direkt aus der Zelle heraus
+    // eingetragen werden kann.
+    return (
+      <button
+        type="button"
+        onClick={onClickAusfall}
+        className="w-full text-[10px] text-gray-200 hover:text-gray-400 hover:bg-gray-50 py-1 leading-none rounded"
+        title="Bisheriger Austräger im Einsatz — Klick öffnet die Ausfall-Maske"
+      >
+        ·
+      </button>
+    );
   }
   if (cmpLetzte === 0) {
     return (
@@ -3093,14 +3261,72 @@ function WechselCell({
       </button>
     );
   }
+  // KW >= abAusgabe — normalerweise verteilt der neue Austräger. Liegt
+  // für diese KW jedoch ein abweichender Einsatz vor (z. B. der neue
+  // Austräger fällt einmalig aus → ungeklärt; oder ein Springer
+  // vertritt ihn → typ='springer' mit anderer mitarbeiterId), wird der
+  // Einsatz angezeigt — sonst wäre die Ausnahme in der
+  // Personalplanung unsichtbar.
   const ma = plan.neuerAustraegerId ? mitarbeiterById.get(plan.neuerAustraegerId) : undefined;
   const kurzname = ma?.kuerzel || ma?.name?.split(' ')[0] || '?';
+
+  if (einsatz && einsatz.typ === 'springer' && einsatz.mitarbeiterId && einsatz.mitarbeiterId !== plan.neuerAustraegerId) {
+    const springerMa = mitarbeiterById.get(einsatz.mitarbeiterId);
+    const kurz = springerMa?.kuerzel || springerMa?.name?.split(' ')[0] || '?';
+    return (
+      <button
+        type="button"
+        onClick={onClickAusfall}
+        className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
+        title={`Springer: ${springerMa?.name ?? '?'} — vertritt ${ma?.name ?? '?'} in dieser KW`}
+      >
+        🟢 {kurz}
+      </button>
+    );
+  }
+  if (einsatz && (einsatz.typ === 'ungeklärt' || (einsatz.typ === 'springer' && !einsatz.mitarbeiterId))) {
+    return (
+      <button
+        type="button"
+        onClick={onClickAusfall}
+        className="w-full text-[11px] font-medium py-1 rounded border bg-red-100 border-red-300 text-red-800 leading-tight"
+        title={`Einmalig unbesetzt (${ma?.name ?? 'neuer Austräger'} fällt aus) — Klick öffnet die Ausfall-Maske`}
+      >
+        🔴 unbesetzt
+      </button>
+    );
+  }
+  // Erste Ausgabe des neuen Standardausträgers bei einem Wechsel von
+  // „unbesetzt → neu": Es gibt keinen bisherigen Austräger und damit
+  // keinen gelben „⏳ letzte"-Chip. Damit der geplante Wechsel trotzdem
+  // erkennbar ist (sonst wäre alles grün), wird die erste KW ab
+  // „abAusgabe" hervorgehoben — gestrichelter amber-Rahmen + 🔁.
+  // Klick öffnet den Wechselplan (analog zum gelben Chip beim besetzten
+  // TG). Greift nur, wenn ein neuer Austräger geplant ist.
+  if (!hatLetzte && cmpAb === 0 && plan.neuerAustraegerId) {
+    return (
+      <button
+        type="button"
+        onClick={onClickPlan}
+        className="w-full text-[11px] font-medium py-1 rounded border-2 border-dashed border-amber-500 bg-amber-100 text-amber-900 leading-tight"
+        title={`Wechsel: ${ma?.name ?? '?'} übernimmt ab dieser Ausgabe als neuer Standardausträger — wird beim Monatswechsel vorgeschlagen. Klick öffnet den Wechselplan.`}
+      >
+        🔁 {kurzname}
+      </button>
+    );
+  }
+  // KW liegt ab der Übernahme durch den neuen Austräger und es gibt
+  // keinen abweichenden Einsatz. Klick öffnet das AusfallModal, damit der
+  // User für diese eine KW einen Ausfall / Springer eintragen kann, ohne
+  // den Wechselplan zu verändern. Der Wechselplan selbst wird über das
+  // ⏳-Chip in der „letzten Ausgabe" oder über das ✕ am Zeilenkopf
+  // bearbeitet/gelöscht.
   return (
     <button
       type="button"
-      onClick={onClickPlan}
+      onClick={onClickAusfall}
       className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
-      title={`Neuer Standardausträger: ${ma?.name ?? '?'} — Klick öffnet den Wechselplan`}
+      title={`Neuer Standardausträger: ${ma?.name ?? '?'} — Klick erfasst einen Ausfall/Springer für genau diese KW`}
     >
       🟢 {kurzname}
     </button>
@@ -3117,6 +3343,7 @@ function WechselModal({
   mitarbeiterById,
   maxKwImJahr,
   jahr,
+  abrechnungsperioden,
   onClose,
 }: {
   teilgebietId: string;
@@ -3129,14 +3356,27 @@ function WechselModal({
   mitarbeiterById: Map<string, Mitarbeiter>;
   maxKwImJahr: number;
   jahr: number;
+  /** Für L: Bestimmen des Periodenendes (= max KW der Monatsperiode), in
+   *  der `letzteAusgabe` liegt — bis dorthin wird der neue Austräger als
+   *  Springer vorausgefüllt. */
+  abrechnungsperioden: import('../types').Abrechnungsperiode[];
   onClose: () => void;
 }) {
-  const [letzteJahr, setLetzteJahr] = useState<number>(existing?.letzteAusgabeJahr ?? jahr);
-  const [letzteKw, setLetzteKw] = useState<number>(existing?.letzteAusgabeKw ?? 1);
+  // Bei einem TG ohne Standardausträger gibt es keine letzte Ausgabe
+  // — die Felder starten leer und sind später kein Pflichtfeld. Bei
+  // bestehenden Plänen mit gesetztem letzte-Wert: diesen übernehmen.
+  const istUnbesetztTg = !tg.standardAustraegerId;
+  const [letzteJahr, setLetzteJahr] = useState<number | null>(
+    existing?.letzteAusgabeJahr ?? (istUnbesetztTg ? null : jahr),
+  );
+  const [letzteKw, setLetzteKw] = useState<number | null>(
+    existing?.letzteAusgabeKw ?? (istUnbesetztTg ? null : 1),
+  );
   const [neuerMa, setNeuerMa] = useState<string | null>(existing?.neuerAustraegerId ?? null);
   const [abJahr, setAbJahr] = useState<number | null>(existing?.abAusgabeJahr ?? null);
   const [abKw, setAbKw] = useState<number | null>(existing?.abAusgabeKw ?? null);
   const [kommentar, setKommentar] = useState(existing?.kommentar ?? '');
+  const [externerLink, setExternerLink] = useState(existing?.externerLink ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -3153,11 +3393,75 @@ function WechselModal({
     return list;
   }, [freigegeben, neuerMa, austraegerMa]);
 
-  const jahrOptions = useMemo(() => [jahr - 1, jahr, jahr + 1, jahr + 2], [jahr]);
+  // H: Vorjahr entfällt — Vergangenheit ist nicht mehr planbar.
+  const jahrOptions = useMemo(() => [jahr, jahr + 1, jahr + 2], [jahr]);
+
+  // Verfügbare KWs in Abhängigkeit vom gewählten Jahr — verbergen alles,
+  // was vor der aktuellen KW liegt. Für „ab Ausgabe" gilt zusätzlich
+  // „nach der letzten Ausgabe" (separat im Filter unten gehandhabt).
+  const currentKw = useMemo(() => {
+    const now = new Date();
+    const start = Date.UTC(now.getUTCFullYear(), 0, 1);
+    const dayOfYear = Math.floor((now.getTime() - start) / (24 * 60 * 60 * 1000)) + 1;
+    return Math.max(1, Math.ceil(dayOfYear / 7));
+  }, []);
+  const currentJahr = new Date().getFullYear();
+  function verfuegbareKws(forJahr: number): number[] {
+    const all = Array.from({ length: maxKwImJahr }, (_, i) => i + 1);
+    if (forJahr < currentJahr) return [];
+    if (forJahr > currentJahr) return all;
+    return all.filter((k) => k > currentKw);
+  }
+  const letzteKwOptionen = useMemo(
+    () => (letzteJahr != null ? verfuegbareKws(letzteJahr) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [letzteJahr, maxKwImJahr, currentJahr, currentKw],
+  );
+  const abKwOptionen = useMemo(() => {
+    const list = abJahr != null ? verfuegbareKws(abJahr) : [];
+    return list.filter((k) => {
+      if (abJahr == null) return true;
+      // muss strikt NACH letzte Ausgabe liegen — wenn keine letzteAusgabe
+      // gesetzt ist (unbesetzt-TG), entfällt diese Bedingung.
+      if (letzteJahr == null || letzteKw == null) return true;
+      return cmpJahrKw(abJahr, k, letzteJahr, letzteKw) > 0;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abJahr, letzteJahr, letzteKw, maxKwImJahr, currentJahr, currentKw]);
+
+  // O: Sicherstellen, dass State und Dropdown-Optionen synchron sind.
+  // Der Browser zeigt bei <select value=X> automatisch die erste Option
+  // an, wenn X nicht in den Optionen vorkommt — feuert dabei aber KEIN
+  // onChange. Folge: State bleibt auf einem Wert, der nicht zur Anzeige
+  // passt (z. B. Init-Default 1, Anzeige KW22). Beim Speichern entsteht
+  // dadurch eine falsche „Vergangenheits-Warnung". Daher: wenn der
+  // aktuelle Wert nicht in den Optionen ist, automatisch auf die erste
+  // gültige Option setzen — analog die Anzeige.
+  useEffect(() => {
+    if (
+      letzteJahr != null &&
+      letzteKwOptionen.length > 0 &&
+      (letzteKw == null || !letzteKwOptionen.includes(letzteKw))
+    ) {
+      setLetzteKw(letzteKwOptionen[0]);
+    }
+  }, [letzteJahr, letzteKwOptionen, letzteKw]);
+  useEffect(() => {
+    if (
+      abJahr != null &&
+      abKwOptionen.length > 0 &&
+      (abKw == null || !abKwOptionen.includes(abKw))
+    ) {
+      setAbKw(abKwOptionen[0]);
+    }
+  }, [abJahr, abKwOptionen, abKw]);
 
   async function speichern() {
     setError(null);
-    if (!letzteJahr || !letzteKw) {
+    // letzteAusgabe ist nur Pflicht, wenn TG aktuell einen Standardausträger
+    // hat (echter Austrägerwechsel). Bei unbesetzten TGs darf das Feld
+    // leer bleiben — der Plan beschreibt dann nur den neuen Austräger.
+    if (!istUnbesetztTg && (!letzteJahr || !letzteKw)) {
       setError('Bitte „letzte Ausgabe (Jahr + KW)" angeben.');
       return;
     }
@@ -3165,7 +3469,7 @@ function WechselModal({
       setError('Wenn ein neuer Austräger gesetzt ist, bitte auch „ab Ausgabe" angeben.');
       return;
     }
-    if (abJahr != null && abKw != null) {
+    if (abJahr != null && abKw != null && letzteJahr != null && letzteKw != null) {
       if (cmpJahrKw(abJahr, abKw, letzteJahr, letzteKw) <= 0) {
         setError('„ab Ausgabe" muss NACH „letzte Ausgabe" liegen.');
         return;
@@ -3177,7 +3481,7 @@ function WechselModal({
     //  - Lücken-Einsätze (im aktuell sichtbaren Jahr) in vergangenen KWs,
     //    die entweder neu angelegt oder gelöscht werden.
     const vergangeneTreffer: string[] = [];
-    if (istVergangeneKw(letzteJahr, letzteKw)) {
+    if (letzteJahr != null && letzteKw != null && istVergangeneKw(letzteJahr, letzteKw)) {
       vergangeneTreffer.push(`letzte Ausgabe KW ${letzteKw}/${letzteJahr}`);
     }
     if (abJahr != null && abKw != null && istVergangeneKw(abJahr, abKw)) {
@@ -3199,12 +3503,13 @@ function WechselModal({
     try {
       await setzeAustraegerwechselPlan({
         teilgebietId,
-        letzteAusgabeJahr: letzteJahr,
-        letzteAusgabeKw: letzteKw,
+        letzteAusgabeJahr: letzteJahr ?? undefined,
+        letzteAusgabeKw: letzteKw ?? undefined,
         neuerAustraegerId: neuerMa ?? undefined,
         abAusgabeJahr: abJahr ?? undefined,
         abAusgabeKw: abKw ?? undefined,
         kommentar: kommentar.trim() || undefined,
+        externerLink: externerLink.trim() || undefined,
       });
 
       // Lücken-Einsätze im aktuell sichtbaren Jahr synchronisieren:
@@ -3219,9 +3524,18 @@ function WechselModal({
         for (const k of (
           () => {
             const list: number[] = [];
-            // Wenn letzte im aktuellen Jahr: ab letzteKw+1; sonst (letzte im
-            // Vorjahr) ab KW 1.
-            const startKw = letzteJahr < jahr ? 1 : letzteJahr === jahr ? letzteKw + 1 : maxKwImJahr + 1;
+            // Ohne letzteAusgabe (TG seit Beginn unbesetzt) gilt der
+            // Lücken-Bereich ab KW 1 des sichtbaren Jahres. Sonst:
+            // letzte im aktuellen Jahr → ab letzteKw+1, im Vorjahr → ab KW 1,
+            // im Folgejahr → Lücke leer (Bereich beginnt nach Jahresende).
+            const startKw =
+              letzteJahr == null || letzteKw == null
+                ? 1
+                : letzteJahr < jahr
+                ? 1
+                : letzteJahr === jahr
+                ? letzteKw + 1
+                : maxKwImJahr + 1;
             // Wenn ab im aktuellen Jahr: bis abKw-1; sonst (ab im Folgejahr
             // oder nicht gesetzt) bis Jahresende.
             const endKw =
@@ -3266,6 +3580,85 @@ function WechselModal({
             standardAustraegerSnapshot: tg.standardAustraegerId ?? null,
           });
         }
+
+        // L: Auto-Springer-Einsätze für den neuen Austräger im Zeitraum
+        // [abAusgabe..Periodenende] der Periode, in der `letzteAusgabe`
+        // liegt. Hintergrund: bis zum Monatswechsel ist der neue MA
+        // formal noch nicht Standardausträger — die KWs würden sonst in
+        // der Abrechnung „leer" hängen. Mit einem Springer-Einsatz wird
+        // er korrekt eingeplant und vergütet.
+        if (neuerMa && abJahr === jahr && abKw != null && abKw <= maxKwImJahr) {
+          // Auto-Springer-Bereich: ab abAusgabe bis Ende der Periode, in
+          // der abAusgabe liegt. Falls letzteAusgabe gesetzt ist, muss
+          // sie in derselben Periode liegen (sonst wäre es ein
+          // Mehrperioden-Wechsel, da übernimmt Monatswechsel früher).
+          // Bei TG-ohne-letzteAusgabe (unbesetzt-Fall) gilt diese
+          // Bedingung trivial.
+          const periodeMitAb = abrechnungsperioden.find(
+            (p) => p.jahr === abJahr && p.kalenderwochen.includes(abKw!),
+          );
+          const okLetzte =
+            letzteJahr == null || letzteKw == null
+              ? true
+              : periodeMitAb != null &&
+                periodeMitAb.jahr === letzteJahr &&
+                periodeMitAb.kalenderwochen.includes(letzteKw);
+          if (periodeMitAb && okLetzte) {
+            const periodEndKw = Math.max(...periodeMitAb.kalenderwochen);
+            const aktuelleAuto = tgEinsaetze.filter((e) => e.autoVomWechselplan === true);
+
+            // 1) Veraltete Auto-Einsätze aufräumen: außerhalb des neuen
+            //    Bereichs ODER auf einen anderen MA.
+            for (const e of aktuelleAuto) {
+              const imBereich = e.kw >= abKw && e.kw <= periodEndKw;
+              if (!imBereich || e.mitarbeiterId !== neuerMa) {
+                await loescheEinsatz(e.id);
+              }
+            }
+
+            // 2) Für jede KW im Bereich [abKw..periodEndKw] einen
+            //    Auto-Springer schreiben — sofern nicht bereits ein
+            //    manueller Einsatz existiert (typ='springer' mit
+            //    abweichendem MA → bleibt; ungeklärt-Lücken werden
+            //    überschrieben, weil sie aus der Lücken-Sync oben gar
+            //    nicht für KW >= abKw entstehen).
+            const aktuelleAutoIds = new Set(aktuelleAuto.map((e) => e.id));
+            for (let k = abKw; k <= periodEndKw; k++) {
+              const vorhandenerEinsatz = tgEinsaetze.find((e) => e.kw === k);
+              // Manuell gepflegten, nicht-auto Einsatz nicht überschreiben.
+              if (
+                vorhandenerEinsatz &&
+                !aktuelleAutoIds.has(vorhandenerEinsatz.id)
+              ) {
+                continue;
+              }
+              const ausgabeId = await getOrCreateAusgabe(jahr, k, parameter);
+              await setzeEinsatz({
+                ausgabeId,
+                jahr,
+                kw: k,
+                teilgebietId,
+                mitarbeiterId: neuerMa,
+                typ: 'springer',
+                standardAustraegerSnapshot: tg.standardAustraegerId ?? null,
+                autoVomWechselplan: true,
+              });
+            }
+          } else {
+            // abAusgabe nicht in derselben Periode wie letzteAusgabe →
+            // alte Auto-Einsätze aufräumen (z. B. wenn User das ab-Datum
+            // verschoben hat).
+            for (const e of tgEinsaetze.filter((e) => e.autoVomWechselplan === true)) {
+              await loescheEinsatz(e.id);
+            }
+          }
+        } else {
+          // Kein neuer MA / kein abAusgabe → bestehende Auto-Einsätze
+          // aufräumen.
+          for (const e of tgEinsaetze.filter((e) => e.autoVomWechselplan === true)) {
+            await loescheEinsatz(e.id);
+          }
+        }
       }
 
       onClose();
@@ -3302,6 +3695,14 @@ function WechselModal({
       for (const e of luecken) {
         await loescheEinsatz(e.id);
       }
+      // L: Auto-Springer-Einsätze, die durch den Wechselplan entstanden
+      // sind, ebenfalls entfernen — sie haben sonst keine Grundlage mehr.
+      const autoEinsaetze = einsaetzeImJahr.filter(
+        (e) => e.teilgebietId === teilgebietId && e.autoVomWechselplan === true,
+      );
+      for (const e of autoEinsaetze) {
+        await loescheEinsatz(e.id);
+      }
       onClose();
     } finally {
       setSaving(false);
@@ -3319,31 +3720,42 @@ function WechselModal({
           Aktueller Standardausträger: <strong>{aktuellerStandardName}</strong>
         </div>
 
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">
-            Letzte Ausgabe des bisherigen Austrägers *
-          </label>
-          <div className="flex gap-2">
-            <select
-              value={letzteJahr}
-              onChange={(e) => setLetzteJahr(Number(e.target.value))}
-              className="border border-gray-300 rounded px-2 py-1.5 text-sm"
-            >
-              {jahrOptions.map((j) => (
-                <option key={j} value={j}>{j}</option>
-              ))}
-            </select>
-            <select
-              value={letzteKw}
-              onChange={(e) => setLetzteKw(Number(e.target.value))}
-              className="border border-gray-300 rounded px-2 py-1.5 text-sm flex-1"
-            >
-              {Array.from({ length: maxKwImJahr }, (_, i) => i + 1).map((k) => (
-                <option key={k} value={k}>KW {k}</option>
-              ))}
-            </select>
+        {istUnbesetztTg ? (
+          <div className="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+            Teilgebiet ist aktuell <strong>unbesetzt</strong> — keine letzte
+            Ausgabe eines bisherigen Austrägers anzugeben. Wechsel kann
+            direkt mit „neuer Austräger" + „ab Ausgabe" geplant werden.
           </div>
-        </div>
+        ) : (
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Letzte Ausgabe des bisherigen Austrägers *
+            </label>
+            <div className="flex gap-2">
+              <select
+                value={letzteJahr ?? ''}
+                onChange={(e) => setLetzteJahr(e.target.value ? Number(e.target.value) : null)}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                {jahrOptions.map((j) => (
+                  <option key={j} value={j}>{j}</option>
+                ))}
+              </select>
+              <select
+                value={letzteKw ?? ''}
+                onChange={(e) => setLetzteKw(e.target.value ? Number(e.target.value) : null)}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm flex-1"
+              >
+                {letzteKwOptionen.length === 0 && (
+                  <option value={letzteKw ?? ''}>— keine Zukunfts-KW in {letzteJahr} —</option>
+                )}
+                {letzteKwOptionen.map((k) => (
+                  <option key={k} value={k}>KW {k}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
 
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -3390,7 +3802,7 @@ function WechselModal({
               className="border border-gray-300 rounded px-2 py-1.5 text-sm flex-1"
             >
               <option value="">—</option>
-              {Array.from({ length: maxKwImJahr }, (_, i) => i + 1).map((k) => (
+              {abKwOptionen.map((k) => (
                 <option key={k} value={k}>KW {k}</option>
               ))}
             </select>
@@ -3409,6 +3821,30 @@ function WechselModal({
             className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
             rows={2}
           />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Externer Link</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              value={externerLink}
+              onChange={(e) => setExternerLink(e.target.value)}
+              placeholder="https://… (z. B. Mail-Thread)"
+              className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+            {externerLink.trim() && (
+              <a
+                href={externerLink.trim()}
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1.5"
+                title="Link in neuem Tab öffnen"
+              >
+                🔗 öffnen
+              </a>
+            )}
+          </div>
         </div>
 
         {error && <p className="text-red-600 text-sm whitespace-pre-line">{error}</p>}

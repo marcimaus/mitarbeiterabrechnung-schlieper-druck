@@ -790,6 +790,7 @@ function MitarbeiterForm({
         ...(initial.istAbholer ? { istAbholer: true } : {}),
         ...(initial.istDrucksaal ? { istDrucksaal: true } : {}),
         ...(initial.kuerzel ? { kuerzel: initial.kuerzel } : {}),
+        ...(initial.vorlaeufigNichtAbmelden ? { vorlaeufigNichtAbmelden: true } : {}),
       } as typeof DEFAULT_FORM;
     }
     // Neu-Anlage: nächste freie Mitarbeiternummer vorschlagen (5-stellig,
@@ -1862,6 +1863,32 @@ function MitarbeiterForm({
                 <span className="block text-xs text-gray-500">
                   Erscheint in der Personalplanung als wählbarer MA für Drucken,
                   Falzen, Schneiden, Verpacken.
+                </span>
+              </span>
+            </label>
+          </FormField>
+
+          {/* Vorläufig nicht abmelden — Bedarfs-Springer, der mehrere
+              Monate ohne Einsatz bleibt, soll vom Lohnbüro nicht
+              automatisch abgemeldet werden. */}
+          <FormField label="Abmeldung">
+            <label className="flex items-start gap-2 text-sm text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={(form as any).vorlaeufigNichtAbmelden ?? false}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  vorlaeufigNichtAbmelden: e.target.checked ? true : undefined,
+                } as any))}
+                className="rounded mt-0.5"
+              />
+              <span>
+                <span className="font-medium">⏸ vorläufig nicht abmelden</span>
+                <span className="block text-xs text-gray-500">
+                  MA erscheint nicht in der Abmelde-Vorschlagsliste, auch wenn
+                  in einer Periode keine Auszahlung erfolgt. In der
+                  Lohnübermittlung wird er stattdessen als „bitte angemeldet
+                  lassen" hinterlegt. Sinnvoll für Bedarfs-Springer.
                 </span>
               </span>
             </label>

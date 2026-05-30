@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, Fragment, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -7,22 +7,26 @@ import {
   erstelleTeilgebiet,
   aktualisiereTeilgebiet,
   aktualisiereMitarbeiter,
-  setzeAustraegerwechsel,
-  loescheAustraegerwechsel,
   setzeStueckzahlAnpassung,
   loescheStueckzahlAnpassung,
   ladeAusgaben,
   ladeEinsaetze,
+  einsaetzeJahrListener,
 } from '../lib/db';
+import {
+  austraegerwechselPlanListener,
+} from '../lib/planung';
 import type {
   Teilgebiet,
   Strasse,
   Sonderauslage,
   NichtBeliefen,
   Mitarbeiter,
-  Austraegerwechsel,
   StueckzahlAnpassung,
+  StandardAustraegerWechselPlan,
+  Einsatz,
 } from '../types';
+import { Link } from 'react-router-dom';
 
 // ---- Hilfsfunktionen -------------------------------------------------------
 
@@ -50,6 +54,31 @@ const inputClass =
 const smallInputClass =
   'border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500';
 
+// ---- Karten-Link-Default je Tour -------------------------------------------
+// Wird primär aus dem Tour-Stammdatensatz (`Tour.kartenLink`) gezogen —
+// dort kann der Admin pro Tour pflegen, welcher Standard-Link gilt.
+// Kein Wert in der Tour → kein Default. Pro TG kann der Admin den
+// Tour-Default über `Teilgebiet.kartenLink` jederzeit überschreiben.
+function defaultKartenLink(tour: import('../types').Tour | undefined): string | null {
+  if (!tour) return null;
+  const link = tour.kartenLink?.trim();
+  return link ? link : null;
+}
+
+/**
+ * Effektiver Karten-Link eines TG: TG-spezifischer Override hat Vorrang,
+ * sonst Tour-Default. Liefert null, wenn weder Override noch Tour-Default
+ * existieren (z. B. TG ohne Tour).
+ */
+function effektiverKartenLink(
+  kartenLink: string | undefined,
+  tour: import('../types').Tour | undefined,
+): string | null {
+  const override = kartenLink?.trim();
+  if (override) return override;
+  return defaultKartenLink(tour);
+}
+
 // ---- Hauptkomponente -------------------------------------------------------
 
 export default function TeilgebieteScreen() {
@@ -61,10 +90,21 @@ export default function TeilgebieteScreen() {
 }
 
 function TeilgebieteInhalt() {
-  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, austraegerwechsel, stueckzahlAnpassungen, adminName } = useApp();
+  const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, stueckzahlAnpassungen, adminName } = useApp();
   // Abrechnung-Rolle: nur lesender Zugriff (keine Bearbeitung).
   const isAdmin = userRole === 'admin';
-  const [hauptview, setHauptview] = useState<'liste' | 'wechsel' | 'anpassung'>('liste');
+  const [hauptview, setHauptview] = useState<'liste' | 'anpassung'>('liste');
+
+  // Geplante dauerhafte Wechsel + zukünftige Springer — werden gebraucht, um
+  // im TG-Form das Standardausträger-Select zu sperren, solange in der
+  // Personalplanung noch ein Vorgang läuft.
+  const [wechselplaene, setWechselplaene] = useState<StandardAustraegerWechselPlan[]>([]);
+  const [einsaetzeAktJahr, setEinsaetzeAktJahr] = useState<Einsatz[]>([]);
+  useEffect(() => austraegerwechselPlanListener(setWechselplaene), []);
+  useEffect(() => {
+    const jahr = new Date().getFullYear();
+    return einsaetzeJahrListener(jahr, setEinsaetzeAktJahr);
+  }, []);
 
   // Zeitwert (Stunden) aus Wegstrecke + Stückzahl
   const zeitwertStunden = (tg: Teilgebiet): number => {
@@ -202,22 +242,6 @@ function TeilgebieteInhalt() {
         </button>
         <button
           type="button"
-          onClick={() => setHauptview('wechsel')}
-          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-            hauptview === 'wechsel'
-              ? 'border-blue-600 text-blue-700'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
-        >
-          Austrägerwechsel vorbereiten
-          {austraegerwechsel.length > 0 && (
-            <span className="ml-1.5 bg-amber-100 text-amber-800 text-xs px-1.5 py-0.5 rounded-full">
-              {austraegerwechsel.length}
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
           onClick={() => setHauptview('anpassung')}
           className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
             hauptview === 'anpassung'
@@ -233,15 +257,6 @@ function TeilgebieteInhalt() {
           )}
         </button>
       </div>
-
-      {hauptview === 'wechsel' && (
-        <AustraegerwechselReiter
-          teilgebiete={teilgebiete}
-          mitarbeiter={mitarbeiter}
-          austraegerwechsel={austraegerwechsel}
-          adminName={adminName}
-        />
-      )}
 
       {hauptview === 'anpassung' && (
         <TeilgebietsanpassungReiter
@@ -434,6 +449,8 @@ function TeilgebieteInhalt() {
       >
         <TeilgebietForm
           initial={editTarget}
+          wechselplaene={wechselplaene}
+          einsaetzeAktJahr={einsaetzeAktJahr}
           onSave={() => setShowForm(false)}
           onCancel={() => setShowForm(false)}
         />
@@ -702,15 +719,49 @@ function TeilgebietVerlauf({
 
 function TeilgebietForm({
   initial,
+  wechselplaene,
+  einsaetzeAktJahr,
   onSave,
   onCancel,
 }: {
   initial: Teilgebiet | null;
+  wechselplaene: StandardAustraegerWechselPlan[];
+  einsaetzeAktJahr: Einsatz[];
   onSave: () => void;
   onCancel: () => void;
 }) {
   const { touren, mitarbeiter, userRole } = useApp();
   const isAdmin = userRole === 'admin';
+
+  // F: Standardausträger-Select sperren, wenn in der Personalplanung noch
+  // ein Wechsel/Springer für dieses TG läuft. Sonst überschriebe der Admin
+  // den Standard, während Lücken-Einsätze noch an einem Snapshot hängen,
+  // der zur alten Besetzung passt.
+  const standardLockReason = useMemo(() => {
+    if (!initial) return null;
+    if (wechselplaene.some((p) => p.teilgebietId === initial.id)) {
+      return 'wechsel' as const;
+    }
+    // Heutige KW im aktuell laufenden Jahr — Listener ist auf das Jahr
+    // initialisiert; reicht für die übliche Planung.
+    const heute = new Date();
+    const jahr = heute.getFullYear();
+    const startMs = Date.UTC(jahr, 0, 1);
+    const dayMs = 24 * 60 * 60 * 1000;
+    // ISO-KW grob: nicht perfekt, aber Bedingung lautet „zukünftiger
+    // Springer" — wir verwenden hier daher das Tagesdatum als Untergrenze.
+    const heutigerTagOfYear = Math.floor((heute.getTime() - startMs) / dayMs);
+    const aktuelleKw = Math.max(1, Math.floor(heutigerTagOfYear / 7) + 1);
+    const offenerSpringer = einsaetzeAktJahr.some(
+      (e) =>
+        e.teilgebietId === initial.id &&
+        e.typ === 'springer' &&
+        e.mitarbeiterId &&
+        e.jahr >= jahr &&
+        (e.jahr > jahr || e.kw >= aktuelleKw),
+    );
+    return offenerSpringer ? ('springer' as const) : null;
+  }, [initial, wechselplaene, einsaetzeAktJahr]);
   const [tab, setTab] = useState<TabId>('grunddaten');
   const [nurAktiveAustraeger, setNurAktiveAustraeger] = useState(true);
 
@@ -732,6 +783,7 @@ function TeilgebietForm({
           auslagestelleKontaktTelefon: initial.auslagestelleKontaktTelefon,
           auslagestelleKontaktEmail: initial.auslagestelleKontaktEmail,
           auslagestelleMemo: initial.auslagestelleMemo,
+          kartenLink: initial.kartenLink,
         }
       : { ...DEFAULT_FORM }
   );
@@ -1097,12 +1149,28 @@ function TeilgebietForm({
                   nur aktive
                 </label>
               </div>
+              {standardLockReason && (
+                <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  {standardLockReason === 'wechsel'
+                    ? 'Für dieses Teilgebiet ist in der Personalplanung ein dauerhafter Wechsel geplant.'
+                    : 'Für dieses Teilgebiet ist in der Personalplanung ein zukünftiger Springer eingetragen.'}
+                  {' '}Bitte den Vorgang dort abschließen oder die Einträge entfernen, bevor der
+                  Standardausträger geändert werden kann.
+                  <Link
+                    to="/planung"
+                    className="ml-1 text-blue-700 underline hover:text-blue-900"
+                  >
+                    → Personalplanung
+                  </Link>
+                </div>
+              )}
               <select
                 value={form.standardAustraegerId ?? ''}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, standardAustraegerId: e.target.value || null }))
                 }
-                className={inputClass}
+                disabled={!!standardLockReason}
+                className={`${inputClass} ${standardLockReason ? 'opacity-60 cursor-not-allowed' : ''}`}
               >
                 <option value="">Kein Standardausträger</option>
                 {austraeger.length === 0 && (
@@ -1204,6 +1272,14 @@ function TeilgebietForm({
       {/* ---- Tab: Straßenliste ---- */}
       {tab === 'strassen' && (
         <div className="space-y-4">
+          {/* Karten-Link: pro TG individuell oder Tour-Default */}
+          <KartenLinkBox
+            tour={touren.find((t) => t.id === form.tourId)}
+            kartenLink={form.kartenLink}
+            isAdmin={isAdmin}
+            onChange={(v) => setForm((f) => ({ ...f, kartenLink: v }))}
+          />
+
           {/* Summen-Info */}
           <div className="flex items-center justify-between bg-blue-50 rounded-lg px-4 py-2.5 text-sm">
             <div className="flex gap-6">
@@ -1785,228 +1861,131 @@ function TeilgebietForm({
   );
 }
 
-// ---- Austrägerwechsel-Vorbereitung (Reiter) ---------------------------------
+// =====================================================================
+// KartenLinkBox: zeigt den effektiven Karten-Link am Kopf des Strassen-
+// Tabs. Wenn TG einen eigenen `kartenLink` hat, hat dieser Vorrang;
+// sonst greift der Tour-Default. Admin kann den Wert pro TG
+// überschreiben oder leeren (= zurück zum Default).
+// =====================================================================
 
-function AustraegerwechselReiter({
-  teilgebiete,
-  mitarbeiter,
-  austraegerwechsel,
-  adminName,
+function KartenLinkBox({
+  tour,
+  kartenLink,
+  isAdmin,
+  onChange,
 }: {
-  teilgebiete: Teilgebiet[];
-  mitarbeiter: Mitarbeiter[];
-  austraegerwechsel: Austraegerwechsel[];
-  adminName: string;
+  tour: import('../types').Tour | undefined;
+  kartenLink?: string;
+  isAdmin: boolean;
+  onChange: (v: string | undefined) => void;
 }) {
-  const [tgId, setTgId] = useState('');
-  const [neuerMaId, setNeuerMaId] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [bearbeiten, setBearbeiten] = useState(false);
+  const [draft, setDraft] = useState<string>(kartenLink ?? '');
+  const effektiv = effektiverKartenLink(kartenLink, tour);
+  const benutztOverride = !!kartenLink?.trim();
+  const default_ = defaultKartenLink(tour);
 
-  const aktiveTg = [...teilgebiete]
-    .filter((t) => t.isActive)
-    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
-  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
-  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
-
-  const aktuellesTg = tgId ? tgMap.get(tgId) : undefined;
-  const freigegebeneMa = mitarbeiter
-    .filter(
-      (m) =>
-        m.isActive
-        && !m.abgemeldet
-        && m.rollen.includes('austräger')
-        && (m.teilgebietFreigaben ?? []).includes(tgId)
-    )
-    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
-
-  function reset() {
-    setTgId('');
-    setNeuerMaId('');
-    setError('');
+  function speichern() {
+    // Leerer Eingabe-Wert wird als „kein Override" gespeichert (leerer
+    // String) — beim Lesen prüft `effektiverKartenLink` über `.trim()`
+    // und fällt dann auf den Tour-Default zurück. Wir nehmen bewusst
+    // den leeren String statt `undefined`, weil `aktualisiereTeilgebiet`
+    // mit `stripUndef` arbeitet und sonst den alten Wert nicht löscht.
+    onChange(draft.trim() ? draft.trim() : '');
+    setBearbeiten(false);
   }
-
-  async function handleSpeichern() {
-    setError('');
-    if (!tgId) {
-      setError('Bitte ein Teilgebiet wählen.');
-      return;
-    }
-    if (!neuerMaId) {
-      setError('Bitte einen neuen Standardausträger wählen.');
-      return;
-    }
-    const ma = maMap.get(neuerMaId);
-    if (!ma || !(ma.teilgebietFreigaben ?? []).includes(tgId)) {
-      setError('Der gewählte Mitarbeiter hat keine Freigabe für dieses Teilgebiet.');
-      return;
-    }
-    setSaving(true);
-    try {
-      await setzeAustraegerwechsel({
-        teilgebietId: tgId,
-        neuerMitarbeiterId: neuerMaId,
-        erstelltVon: adminName || undefined,
-      });
-      reset();
-    } catch (e) {
-      console.error(e);
-      setError('Fehler beim Speichern.');
-    } finally {
-      setSaving(false);
-    }
+  function resetZuDefault() {
+    onChange('');
+    setDraft('');
+    setBearbeiten(false);
   }
-
-  async function handleEntfernen(w: Austraegerwechsel) {
-    if (!confirm('Diesen vorbereiteten Wechsel wirklich entfernen?')) return;
-    await loescheAustraegerwechsel(w.id);
-  }
-
-  const sortiert = [...austraegerwechsel].sort((a, b) => {
-    const na = tgMap.get(a.teilgebietId)?.name ?? '';
-    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
-    return na.localeCompare(nb, 'de', { numeric: true });
-  });
 
   return (
-    <div className="space-y-5">
-      <div className="text-sm text-gray-600">
-        Liste vorbereiteter Standardausträger-Wechsel pro Teilgebiet. Beim
-        Klick auf „Monatswechsel" in der Abrechnung werden die Vorschläge zur
-        Einzel-Bestätigung angezeigt — der Mitarbeiter wird dann als neuer
-        Standardausträger des Teilgebiets eingetragen, der Eintrag verschwindet
-        aus dieser Liste.
-      </div>
-
-      {/* Eingabe */}
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-800">Neuen Wechsel vormerken</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs text-gray-600 mb-1">Teilgebiet *</label>
-            <select
-              value={tgId}
-              onChange={(e) => {
-                setTgId(e.target.value);
-                if (e.target.value && neuerMaId) {
-                  const m = maMap.get(neuerMaId);
-                  if (!m || !(m.teilgebietFreigaben ?? []).includes(e.target.value)) {
-                    setNeuerMaId('');
-                  }
-                }
+    <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-2.5 text-sm">
+      {!bearbeiten ? (
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-emerald-800 font-medium">🗺️ Kartenansicht:</span>
+            {effektiv ? (
+              <>
+                <a
+                  href={effektiv}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-emerald-700 underline hover:text-emerald-900 truncate max-w-[36rem]"
+                  title={effektiv}
+                >
+                  Google My Maps öffnen
+                </a>
+                <span className="text-[10px] text-emerald-600 shrink-0">
+                  ({benutztOverride ? 'individuell' : tour ? `Standard (${tour.name})` : 'Standard'})
+                </span>
+              </>
+            ) : (
+              <span className="text-gray-500 italic">
+                {tour
+                  ? `kein Link hinterlegt — kann pro TG (hier) oder zentral in Tour „${tour.name}" gepflegt werden`
+                  : 'kein Link verfügbar — bitte Tour zuordnen oder Link manuell setzen'}
+              </span>
+            )}
+          </div>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(kartenLink ?? '');
+                setBearbeiten(true);
               }}
-              className={inputClass}
+              className="text-xs text-emerald-700 hover:text-emerald-900 px-2 py-1 border border-emerald-300 rounded hover:bg-emerald-100"
             >
-              <option value="">— Teilgebiet wählen —</option>
-              {aktiveTg.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name} {t.plz && `(${t.plz})`}
-                </option>
-              ))}
-            </select>
-            {aktuellesTg && (
-              <p className="text-[11px] text-gray-500 mt-1">
-                Bisheriger Standard:{' '}
-                {aktuellesTg.standardAustraegerId
-                  ? maMap.get(aktuellesTg.standardAustraegerId)?.name ?? '?'
-                  : '— ohne Standard —'}
-              </p>
-            )}
-          </div>
-          <div>
-            <label className="block text-xs text-gray-600 mb-1">
-              Neuer Standardausträger *
-              <span className="text-gray-400 font-normal"> (nur MA mit Gebietsfreigabe)</span>
-            </label>
-            <select
-              value={neuerMaId}
-              onChange={(e) => setNeuerMaId(e.target.value)}
-              disabled={!tgId}
-              className={`${inputClass} ${!tgId ? 'opacity-60' : ''}`}
-            >
-              <option value="">— Mitarbeiter wählen —</option>
-              {freigegebeneMa.map((m) => (
-                <option key={m.id} value={m.id}>{m.name}</option>
-              ))}
-            </select>
-            {tgId && freigegebeneMa.length === 0 && (
-              <p className="text-[11px] text-amber-700 mt-1">
-                Keine Mitarbeiter mit Gebietsfreigabe für dieses TG. Erst Freigabe
-                im TG-Detail (Reiter „Freigaben") setzen.
-              </p>
-            )}
-          </div>
-        </div>
-        {error && <p className="text-xs text-red-600">{error}</p>}
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={handleSpeichern}
-            disabled={saving}
-            className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
-          >
-            {saving ? '…' : 'Wechsel vormerken'}
-          </button>
-        </div>
-      </div>
-
-      {/* Liste */}
-      {sortiert.length === 0 ? (
-        <div className="rounded-lg border border-gray-200 bg-white py-10 text-center text-sm text-gray-500">
-          Keine vorbereiteten Austrägerwechsel.
+              ✎ bearbeiten
+            </button>
+          )}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-gray-200">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
-                <th className="px-3 py-2 text-left font-medium">Bisheriger Standard</th>
-                <th className="px-3 py-2 text-left font-medium">Neuer Standard</th>
-                <th className="px-3 py-2 text-right font-medium">Vorgemerkt</th>
-                <th className="px-3 py-2 text-right font-medium">Aktion</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {sortiert.map((w) => {
-                const tg = tgMap.get(w.teilgebietId);
-                const bisheriger = tg?.standardAustraegerId ? maMap.get(tg.standardAustraegerId) : undefined;
-                const neuer = maMap.get(w.neuerMitarbeiterId);
-                const freigabeFehlt = neuer && !(neuer.teilgebietFreigaben ?? []).includes(w.teilgebietId);
-                return (
-                  <tr key={w.id} className="hover:bg-gray-50">
-                    <td className="px-3 py-2 font-medium text-gray-900">
-                      {tg?.name ?? '— gelöscht —'}
-                      {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
-                    </td>
-                    <td className="px-3 py-2 text-gray-700">
-                      {bisheriger ? bisheriger.name : <span className="text-gray-400 italic">— ohne Standard —</span>}
-                    </td>
-                    <td className="px-3 py-2 text-gray-900">
-                      {neuer ? neuer.name : <span className="text-red-600 italic">— MA gelöscht —</span>}
-                      {freigabeFehlt && (
-                        <div className="text-[10px] text-red-700">⚠ keine Gebietsfreigabe (mehr)</div>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right text-xs text-gray-500">
-                      {new Date(w.erstelltAm).toLocaleDateString('de-DE')}
-                      {w.erstelltVon && <div className="text-[10px] text-gray-400">{w.erstelltVon}</div>}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <button
-                        type="button"
-                        onClick={() => handleEntfernen(w)}
-                        className="text-xs text-red-500 hover:text-red-700"
-                        title="Wechsel verwerfen"
-                      >
-                        ✕
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-emerald-800">
+            Karten-Link für dieses Teilgebiet (z. B. Google My Maps)
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder={default_ ? `Standard: ${default_}` : 'https://…'}
+              className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={speichern}
+              className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded px-3 py-1.5"
+            >
+              Übernehmen
+            </button>
+            <button
+              type="button"
+              onClick={() => setBearbeiten(false)}
+              className="text-xs text-gray-500 hover:text-gray-700 px-2"
+            >
+              Abbrechen
+            </button>
+          </div>
+          <div className="flex items-center justify-between gap-2 text-[11px] text-emerald-700">
+            <span>
+              Leer lassen → Standard für die Tour wird verwendet
+              {tour && default_ ? ` (${tour.name})` : ''}.
+            </span>
+            {benutztOverride && (
+              <button
+                type="button"
+                onClick={resetZuDefault}
+                className="text-xs text-emerald-700 hover:text-emerald-900 underline"
+              >
+                ↺ Zurück zum Standard
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -2282,8 +2261,68 @@ function RestmengenAuswertung({
   const [aggregate, setAggregate] = useState<RestmengeAggregat[]>([]);
   const [expandedTg, setExpandedTg] = useState<string | null>(null);
   const [anzahlAusgaben, setAnzahlAusgaben] = useState(12);
+  const [filterTgId, setFilterTgId] = useState('');
+  const [filterMaId, setFilterMaId] = useState('');
 
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+
+  // Optionen für die Filter-Dropdowns: nur TGs/MAs, die im aktuellen
+  // Zeitraum tatsächlich Meldungen haben (sonst lange Auswahllisten).
+  const tgOptions = useMemo(() => {
+    const ids = new Set(aggregate.map((a) => a.teilgebietId));
+    return [...ids]
+      .map((id) => ({ id, tg: tgMap.get(id) }))
+      .filter((o) => o.tg)
+      .sort((a, b) => (a.tg!.name).localeCompare(b.tg!.name, 'de', { numeric: true }));
+  }, [aggregate, tgMap]);
+
+  const maOptions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const a of aggregate) {
+      for (const m of a.meldungen) if (m.mitarbeiterId) ids.add(m.mitarbeiterId);
+    }
+    return [...ids]
+      .map((id) => ({ id, ma: maMap.get(id) }))
+      .filter((o) => o.ma)
+      .sort((a, b) => (a.ma!.name).localeCompare(b.ma!.name, 'de'));
+  }, [aggregate, maMap]);
+
+  // Gefilterte Aggregate: TG- und MA-Filter werden auf der Meldungs-Ebene
+  // angewendet, Summen/Ø werden neu berechnet, damit die Anzeige zur
+  // Filterauswahl passt.
+  const filteredAggregate = useMemo(() => {
+    const out: RestmengeAggregat[] = [];
+    for (const agg of aggregate) {
+      if (filterTgId && agg.teilgebietId !== filterTgId) continue;
+      const meldungen = filterMaId
+        ? agg.meldungen.filter((m) => m.mitarbeiterId === filterMaId)
+        : agg.meldungen;
+      if (meldungen.length === 0) continue;
+      let summeRest = 0;
+      let summeFehl = 0;
+      let letzteMeldungAm = 0;
+      for (const m of meldungen) {
+        summeRest += m.restmenge;
+        summeFehl += m.fehlmenge;
+        if ((m.eingereichtAm ?? 0) > letzteMeldungAm) letzteMeldungAm = m.eingereichtAm ?? 0;
+      }
+      out.push({
+        teilgebietId: agg.teilgebietId,
+        meldungen,
+        summeRest,
+        summeFehl,
+        letzteMeldungAm,
+      });
+    }
+    return out.sort((a, b) => {
+      const avgFehlA = a.meldungen.length > 0 ? a.summeFehl / a.meldungen.length : 0;
+      const avgFehlB = b.meldungen.length > 0 ? b.summeFehl / b.meldungen.length : 0;
+      if (avgFehlA !== avgFehlB) return avgFehlB - avgFehlA;
+      const avgRestA = a.meldungen.length > 0 ? a.summeRest / a.meldungen.length : 0;
+      const avgRestB = b.meldungen.length > 0 ? b.summeRest / b.meldungen.length : 0;
+      return avgRestB - avgRestA;
+    });
+  }, [aggregate, filterTgId, filterMaId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2374,29 +2413,73 @@ function RestmengenAuswertung({
             sortiert nach Ø Fehlmenge, dann Ø Restmenge — Hover zeigt Summe + Anzahl.
           </p>
         </div>
-        <label className="text-xs text-gray-600 flex items-center gap-2">
-          Zeitraum:
-          <select
-            value={anzahlAusgaben}
-            onChange={(e) => setAnzahlAusgaben(parseInt(e.target.value, 10))}
-            className="border border-gray-300 rounded px-2 py-1 text-xs"
-          >
-            <option value={4}>letzte 4 Ausgaben</option>
-            <option value={8}>letzte 8 Ausgaben</option>
-            <option value={12}>letzte 12 Ausgaben</option>
-            <option value={26}>letzte 26 Ausgaben</option>
-            <option value={52}>letzte 52 Ausgaben</option>
-          </select>
-        </label>
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          <label className="text-xs text-gray-600 flex items-center gap-2">
+            Zeitraum:
+            <select
+              value={anzahlAusgaben}
+              onChange={(e) => setAnzahlAusgaben(parseInt(e.target.value, 10))}
+              className="border border-gray-300 rounded px-2 py-1 text-xs"
+            >
+              <option value={4}>letzte 4 Ausgaben</option>
+              <option value={8}>letzte 8 Ausgaben</option>
+              <option value={12}>letzte 12 Ausgaben</option>
+              <option value={26}>letzte 26 Ausgaben</option>
+              <option value={52}>letzte 52 Ausgaben</option>
+            </select>
+          </label>
+          <label className="text-xs text-gray-600 flex items-center gap-2">
+            Teilgebiet:
+            <select
+              value={filterTgId}
+              onChange={(e) => setFilterTgId(e.target.value)}
+              className="border border-gray-300 rounded px-2 py-1 text-xs max-w-[14rem]"
+            >
+              <option value="">alle ({tgOptions.length})</option>
+              {tgOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.tg!.name}{o.tg!.plz ? ` (${o.tg!.plz})` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="text-xs text-gray-600 flex items-center gap-2">
+            Mitarbeiter:
+            <select
+              value={filterMaId}
+              onChange={(e) => setFilterMaId(e.target.value)}
+              className="border border-gray-300 rounded px-2 py-1 text-xs max-w-[16rem]"
+            >
+              <option value="">alle ({maOptions.length})</option>
+              {maOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.ma!.name} ({o.ma!.nummer})
+                </option>
+              ))}
+            </select>
+          </label>
+          {(filterTgId || filterMaId) && (
+            <button
+              type="button"
+              onClick={() => { setFilterTgId(''); setFilterMaId(''); }}
+              className="text-xs text-gray-500 hover:text-gray-800 underline"
+              title="Filter zurücksetzen"
+            >
+              Filter zurücksetzen
+            </button>
+          )}
+        </div>
       </div>
 
       {loading ? (
         <div className="rounded-lg border border-gray-200 bg-white py-8 text-center text-sm text-gray-400">
           Lade Restmengen…
         </div>
-      ) : aggregate.length === 0 ? (
+      ) : filteredAggregate.length === 0 ? (
         <div className="rounded-lg border border-gray-200 bg-white py-8 text-center text-sm text-gray-500">
-          Keine Meldungen im gewählten Zeitraum.
+          {aggregate.length === 0
+            ? 'Keine Meldungen im gewählten Zeitraum.'
+            : 'Keine Meldungen passen zu den aktiven Filtern.'}
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200">
@@ -2413,7 +2496,7 @@ function RestmengenAuswertung({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {aggregate.map((agg) => {
+              {filteredAggregate.map((agg) => {
                 const tg = tgMap.get(agg.teilgebietId);
                 const tgStk = tg?.stueckzahl ?? 0;
                 const anzMeldungen = agg.meldungen.length;

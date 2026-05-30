@@ -71,15 +71,18 @@ function AusgabenInhalt() {
 function AusgabenListe() {
   const { parameter } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
+  const [allePerioden, setAllePerioden] = useState<Abrechnungsperiode[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Ausgabe | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Ausgabe | null>(null);
   const [filterJahr, setFilterJahr] = useState(new Date().getFullYear());
+  const [filterPeriodeId, setFilterPeriodeId] = useState<string | 'alle'>('alle');
 
   useEffect(() => {
     // Lade Ausgaben und Perioden parallel; lege fehlende Ausgaben für Periode-KWs automatisch an
     Promise.all([ladeAusgaben(), ladeAbrechnungsperioden()]).then(async ([list, perioden]) => {
+      setAllePerioden(perioden);
       const vorhandeneKeys = new Set(list.map((a) => `${a.jahr}-${a.kw}`));
       const neuAngelegt: Ausgabe[] = [];
       for (const periode of perioden) {
@@ -124,11 +127,27 @@ function AusgabenListe() {
       if (alle.length > 0) {
         setFilterJahr(alle[0].jahr); // aktuellstes Jahr mit Ausgaben auswählen
         setSelected(alle[0]);
+        // Aktuelle Periode vorauswählen, falls vorhanden
+        const aktuellePeriode = perioden
+          .filter((p) => p.jahr === alle[0].jahr)
+          .sort((a, b) => b.monat - a.monat)[0];
+        if (aktuellePeriode) setFilterPeriodeId(aktuellePeriode.id);
       }
     });
   }, []);
 
-  const gefilterteAusgaben = ausgaben.filter((a) => a.jahr === filterJahr);
+  const periodenFuerJahr = allePerioden
+    .filter((p) => p.jahr === filterJahr)
+    .sort((a, b) => a.monat - b.monat);
+
+  const gefilterteAusgaben = (() => {
+    const nachJahr = ausgaben.filter((a) => a.jahr === filterJahr);
+    if (filterPeriodeId === 'alle') return nachJahr;
+    const periode = allePerioden.find((p) => p.id === filterPeriodeId);
+    if (!periode) return nachJahr;
+    const kwSet = new Set(periode.kalenderwochen);
+    return nachJahr.filter((a) => kwSet.has(a.kw));
+  })();
   const jahre = [...new Set(ausgaben.map((a) => a.jahr))].sort((a, b) => b - a);
 
   // Duplikat-Erkennung: Gruppen mit gleichem (kw, jahr) und >1 Eintrag.
@@ -203,14 +222,28 @@ function AusgabenListe() {
     <div className="flex gap-6">
       {/* Liste links */}
       <div className="w-64 shrink-0">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-col gap-2 mb-2">
           <select
             value={filterJahr}
-            onChange={(e) => setFilterJahr(Number(e.target.value))}
+            onChange={(e) => {
+              const j = Number(e.target.value);
+              setFilterJahr(j);
+              setFilterPeriodeId('alle');
+            }}
             className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             {jahre.length === 0 && <option value={new Date().getFullYear()}>{new Date().getFullYear()}</option>}
             {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
+          </select>
+          <select
+            value={filterPeriodeId}
+            onChange={(e) => setFilterPeriodeId(e.target.value)}
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="alle">Alle Ausgaben</option>
+            {periodenFuerJahr.map((p) => (
+              <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+            ))}
           </select>
         </div>
 

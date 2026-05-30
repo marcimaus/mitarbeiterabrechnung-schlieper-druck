@@ -164,10 +164,13 @@ export async function setzeZusammentragerPlanung(
   mitarbeiterId: string,
   status: ZusammentragerStatus | null,
   kommentar?: string,
+  externerLink?: string,
 ): Promise<void> {
   const id = zusammenDocId(jahr, kw, mitarbeiterId);
-  // Wenn weder Status noch Kommentar gesetzt — Datensatz löschen.
-  if (!status && !kommentar) {
+  const kommentarClean = kommentar?.trim();
+  const linkClean = externerLink?.trim();
+  // Wenn weder Status noch Kommentar noch Link gesetzt — Datensatz löschen.
+  if (!status && !kommentarClean && !linkClean) {
     await deleteDoc(doc(db, ZUSAMMEN_COLL, id)).catch(() => {});
     return;
   }
@@ -180,10 +183,12 @@ export async function setzeZusammentragerPlanung(
       jahr,
       kw,
       mitarbeiterId,
-      // Status bleibt optional: ein Eintrag mit nur Kommentar (Status=null)
-      // soll den Chip NICHT aktivieren — daher hier nicht auf 'kommt' defaulten.
+      // Status bleibt optional: ein Eintrag mit nur Kommentar / Link
+      // (Status=null) soll den Chip NICHT aktivieren — daher hier nicht
+      // auf 'kommt' defaulten.
       status: status ?? undefined,
-      kommentar: kommentar?.trim() ? kommentar.trim() : undefined,
+      kommentar: kommentarClean || undefined,
+      externerLink: linkClean || undefined,
       erstelltAm: existing.exists() ? (existing.data().erstelltAm ?? ts) : ts,
       aktualisiertAm: ts,
     }),

@@ -13,7 +13,10 @@ import EinsaetzeScreen from './screens/EinsaetzeScreen';
 import ZusammentragenScreen from './screens/ZusammentragenScreen';
 import FahrtenScreen from './screens/FahrtenScreen';
 import AbrechnungScreen from './screens/AbrechnungScreen';
+import AbrechnungAuswertungScreen from './screens/AbrechnungAuswertungScreen';
+import LohnbueroAuswertungScreen from './screens/LohnbueroAuswertungScreen';
 import AbrechnungsvorschauScreen from './screens/AbrechnungsvorschauScreen';
+import AbrechnungsvorbereitungScreen from './screens/AbrechnungsvorbereitungScreen';
 import ParameterScreen from './screens/ParameterScreen';
 import ReklamationenScreen from './screens/ReklamationenScreen';
 import NfcLandingScreen from './screens/NfcLandingScreen';
@@ -70,7 +73,10 @@ function AppLayout() {
             <Route path="/zusammentragen" element={<ZusammentragenScreen />} />
             <Route path="/fahrten" element={<FahrtenScreen />} />
             <Route path="/abrechnungsvorschau" element={<AbrechnungsvorschauScreen />} />
+            <Route path="/abrechnungsvorbereitung" element={<AbrechnungsvorbereitungScreen />} />
             <Route path="/abrechnung" element={<AbrechnungScreen />} />
+            <Route path="/abrechnung-auswerten" element={<AbrechnungAuswertungScreen />} />
+            <Route path="/abrechnung-lohnbuero" element={<LohnbueroAuswertungScreen />} />
             <Route path="/parameter" element={<ParameterScreen />} />
             <Route path="/reklamationen" element={<ReklamationenScreen />} />
             <Route path="/nfc" element={<NfcLandingScreen />} />

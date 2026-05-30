@@ -1,7 +1,8 @@
 // Excel-Export der Monatsabrechnung mit ExcelJS
 
 import ExcelJS from 'exceljs';
-import type { Abrechnungsperiode, Mitarbeiter } from '../types';
+import type { Abrechnungsperiode, Mitarbeiter, MitarbeiterMemo } from '../types';
+import { MEMO_KATEGORIE_LABELS } from '../types';
 import type { MitarbeiterAbrechnung } from './abrechnungslogik';
 import { formatierDatum } from './zeiterfassung';
 
@@ -258,7 +259,8 @@ export async function exportiereAbrechnung(
 export async function exportiereLohnuebermittlung(
   periode: Abrechnungsperiode,
   ergebnisse: MitarbeiterAbrechnung[],
-  alleMitarbeiter: Mitarbeiter[]
+  alleMitarbeiter: Mitarbeiter[],
+  memos: MitarbeiterMemo[] = [],
 ): Promise<void> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Schlieper-Druck Mitarbeiterabrechnung';
@@ -299,11 +301,11 @@ export async function exportiereLohnuebermittlung(
     { width: 16 },
   ];
 
-  // Reihenfolge identisch zur Abrechnungs-UI: `ergebnisse` kommt bereits
-  // 4-stufig sortiert (Festgehalt → Stundenarbeit → Lohnkonto-Saldo →
-  // Austräger nach Brutto desc) aus berechneAbrechnung() — keine eigene
-  // Sortierung hier.
-  const sortiert = ergebnisse;
+  // Lohnbüro wünscht Sortierung nach Mitarbeiternummer aufsteigend
+  // (statt der UI-Sortierung Festgehalt → Stunden → Saldo → Brutto desc).
+  const sortiert = [...ergebnisse].sort((a, b) =>
+    a.mitarbeiter.nummer.localeCompare(b.mitarbeiter.nummer, 'de', { numeric: true }),
+  );
 
   let r = headerRow + 1;
   let sumVorschuss = 0;
@@ -363,35 +365,64 @@ export async function exportiereLohnuebermittlung(
     .map((e) => e.mitarbeiter)
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
 
-  // Abzumeldende MA — analog zum Abschluss-Screen:
-  //   * MAs, die durch ersetztMitarbeiterId von einem anderen MA abgelöst sind
-  //   * MAs mit letzteAbrechnungsperiodeId === periode.id (manuell zur
-  //     Abmelde-Liste hinzugefügt)
-  //   * Plus bereits abgemeldete mit Datum in dieser Periode (z. B. nach
-  //     erneutem Export einer abgeschlossenen Periode).
-  const ersetzteIds = new Set<string>();
-  for (const m of alleMitarbeiter) {
-    if (m.ersetztMitarbeiterId) ersetzteIds.add(m.ersetztMitarbeiterId);
-  }
-  const periodenEndeIso = (() => {
-    const last = new Date(periode.jahr, periode.monat, 0);
-    const yyyy = last.getFullYear();
-    const mm = (last.getMonth() + 1).toString().padStart(2, '0');
-    const dd = last.getDate().toString().padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  })();
+  // Abzumeldende MA — STRENG eingeschränkt auf explizit bestätigte
+  // Abmeldungen:
+  //   * Wenn die Periode bereits einen `abmeldungenSnapshot` hat (= beim
+  //     Abschluss fixierte Liste), wird dieser verwendet — pro Eintrag
+  //     genau das gemeldete Datum.
+  //   * Sonst: nur MAs, die `abgemeldet=true` UND ein Abmelde-Datum in
+  //     dieser Periode tragen (= manuell im Stammdaten-Form abgemeldet).
+  //
+  // Wichtiger Punkt: implizite Trigger (ersetzteMitarbeiterId an einem
+  // anderen MA, oder `letzteAbrechnungsperiodeId === periode.id` ohne
+  // Snapshot) werden NICHT mehr automatisch in den Export aufgenommen.
+  // Diese sind reine UI-Vorschläge und keine bestätigten Abmeldungen.
   const istInPeriode = (datumIso?: string) => {
     if (!datumIso) return false;
     const d = new Date(datumIso);
     if (isNaN(d.getTime())) return false;
     return d.getFullYear() === periode.jahr && d.getMonth() + 1 === periode.monat;
   };
-  const effAbmeldedatum = (m: Mitarbeiter) => m.abmeldungUebermittlungDatum ?? periodenEndeIso;
-  const abzumelden = alleMitarbeiter
-    .filter((m) => {
-      if (m.abgemeldet) return istInPeriode(m.abmeldungUebermittlungDatum);
-      return ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === periode.id;
-    })
+  // „Abzumeldende Mitarbeiter" — STRENG eingeschränkt auf den fixierten
+  // Abmeldungs-Snapshot einer **abgeschlossenen** Periode. Damit ist
+  // ausgeschlossen, dass alte `abgemeldet=true`-Datenleichen (z. B. aus
+  // einem früheren, später wieder geöffneten Abschluss) erneut in den
+  // Export einfließen. Vor dem Abschluss erscheint die Sektion gar nicht.
+  type AbmeldeEintrag = { ma: Mitarbeiter; datumIso: string };
+  const periodeIstAbgeschlossen = periode.status === 'abgeschlossen';
+  let abzumelden: AbmeldeEintrag[] = [];
+  if (periodeIstAbgeschlossen && periode.abmeldungenSnapshot?.eintraege?.length) {
+    for (const eintrag of periode.abmeldungenSnapshot.eintraege) {
+      const ma = alleMitarbeiter.find((m) => m.id === eintrag.mitarbeiterId);
+      if (!ma) continue;
+      if (ma.vorlaeufigNichtAbmelden) continue;
+      abzumelden.push({ ma, datumIso: eintrag.abmeldedatum });
+    }
+  }
+  abzumelden.sort((a, b) => a.ma.name.localeCompare(b.ma.name, 'de'));
+
+  // Diagnose: MAs mit `abgemeldet=true` und Abmelde-Datum in dieser
+  // Periode, die NICHT im (fehlenden) Snapshot stehen. Das sind die
+  // typischen Datenleichen aus einem früheren Abschluss + Wiederöffnen.
+  // Wird als zusätzlicher Block ausgewiesen, damit der User sie gezielt
+  // in den Stammdaten korrigieren kann.
+  const abzumeldenIds = new Set(abzumelden.map(({ ma }) => ma.id));
+  const datenleichenAbgemeldet = alleMitarbeiter
+    .filter(
+      (m) =>
+        m.abgemeldet
+        && istInPeriode(m.abmeldungUebermittlungDatum)
+        && !abzumeldenIds.has(m.id),
+    )
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
+  // „Vorläufig nicht abmelden" — Bedarfs-Springer, die das Lohnbüro
+  // NICHT automatisch abmelden soll. Werden in jeder Übermittlung als
+  // Erinnerungsblock aufgeführt — unabhängig davon, ob sie in dieser
+  // Periode eine Auszahlung haben. Nur aktive, noch nicht abgemeldete
+  // MAs werden gelistet (sonst inkonsistent zum Aktiv-Status).
+  const nichtAbmeldenHinweis = alleMitarbeiter
+    .filter((m) => m.vorlaeufigNichtAbmelden && m.isActive && !m.abgemeldet)
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
 
   let blockRow = sumRow + 3;
@@ -424,6 +455,11 @@ export async function exportiereLohnuebermittlung(
     ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
     ws.mergeCells(`A${blockRow}:F${blockRow}`);
     blockRow++;
+    ws.getCell(`A${blockRow}`).value =
+      'Aus dem fixierten Abmeldungs-Snapshot der Periode (beim Periodenabschluss bestätigt).';
+    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF777777' } };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    blockRow++;
     ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Datum der Abmeldung'];
     ws.getRow(blockRow).font = { bold: true };
     ws.getRow(blockRow).fill = {
@@ -432,13 +468,133 @@ export async function exportiereLohnuebermittlung(
       fgColor: { argb: 'FFFFE9E0' },
     };
     blockRow++;
-    for (const m of abzumelden) {
-      const datumIso = effAbmeldedatum(m);
+    for (const { ma, datumIso } of abzumelden) {
+      ws.getRow(blockRow).values = [
+        ma.nummer,
+        ma.name,
+        formatierDatum(new Date(datumIso).getTime()),
+      ];
+      blockRow++;
+    }
+    blockRow += 2;
+  }
+
+  // Diagnose-Block: Datenleichen aus früherem Abschluss.
+  if (datenleichenAbgemeldet.length > 0) {
+    ws.getCell(`A${blockRow}`).value =
+      '⚠ Datenleichen — bitte in den MA-Stammdaten prüfen';
+    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12, color: { argb: 'FFB45309' } };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    blockRow++;
+    ws.getCell(`A${blockRow}`).value =
+      `Diese Mitarbeiter sind in den Stammdaten als „abgemeldet" markiert mit einem Abmelde-Datum in dieser Periode, stehen aber NICHT in der bestätigten Abmelde-Liste der Periode. Vermutlich Reste eines früheren Abschluss-Vorgangs. Bitte unter Mitarbeiter → „Anmeldung / Abmeldung" überprüfen und ggf. korrigieren. Diese Liste fließt NICHT in die Lohnübermittlung.`;
+    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF777777' } };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'middle' };
+    ws.getRow(blockRow).height = 45;
+    blockRow++;
+    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Abmelde-Datum (Stammdaten)'];
+    ws.getRow(blockRow).font = { bold: true };
+    ws.getRow(blockRow).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFFFF4CC' },
+    };
+    blockRow++;
+    for (const m of datenleichenAbgemeldet) {
       ws.getRow(blockRow).values = [
         m.nummer,
         m.name,
-        formatierDatum(new Date(datumIso).getTime()),
+        m.abmeldungUebermittlungDatum
+          ? formatierDatum(new Date(m.abmeldungUebermittlungDatum).getTime())
+          : '',
       ];
+      blockRow++;
+    }
+    blockRow += 2;
+  }
+
+  if (nichtAbmeldenHinweis.length > 0) {
+    ws.getCell(`A${blockRow}`).value = 'Vorläufig NICHT abmelden — bitte angemeldet lassen';
+    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    blockRow++;
+    ws.getCell(`A${blockRow}`).value =
+      'Diese Mitarbeiter sollen beim Lohnbüro angemeldet bleiben (Bedarfs-Springer). Auch wenn mehrere Monate ohne Auszahlung folgen, bitte nicht automatisch abmelden.';
+    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF7A4F00' } };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'middle' };
+    ws.getRow(blockRow).height = 30;
+    blockRow++;
+    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Hinweis'];
+    ws.getRow(blockRow).font = { bold: true };
+    ws.getRow(blockRow).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFFFF4CC' },
+    };
+    blockRow++;
+    for (const m of nichtAbmeldenHinweis) {
+      ws.getRow(blockRow).values = [
+        m.nummer,
+        m.name,
+        'vorläufig nicht abmelden',
+      ];
+      blockRow++;
+    }
+  }
+
+  // ====================================================
+  // Memos zur Lohnübermittlung (Abrechnungsvorbereitung)
+  // ====================================================
+  // Werden NACH allen anderen Blöcken als separate Sektion angefügt.
+  // Admin-only-Memos (nurAdmin=true) sind enthalten — das Lohnbüro
+  // bekommt alle Memos, die zur Periode gehören.
+  const periodenMemos = memos
+    .filter((memo) => memo.abrechnungsperiodeId === periode.id)
+    .sort((a, b) => {
+      const ma = alleMitarbeiter.find((m) => m.id === a.mitarbeiterId);
+      const mb = alleMitarbeiter.find((m) => m.id === b.mitarbeiterId);
+      const na = ma?.name ?? '';
+      const nb = mb?.name ?? '';
+      return na.localeCompare(nb, 'de');
+    });
+  if (periodenMemos.length > 0) {
+    blockRow += 2;
+    ws.getCell(`A${blockRow}`).value = `Memos zur Lohnübermittlung (${periodenMemos.length})`;
+    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    blockRow++;
+    ws.getCell(`A${blockRow}`).value =
+      'Hinweise / Mitteilungen zu einzelnen Mitarbeitern — z. B. IBAN-/Adress-Änderungen, Krankmeldungen, Auswertungsanfragen.';
+    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF6B7280' } };
+    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'middle' };
+    ws.getRow(blockRow).height = 24;
+    blockRow++;
+    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Kategorie', 'Memo'];
+    ws.getRow(blockRow).font = { bold: true };
+    ws.getRow(blockRow).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFDBEAFE' },
+    };
+    // Memo-Spalte breiter, damit längere Texte lesbar bleiben.
+    ws.getColumn(4).width = 70;
+    blockRow++;
+    for (const memo of periodenMemos) {
+      const ma = alleMitarbeiter.find((m) => m.id === memo.mitarbeiterId);
+      ws.getRow(blockRow).values = [
+        ma?.nummer ?? '',
+        ma?.name ?? '— gelöscht —',
+        MEMO_KATEGORIE_LABELS[memo.kategorie] ?? memo.kategorie,
+        memo.text,
+      ];
+      ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'top' };
+      // Höhe grob proportional zur Textlänge — ExcelJS macht keine
+      // Auto-Höhe für wrappedText, daher pragmatisch geschätzt.
+      const zeilen = Math.max(1, Math.ceil(memo.text.length / 80));
+      ws.getRow(blockRow).height = Math.min(120, 16 * zeilen);
       blockRow++;
     }
   }

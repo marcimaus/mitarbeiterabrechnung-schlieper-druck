@@ -348,7 +348,13 @@ function ZeitübersichtInhalt() {
   const fahrtSatz = (ma?.fahrkostenEurProKm ?? parameter?.fahrkostenEurProKm ?? 0.30);
   const fahrtkostenGesamt = fahrten.reduce((s, f) => s + f.streckKm * fahrtSatz, 0);
 
-  const jahre = [heute.getFullYear() - 1, heute.getFullYear(), heute.getFullYear() + 1];
+  const jahre = (() => {
+    const startJahr = 2020;
+    const endJahr = heute.getFullYear() + 1;
+    const arr: number[] = [];
+    for (let j = endJahr; j >= startJahr; j--) arr.push(j);
+    return arr;
+  })();
 
   return (
     <div className="p-6">

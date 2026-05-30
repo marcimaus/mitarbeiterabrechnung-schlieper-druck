@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -8,9 +8,10 @@ import KontrolleGewichteDruck from '../components/KontrolleGewichteDruck';
 import UebersichtDruck from '../components/UebersichtDruck';
 import AuslieferungsmemoVerwaltung from '../components/AuslieferungsmemoVerwaltung';
 import { ladeAusgaben, ladeEinsaetze, setzeEinsatz, loescheEinsatz, ladeBeilagen } from '../lib/db';
+import { getCurrentKW } from '../lib/kalender';
 import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage } from '../types';
-import { kwLabel } from '../lib/kalender';
-import { berechneGewichtAnzeigenblattKg, berechneGewichtBeilagenKg, berechneAustraegezeit, formatierStunden } from '../lib/berechnung';
+import { kwLabel, MONATSNAMEN } from '../lib/kalender';
+import { berechneGewichtAnzeigenblattKg, berechneGewichtBeilagenKg, berechneAustraegezeit, berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 
 // Hilfsfunktion: Ausgaben der letzten 2 Jahre laden (aus AppContext)
 // Teilgebiete + Mitarbeiter kommen aus AppContext
@@ -48,6 +49,9 @@ function EinsaetzeInhalt() {
   const { teilgebiete, mitarbeiter, touren, parameter, abrechnungsperioden } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [selectedAusgabeId, setSelectedAusgabeId] = useState<string>('');
+  // Eingrenzung der Ausgaben-Auswahl nach Abrechnungsperiode (Jahr/Monat).
+  const [filterAusgabeJahr, setFilterAusgabeJahr] = useState<number | ''>('');
+  const [filterAusgabeMonat, setFilterAusgabeMonat] = useState<number | ''>('');
   const [einsaetze, setEinsaetze] = useState<EinsatzMap>({});
   const [beilagen, setBeilagen] = useState<Beilage[]>([]);
   const [loading, setLoading] = useState(false);
@@ -77,7 +81,12 @@ function EinsaetzeInhalt() {
       );
       setAusgaben(sorted);
       if (sorted.length > 0 && !selectedAusgabeId) {
-        setSelectedAusgabeId(sorted[0].id);
+        // Bevorzugt die Ausgabe der aktuellen Kalenderwoche; wenn es
+        // dazu keine angelegte Ausgabe gibt, fällt es auf die jüngste
+        // vorhandene Ausgabe zurück.
+        const heute = getCurrentKW();
+        const aktuell = sorted.find((a) => a.jahr === heute.jahr && a.kw === heute.kw);
+        setSelectedAusgabeId((aktuell ?? sorted[0]).id);
       }
     });
   }, []);
@@ -97,6 +106,43 @@ function EinsaetzeInhalt() {
       setLoading(false);
     });
   }, [selectedAusgabeId]);
+
+  // Monat (Abrechnungsperiode) je Ausgabe — über die KW-Zuordnung der Periode.
+  const monatFuerAusgabe = useCallback(
+    (a: Ausgabe): number | null => {
+      const p = abrechnungsperioden.find(
+        (per) => per.jahr === a.jahr && per.kalenderwochen?.includes(a.kw)
+      );
+      return p ? p.monat : null;
+    },
+    [abrechnungsperioden]
+  );
+
+  // Jahre, die in den Ausgaben vorkommen (absteigend).
+  const ausgabenJahre = useMemo(
+    () => Array.from(new Set(ausgaben.map((a) => a.jahr))).sort((x, y) => y - x),
+    [ausgaben]
+  );
+
+  // Nach Jahr/Monat gefilterte Ausgaben-Liste für das Dropdown.
+  const gefilterteAusgaben = useMemo(
+    () =>
+      ausgaben.filter((a) => {
+        if (filterAusgabeJahr !== '' && a.jahr !== filterAusgabeJahr) return false;
+        if (filterAusgabeMonat !== '' && monatFuerAusgabe(a) !== filterAusgabeMonat) return false;
+        return true;
+      }),
+    [ausgaben, filterAusgabeJahr, filterAusgabeMonat, monatFuerAusgabe]
+  );
+
+  // Wenn die aktuell gewählte Ausgabe durch den Filter rausfällt, auf die
+  // erste gefilterte Ausgabe umschalten.
+  useEffect(() => {
+    if (gefilterteAusgaben.length === 0) return;
+    if (!gefilterteAusgaben.some((a) => a.id === selectedAusgabeId)) {
+      setSelectedAusgabeId(gefilterteAusgaben[0].id);
+    }
+  }, [gefilterteAusgaben, selectedAusgabeId]);
 
   const selectedAusgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
 
@@ -136,14 +182,26 @@ function EinsaetzeInhalt() {
 
   async function handleResetStandard(tg: Teilgebiet) {
     const e = einsaetze[tg.id];
-    if (e) {
-      await loescheEinsatz(e.id);
-      setEinsaetze((prev) => {
-        const next = { ...prev };
-        delete next[tg.id];
-        return next;
-      });
-    }
+    if (!e) return;
+    // Warnung, wenn Daten verloren gehen — Kommentar, externer Link,
+    // gesetzter Springer/Ausfall etc.
+    const verlust: string[] = [];
+    if (e.kommentar?.trim()) verlust.push(`• Kommentar: „${e.kommentar.trim()}"`);
+    if (e.externerLink?.trim()) verlust.push(`• Externer Link: ${e.externerLink.trim()}`);
+    if (e.typ === 'springer' && e.mitarbeiterId) verlust.push('• Springer-Zuweisung');
+    if (e.typ === 'ungeklärt') verlust.push('• Markierung „ungeklärt"');
+    if (e.ausfallBisKw) verlust.push(`• Ausfall-Bereich bis KW ${e.ausfallBisKw}`);
+    const warnText = verlust.length > 0
+      ? `Der bestehende Eintrag für „${tg.name}" wird gelöscht. Folgendes geht dabei verloren:\n\n${verlust.join('\n')}\n\nFortfahren?`
+      : `Eintrag für „${tg.name}" wirklich auf Standardausträger zurücksetzen?`;
+    if (!confirm(warnText)) return;
+
+    await loescheEinsatz(e.id);
+    setEinsaetze((prev) => {
+      const next = { ...prev };
+      delete next[tg.id];
+      return next;
+    });
   }
 
   function oeffneSpringerDialog(tg: Teilgebiet) {
@@ -272,13 +330,38 @@ function EinsaetzeInhalt() {
       {/* Ausgabe auswählen */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
         <div className="flex items-center gap-4 flex-wrap">
+          <label className="text-sm font-medium text-gray-700">Jahr:</label>
+          <select
+            value={filterAusgabeJahr === '' ? '' : String(filterAusgabeJahr)}
+            onChange={(e) => setFilterAusgabeJahr(e.target.value === '' ? '' : Number(e.target.value))}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">alle</option>
+            {ausgabenJahre.map((j) => (
+              <option key={j} value={j}>{j}</option>
+            ))}
+          </select>
+
+          <label className="text-sm font-medium text-gray-700">Monat:</label>
+          <select
+            value={filterAusgabeMonat === '' ? '' : String(filterAusgabeMonat)}
+            onChange={(e) => setFilterAusgabeMonat(e.target.value === '' ? '' : Number(e.target.value))}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">alle</option>
+            {MONATSNAMEN.map((name, i) => (
+              <option key={i} value={i + 1}>{name}</option>
+            ))}
+          </select>
+
           <label className="text-sm font-medium text-gray-700">Ausgabe:</label>
           <select
             value={selectedAusgabeId}
             onChange={(e) => setSelectedAusgabeId(e.target.value)}
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            {ausgaben.map((a) => (
+            {gefilterteAusgaben.length === 0 && <option value="">— keine Ausgabe —</option>}
+            {gefilterteAusgaben.map((a) => (
               <option key={a.id} value={a.id}>
                 {kwLabel(a.kw, a.jahr)} — {a.seitenzahl} S.
               </option>
@@ -481,7 +564,8 @@ function EinsaetzeInhalt() {
                 <th className="px-4 py-3 text-left font-medium text-gray-600">Austräger</th>
                 <th className="px-4 py-3 text-center font-medium text-gray-600" title="Anzahl Beilagen je Teilgebiet — intern (Druckerei) / extern (Austräger)">Beilagen<br /><span className="text-[10px] font-normal text-gray-400">int / ext</span></th>
                 <th className="px-4 py-3 text-right font-medium text-gray-600" title="Gesamtgewicht (Anzeigenblatt + Beilagen) je Teilgebiet">Gewicht</th>
-                <th className="px-4 py-3 text-right font-medium text-gray-600" title="Soll-Zeit Austragen (Laufzeit + Steckzeit + externe Beilagen)">Soll-Zeit</th>
+                <th className="px-4 py-3 text-right font-medium text-gray-600" title="Soll-Zeit Austragen (Laufzeit + Steckzeit + externe Beilagen)">Soll-Zeit<br /><span className="text-[10px] font-normal text-gray-400">Austragen</span></th>
+                <th className="px-4 py-3 text-right font-medium text-gray-600" title="Soll-Zeit Zusammentragen je Teilgebiet (abhängig von Stapelanzahl und internen Beilagen)">Soll-Zeit<br /><span className="text-[10px] font-normal text-gray-400">Zusammentr.</span></th>
                 <th className="px-4 py-3 text-right font-medium text-gray-600">Aktion</th>
               </tr>
             </thead>
@@ -551,6 +635,30 @@ function EinsaetzeInhalt() {
                       ) : (
                         <span className="text-gray-400 text-xs">—</span>
                       )}
+                      {/* Kommentar + externer Link unter dem Austräger, kompakt. */}
+                      {einsatz && (einsatz.kommentar?.trim() || einsatz.externerLink?.trim()) && (
+                        <div className="flex flex-col gap-0.5 mt-0.5">
+                          {einsatz.kommentar?.trim() && (
+                            <div
+                              className="text-[11px] text-gray-600 max-w-[12rem] truncate"
+                              title={einsatz.kommentar}
+                            >
+                              💬 {einsatz.kommentar}
+                            </div>
+                          )}
+                          {einsatz.externerLink?.trim() && (
+                            <a
+                              href={einsatz.externerLink.trim()}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[11px] text-blue-600 hover:underline w-fit"
+                              title="Link in neuem Tab öffnen"
+                            >
+                              🔗 Link öffnen
+                            </a>
+                          )}
+                        </div>
+                      )}
                     </td>
 
                     {/* Beilagen int/ext — klickbar: zeigt Details der gebuchten Beilagen */}
@@ -597,6 +705,22 @@ function EinsaetzeInhalt() {
                         const sollH = berechneAustraegezeit(tg, parameter, beilagenExtern);
                         return sollH > 0
                           ? formatierStunden(sollH)
+                          : <span className="text-gray-300">—</span>;
+                      })()}
+                    </td>
+
+                    {/* Soll-Zeit Zusammentragen */}
+                    <td className="px-4 py-3 text-right text-gray-700 font-mono text-xs">
+                      {(() => {
+                        if (!parameter || !selectedAusgabe) return <span className="text-gray-300">—</span>;
+                        const sollZ = berechneZusammentragZeit(
+                          tg.stueckzahl,
+                          selectedAusgabe.stapelAnzahl,
+                          beilagenIntern,
+                          parameter,
+                        );
+                        return sollZ > 0
+                          ? formatierStunden(sollZ)
                           : <span className="text-gray-300">—</span>;
                       })()}
                     </td>
@@ -653,6 +777,21 @@ function EinsaetzeInhalt() {
                   ).length;
                   return s + berechneAustraegezeit(tg, parameter, beilagenExternTg);
                 }, 0);
+                const summeSollZ = gefilterte.reduce((s, tg) => {
+                  if (!parameter || !selectedAusgabe) return s;
+                  const beilagenInternTg = beilagen.filter(
+                    (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id)
+                  ).length;
+                  return (
+                    s +
+                    berechneZusammentragZeit(
+                      tg.stueckzahl,
+                      selectedAusgabe.stapelAnzahl,
+                      beilagenInternTg,
+                      parameter,
+                    )
+                  );
+                }, 0);
                 return (
                   <tr className="bg-blue-50 border-t-2 border-blue-200 font-semibold">
                     <td className="px-4 py-3 text-gray-900" colSpan={6}>
@@ -670,6 +809,9 @@ function EinsaetzeInhalt() {
                     </td>
                     <td className="px-4 py-3 text-right text-gray-900 font-mono text-xs">
                       {summeSollH > 0 ? formatierStunden(summeSollH) : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-900 font-mono text-xs">
+                      {summeSollZ > 0 ? formatierStunden(summeSollZ) : '—'}
                     </td>
                     <td></td>
                   </tr>

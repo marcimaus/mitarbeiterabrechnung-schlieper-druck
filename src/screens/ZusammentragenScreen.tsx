@@ -14,7 +14,7 @@ import {
   aktualisiereAusgabe,
 } from '../lib/db';
 import type { Ausgabe, Beilage, ZusammentragenEinsatz, Arbeitszeit } from '../types';
-import { kwLabel } from '../lib/kalender';
+import { kwLabel, getCurrentKW } from '../lib/kalender';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 import { pruefeZeitUeberlappung, formatiereUeberlappungsFehler } from '../lib/zeiterfassung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
@@ -57,7 +57,14 @@ function ZusammentragenInhalt() {
         b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
       );
       setAusgaben(sorted);
-      if (sorted.length > 0) setSelectedAusgabeId(sorted[0].id);
+      if (sorted.length > 0) {
+        // Bevorzugt die Ausgabe der aktuellen ISO-Kalenderwoche; Fallback
+        // auf die jüngste, falls für die aktuelle KW noch keine Ausgabe
+        // angelegt ist. Konsistent zum EinsaetzeScreen.
+        const heute = getCurrentKW();
+        const aktuell = sorted.find((a) => a.jahr === heute.jahr && a.kw === heute.kw);
+        setSelectedAusgabeId((aktuell ?? sorted[0]).id);
+      }
     });
   }, []);
 

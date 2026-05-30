@@ -1,8 +1,10 @@
 // Kontrolle Gewichte — Druckliste für die manuelle Gewichtskontrolle nach dem Zusammentragen
-// Je Teilgebiet wird das Soll-Gewicht (Anzeigenblatt + interne Beilagen) * Stückzahl berechnet.
+// Je Teilgebiet wird das STAPEL-Soll-Gewicht (Stückzahl × Anzeigenblatt + Stückzahl × aller
+// für das Teilgebiet gebuchten Beilagen) berechnet — die Kollegen wiegen den fertigen Stapel
+// im Ganzen, deshalb ist Stapel-kg der maßgebliche Wert (nicht g/Stück).
 // Grenzwerte: Min = Soll * (1 - toleranzUnten%),  Max = Soll * (1 + toleranzOben%)
 //
-// Spalten: Teilgebiet | IST (leer) | Min. | IST (leer) | Max. | Seiten Azb. (leer) | Beilagen Soll | Beilagen IST (leer)
+// Spalten: Teilgebiet | Stk. | IST | Min. | IST | Max. | IST | Soll | Seiten Azb. | Beilagen Soll | Beilagen IST
 
 import { useMemo } from 'react';
 import type { Ausgabe, Beilage, Parameter, Teilgebiet, Tour } from '../types';
@@ -23,10 +25,12 @@ interface Props {
 interface Zeile {
   tg: Teilgebiet;
   tour: Tour | undefined;
-  sollKg: number;         // Gesamtgewicht je Teilgebiet (Anzeigenblatt + interne Beilagen)
+  /** STAPEL-Sollgewicht in kg: Stückzahl × Anzeigenblatt + Stückzahl × aller Beilagen. */
+  sollKg: number;
   minKg: number;
   maxKg: number;
-  beilagenInternAnz: number;
+  /** Anzahl aller für das TG gebuchten Beilagen (intern + extern). */
+  beilagenAnz: number;
 }
 
 function fmtKg(v: number): string {
@@ -54,12 +58,12 @@ export default function KontrolleGewichteDruck({
       return a.name.localeCompare(b.name);
     });
     return aktive.map((tg) => {
-      // Nur INTERNE Beilagen für Soll-Gewicht (nur die werden zusammengetragen)
-      const intBeilagen = beilagen.filter(
-        (b) => b.teilgebietIds.includes(tg.id) && b.kennzeichen === 'int'
-      );
+      // ALLE für dieses TG gebuchten Beilagen einrechnen — die Kollegen
+      // wiegen den fertigen Stapel inkl. aller Beilagen, also gehört
+      // jede gebuchte Beilage ins Soll-Gewicht.
+      const tgBeilagen = beilagen.filter((b) => b.teilgebietIds.includes(tg.id));
       const gAnz = berechneGewichtAnzeigenblattKg(tg, ausgabe);
-      const gBei = berechneGewichtBeilagenKg(tg, intBeilagen);
+      const gBei = berechneGewichtBeilagenKg(tg, tgBeilagen);
       const sollKg = gAnz + gBei;
       const minKg = sollKg * (1 - tolUnten / 100);
       const maxKg = sollKg * (1 + tolOben / 100);
@@ -69,7 +73,7 @@ export default function KontrolleGewichteDruck({
         sollKg,
         minKg,
         maxKg,
-        beilagenInternAnz: intBeilagen.length,
+        beilagenAnz: tgBeilagen.length,
       };
     });
   }, [teilgebiete, beilagen, ausgabe, tolOben, tolUnten, tourMap]);
@@ -224,11 +228,6 @@ function KontrolleSheet({
             <tr key={z.tg.id} className="kg-row">
               <td>
                 <strong>{z.tg.name}</strong>
-                {z.tg.stueckzahl > 0 && (
-                  <span style={{ color: '#6b7280', fontWeight: 400, marginLeft: '4px' }}>
-                    ({((z.sollKg * 1000) / z.tg.stueckzahl).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} g/Stk)
-                  </span>
-                )}
                 {z.tour && (
                   <span
                     style={{
@@ -265,9 +264,9 @@ function KontrolleSheet({
               </td>
               {/* Seiten Azb. leer */}
               <td className="kg-group-stichprobe"><span className="kg-fill" /></td>
-              {/* Beilagen Soll */}
+              {/* Beilagen Soll (alle gebuchten Beilagen) */}
               <td className="kg-group-stichprobe" style={{ textAlign: 'center', fontWeight: 600 }}>
-                {z.beilagenInternAnz}
+                {z.beilagenAnz}
               </td>
               {/* Beilagen IST leer */}
               <td className="kg-group-stichprobe"><span className="kg-fill" /></td>
@@ -277,10 +276,11 @@ function KontrolleSheet({
       </table>
 
       <div style={{ marginTop: '10px', fontSize: '9px', color: '#6b7280', lineHeight: 1.4 }}>
-        <strong>Hinweis:</strong> Überschreitet die IST-Menge die Grenzwerte (Min./Max.),
+        <strong>Hinweis:</strong> Es wird der fertige <strong>Stapel</strong> gewogen, nicht
+        Einzel-Exemplare. Liegt das IST-Gewicht außerhalb der Grenzwerte (Min./Max.),
         wird ein Stapel stichprobenartig geprüft: Ist das Anzeigenblatt korrekt eingelegt
         (Seitenzahl) und stimmt die Anzahl Beilagen mit dem Soll überein?<br />
-        Soll-Gewicht = (Stückzahl × Anzeigenblatt-Gewicht) + (Stückzahl × Gewicht interner Beilagen).
+        Soll-Gewicht = Stückzahl × (Anzeigenblatt-Gewicht + Gewicht aller für das Teilgebiet gebuchten Beilagen).
       </div>
 
       <div style={{

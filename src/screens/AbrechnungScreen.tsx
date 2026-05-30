@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
 import { ladePeriodeData, berechneAbrechnung, eur, stdMin } from '../lib/abrechnungslogik';
+import { berechneNettoMinuten } from '../lib/zeiterfassung';
 import { exportiereAbrechnung, exportiereLohnuebermittlung } from '../lib/exportXlsx';
 import {
   schliessePeriodeAb,
@@ -20,7 +21,6 @@ import {
   verwerfeMonatswechselSnapshot,
   aktualisiereMitarbeiter,
   aktualisiereTeilgebiet,
-  loescheAustraegerwechsel,
   loescheStueckzahlAnpassung,
   entferneAusAbmeldungenSnapshot,
   ladeFahrten,
@@ -32,7 +32,7 @@ import {
   austraegerwechselPlanListener,
   loescheAustraegerwechselPlan,
 } from '../lib/planung';
-import { ROLLEN_LABELS } from '../types';
+import { ROLLEN_LABELS, MEMO_KATEGORIE_LABELS } from '../types';
 
 export default function AbrechnungScreen() {
   return (
@@ -43,7 +43,7 @@ export default function AbrechnungScreen() {
 }
 
 function AbrechnungInhalt() {
-  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, austraegerwechsel, stueckzahlAnpassungen } = useApp();
+  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, stueckzahlAnpassungen, mitarbeiterMemos, lohnbueroAbrechnungen } = useApp();
   const [selectedPeriodeId, setSelectedPeriodeId] = useState('');
   const [ergebnisse, setErgebnisse] = useState<MitarbeiterAbrechnung[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -52,7 +52,6 @@ function AbrechnungInhalt() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [abschliessenBestaetigt, setAbschliessenBestaetigt] = useState(false);
   const [monatswechselBestaetigt, setMonatswechselBestaetigt] = useState(false);
-  const [zeigeWechselDialog, setZeigeWechselDialog] = useState(false);
   const [zeigeAnpassungDialog, setZeigeAnpassungDialog] = useState(false);
   // Wechselpläne (PlanungScreen-Sektion): werden beim Monatswechsel
   // gefiltert auf jene, deren `letzteAusgabe` der letzten KW der laufenden
@@ -203,7 +202,7 @@ function AbrechnungInhalt() {
     if (!selectedPeriode || !ergebnisse) return;
     setExportierend(true);
     try {
-      await exportiereLohnuebermittlung(selectedPeriode, ergebnisse, mitarbeiter);
+      await exportiereLohnuebermittlung(selectedPeriode, ergebnisse, mitarbeiter, mitarbeiterMemos);
     } catch (e: any) {
       alert('Export fehlgeschlagen: ' + (e.message ?? e));
     } finally {
@@ -237,6 +236,7 @@ function AbrechnungInhalt() {
       const abzumelden = mitarbeiter.filter(
         (m) =>
           !m.abgemeldet &&
+          !m.vorlaeufigNichtAbmelden &&
           (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === selectedPeriode.id)
       );
 
@@ -324,21 +324,31 @@ function AbrechnungInhalt() {
       // Frisch laden, damit das Banner sofort sichtbar ist und die fixierten
       // Werte zukünftige Berechnungen greifen.
       await handleBerechnen();
-      // Vorgemerkte Austrägerwechsel zur Einzel-Bestätigung anbieten.
-      if (austraegerwechsel.length > 0) {
-        setZeigeWechselDialog(true);
-      }
-      // Vorgemerkte Stückzahl-Anpassungen ebenfalls anbieten.
+      // Vorgemerkte Stückzahl-Anpassungen anbieten.
       if (stueckzahlAnpassungen.length > 0) {
         setZeigeAnpassungDialog(true);
       }
-      // Wechselpläne (PlanungScreen), deren letzte Ausgabe in dieser Periode liegt.
-      const letzteKwDerPeriode = Math.max(...selectedPeriode.kalenderwochen);
-      const relevanteWechselplaene = wechselplaene.filter(
-        (p) =>
+      // Wechselpläne (PlanungScreen), deren letzte Ausgabe in dieser Periode
+      // liegt — plus TGs, in denen ein Springer mit „übernimmt dauerhaft"
+      // in einer KW der Periode markiert ist. Beides fließt in den
+      // WechselplanUebernahmeDialog. Quelle: Wechselpläne, deren
+      // letzteAusgabe in dieser Periode liegt, ODER (für seit-Beginn
+      // unbesetzte TGs ohne letzteAusgabe) Wechselpläne, deren
+      // abAusgabe in dieser Periode liegt. Damit erfasst der Dialog
+      // beide Varianten der vereinheitlichten Wechsel-Sektion.
+      const periodKw = new Set(selectedPeriode.kalenderwochen);
+      const relevanteWechselplaene = wechselplaene.filter((p) => {
+        const letzteInPeriode =
           p.letzteAusgabeJahr === selectedPeriode.jahr &&
-          p.letzteAusgabeKw === letzteKwDerPeriode,
-      );
+          p.letzteAusgabeKw != null &&
+          periodKw.has(p.letzteAusgabeKw);
+        const abInPeriodeOhneLetzte =
+          (p.letzteAusgabeJahr == null || p.letzteAusgabeKw == null) &&
+          p.abAusgabeJahr === selectedPeriode.jahr &&
+          p.abAusgabeKw != null &&
+          periodKw.has(p.abAusgabeKw);
+        return letzteInPeriode || abInPeriodeOhneLetzte;
+      });
       if (relevanteWechselplaene.length > 0) {
         setZeigeWechselplanDialog(true);
       }
@@ -397,6 +407,38 @@ function AbrechnungInhalt() {
 
   // Noch nicht angemeldete MAs, die in dieser Abrechnung Beträge bekommen
   const nichtAngemeldeteWarnung = ergebnisse?.filter((e) => e.mitarbeiter.nochNichtAngemeldet) ?? [];
+
+  // Dummy-MA „90000" — wird verwendet, wenn der tatsächliche MA anonym
+  // sein soll. Darf NIE einen Betrag in der Abrechnung tragen — sonst
+  // Hinweis auf eine fehlerhafte Zuordnung.
+  const dummyMaWarnung = ergebnisse?.filter(
+    (e) => e.mitarbeiter.nummer === '90000' && e.bruttoLohnbuero > 0,
+  ) ?? [];
+
+  // Festgehalt-MAs mit hinterlegter Soll-Wochen-/Monatsstunden:
+  // vergleiche die im Monat tatsächlich erfassten IST-Stunden gegen die
+  // erwartete monatliche Soll-Zeit. Soll-Zeit ergibt sich aus
+  // `monatsstundenFestgehalt` (direkt) oder aus `wochenstundenFestgehalt * 52/12`.
+  // Warnung erscheint, sobald IST > SOLL. IST = Summe aller
+  // abgeschlossenen Arbeitszeiten der Periode (bei Festgehalt liegen
+  // diese in `arbeitszeitenNichtAbgerechnet`, da Festgehalt-MAs keine
+  // Stunden-Vergütung haben).
+  const festgehaltSollIstWarnung = (ergebnisse ?? [])
+    .map((e) => {
+      const m = e.mitarbeiter;
+      if (!m.hatFestgehalt) return null;
+      const sollMonat = m.monatsstundenFestgehalt
+        ?? (m.wochenstundenFestgehalt != null
+          ? m.wochenstundenFestgehalt * 52 / 12
+          : 0);
+      if (sollMonat <= 0) return null;
+      const istMin = [...e.arbeitszeitenNichtAbgerechnet, ...e.arbeitszeiten]
+        .reduce((s, a) => s + berechneNettoMinuten(a), 0);
+      const istStunden = istMin / 60;
+      if (istStunden <= sollMonat) return null;
+      return { e, sollMonat, istStunden, ueber: istStunden - sollMonat };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
 
   const suchbegriffNorm = suchbegriff.trim().toLowerCase();
   const gefilterteErgebnisse = ergebnisse
@@ -655,6 +697,65 @@ function AbrechnungInhalt() {
         </div>
       )}
 
+      {/* Warnung: Lohnbüro-Daten des direkten (abgeschlossenen) Vormonats
+          fehlen noch in der App (= PDFs vom Steuerbüro noch nicht
+          indiziert). Bezug: heutiger Kalendermonat → Vormonat. */}
+      {(() => {
+        const heute = new Date();
+        let vmJahr = heute.getFullYear();
+        let vmMonat = heute.getMonth(); // 0-basiert = Vormonat (1..12-Logik: getMonth()+1 ist akt. Monat)
+        if (vmMonat === 0) { vmMonat = 12; vmJahr -= 1; } // Januar → Dez Vorjahr
+        // getMonth() liefert 0..11 für den AKTUELLEN Monat; der Vormonat
+        // als 1..12 ist genau getMonth() (da 0-basiert), außer im Januar.
+        const vormonatPeriode = abrechnungsperioden.find(
+          (p) => p.jahr === vmJahr && p.monat === vmMonat,
+        );
+        if (!vormonatPeriode || vormonatPeriode.status !== 'abgeschlossen') return null;
+        const hatLohnbueroDaten = lohnbueroAbrechnungen.some(
+          (a) => a.jahr === vmJahr && a.monat === vmMonat,
+        );
+        if (hatLohnbueroDaten) return null;
+        return (
+          <div className="mb-4 rounded-lg border border-orange-300 bg-orange-50 px-4 py-3 text-sm flex items-start gap-2">
+            <span className="text-orange-700">🧾</span>
+            <div className="text-orange-900 flex-1">
+              <div className="font-semibold mb-0.5">
+                Lohnbüro-Daten für {vormonatPeriode.bezeichnung} fehlen noch
+              </div>
+              <p className="text-xs text-orange-800">
+                Der direkte Vormonat ist abgeschlossen, aber es liegen noch
+                keine vom Steuer-/Lohnbüro gelieferten Abrechnungen in der App
+                vor. Bitte die PDFs importieren (Skill „Lohnbüro-PDFs") bzw.
+                unter „Abrechnungen Lohnbüro auswerten" prüfen.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Warnung: Lohnbüro-Memos ohne Periodenzuordnung — analog Fahrtkosten */}
+      {(() => {
+        const sichtbar = mitarbeiterMemos.filter((m) => userRole === 'admin' || !m.nurAdmin);
+        const unzugeordneteMemos = sichtbar.filter((m) => !m.abrechnungsperiodeId).length;
+        if (unzugeordneteMemos === 0) return null;
+        return (
+          <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm flex items-start gap-2">
+            <span className="text-amber-700">📝</span>
+            <div className="text-amber-900 flex-1">
+              <div className="font-semibold mb-0.5">
+                {unzugeordneteMemos} Memo{unzugeordneteMemos === 1 ? '' : 's'} an das
+                Lohnbüro {unzugeordneteMemos === 1 ? 'ist' : 'sind'} noch nicht zugeordnet
+              </div>
+              <p className="text-xs text-amber-800">
+                Diese Memos haben keinen Periodenbezug und werden daher in keiner
+                Lohnübermittlung mitgeschickt. Bitte unter „Abrechnungsvorbereitung"
+                prüfen und der passenden Abrechnungsperiode zuordnen.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Ergebnisse */}
       {ergebnisse && (
         <>
@@ -803,6 +904,60 @@ function AbrechnungInhalt() {
                     </li>
                   );
                 })}
+              </ul>
+            </div>
+          )}
+
+          {/* Warnung: Dummy-MA „90000" mit Betrag — niemals abrechnen. */}
+          {dummyMaWarnung.length > 0 && (
+            <div className="mb-4 rounded-lg border border-red-400 bg-red-50 px-4 py-3 text-sm">
+              <div className="font-semibold text-red-800 mb-1">
+                ⛔ Dummy-Mitarbeiter „90000" mit Betrag in der Abrechnung
+              </div>
+              <p className="text-xs text-red-700 mb-1">
+                Der Dummy-MA „90000" wird als Platzhalter für anonyme oder
+                noch unbekannte Austräger genutzt. Er darf NICHT abgerechnet
+                werden. Bitte den echten Mitarbeiter in „Einsätze" zuordnen,
+                bevor die Periode abgeschlossen wird.
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 text-red-900">
+                {dummyMaWarnung.map((e) => (
+                  <li key={e.mitarbeiter.id}>
+                    <span className="font-medium">{e.mitarbeiter.name}</span>
+                    <span className="text-gray-500"> ({e.mitarbeiter.nummer})</span>
+                    {' — Brutto '}
+                    <span className="font-medium">{eur(e.bruttoLohnbuero)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Warnung: Festgehalt-MA mit IST > SOLL-Monatsstunden. */}
+          {festgehaltSollIstWarnung.length > 0 && (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+              <div className="font-semibold text-amber-900 mb-1">
+                ⏱ Festgehalt-MA: IST-Zeit über Soll-Zeit
+              </div>
+              <p className="text-xs text-amber-800 mb-1">
+                Bei diesen Festgehalt-Mitarbeitern liegt die erfasste
+                Arbeitszeit in dieser Periode über der hinterlegten
+                durchschnittlichen Monats-Soll-Zeit (Wochenstunden × 52/12).
+                Prüfen, ob das Festgehalt noch passt oder eine Anpassung
+                nötig ist.
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 text-amber-900">
+                {festgehaltSollIstWarnung.map(({ e, sollMonat, istStunden, ueber }) => (
+                  <li key={e.mitarbeiter.id}>
+                    <span className="font-medium">{e.mitarbeiter.name}</span>
+                    <span className="text-gray-500"> ({e.mitarbeiter.nummer})</span>
+                    {' — IST '}
+                    <span className="font-medium">{istStunden.toFixed(1)} h</span>
+                    {' / SOLL '}
+                    <span>{sollMonat.toFixed(1)} h</span>
+                    <span className="text-red-700 font-medium"> (+{ueber.toFixed(1)} h)</span>
+                  </li>
+                ))}
               </ul>
             </div>
           )}
@@ -1158,6 +1313,14 @@ function AbrechnungInhalt() {
               ergebnisse={ergebnisse ?? []}
             />
           )}
+
+          {/* Memos zur Lohnübermittlung (Abrechnungsvorbereitung) */}
+          {selectedPeriode && (
+            <PeriodenMemoBlock
+              periodeId={selectedPeriode.id}
+              istGesperrt={selectedPeriode.status === 'abgeschlossen'}
+            />
+          )}
         </>
       )}
 
@@ -1167,22 +1330,21 @@ function AbrechnungInhalt() {
         </div>
       )}
 
-      {zeigeWechselDialog && (
-        <AustraegerwechselDialog
-          wechsel={austraegerwechsel}
-          teilgebiete={teilgebiete}
-          mitarbeiter={mitarbeiter}
-          onClose={() => setZeigeWechselDialog(false)}
-        />
-      )}
-
       {zeigeWechselplanDialog && selectedPeriode && (
         <WechselplanUebernahmeDialog
-          wechselplaene={wechselplaene.filter(
-            (p) =>
+          wechselplaene={wechselplaene.filter((p) => {
+            const periodKw = new Set(selectedPeriode.kalenderwochen);
+            const letzteInPeriode =
               p.letzteAusgabeJahr === selectedPeriode.jahr &&
-              p.letzteAusgabeKw === Math.max(...selectedPeriode.kalenderwochen),
-          )}
+              p.letzteAusgabeKw != null &&
+              periodKw.has(p.letzteAusgabeKw);
+            const abInPeriodeOhneLetzte =
+              (p.letzteAusgabeJahr == null || p.letzteAusgabeKw == null) &&
+              p.abAusgabeJahr === selectedPeriode.jahr &&
+              p.abAusgabeKw != null &&
+              periodKw.has(p.abAusgabeKw);
+            return letzteInPeriode || abInPeriodeOhneLetzte;
+          })}
           teilgebiete={teilgebiete}
           mitarbeiter={mitarbeiter}
           onClose={() => setZeigeWechselplanDialog(false)}
@@ -1196,136 +1358,6 @@ function AbrechnungInhalt() {
           onClose={() => setZeigeAnpassungDialog(false)}
         />
       )}
-    </div>
-  );
-}
-
-// ---- Modal: Austrägerwechsel-Bestätigung ------------------
-
-function AustraegerwechselDialog({
-  wechsel,
-  teilgebiete,
-  mitarbeiter,
-  onClose,
-}: {
-  wechsel: import('../types').Austraegerwechsel[];
-  teilgebiete: import('../types').Teilgebiet[];
-  mitarbeiter: Mitarbeiter[];
-  onClose: () => void;
-}) {
-  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
-  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
-  const [busyId, setBusyId] = useState<string | null>(null);
-
-  const offen = [...wechsel].sort((a, b) => {
-    const na = tgMap.get(a.teilgebietId)?.name ?? '';
-    const nb = tgMap.get(b.teilgebietId)?.name ?? '';
-    return na.localeCompare(nb, 'de', { numeric: true });
-  });
-
-  async function handleUebernehmen(w: import('../types').Austraegerwechsel) {
-    const tg = tgMap.get(w.teilgebietId);
-    if (!tg) {
-      alert('Teilgebiet nicht mehr vorhanden — Eintrag wird verworfen.');
-      await loescheAustraegerwechsel(w.id);
-      return;
-    }
-    setBusyId(w.id);
-    try {
-      await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: w.neuerMitarbeiterId });
-      await loescheAustraegerwechsel(w.id);
-    } catch (e: any) {
-      alert('Fehler beim Übernehmen: ' + (e.message ?? e));
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  return (
-    <div
-      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col">
-        <div className="px-5 py-3 border-b border-gray-200">
-          <h3 className="text-base font-semibold text-gray-900">
-            Vorbereitete Austrägerwechsel ({offen.length})
-          </h3>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Bitte einzeln bestätigen: der Mitarbeiter wird als neuer Standardausträger
-            des Teilgebiets eingetragen, der Eintrag verschwindet anschließend aus der
-            Vorbereitungsliste.
-          </p>
-        </div>
-        <div className="overflow-y-auto flex-1">
-          {offen.length === 0 ? (
-            <div className="px-5 py-10 text-center text-sm text-gray-500">
-              Keine offenen Wechsel mehr.
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
-                  <th className="px-3 py-2 text-left font-medium">Bisheriger</th>
-                  <th className="px-3 py-2 text-left font-medium">Neuer</th>
-                  <th className="px-3 py-2 text-right font-medium">Aktion</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {offen.map((w) => {
-                  const tg = tgMap.get(w.teilgebietId);
-                  const bisheriger = tg?.standardAustraegerId ? maMap.get(tg.standardAustraegerId) : undefined;
-                  const neuer = maMap.get(w.neuerMitarbeiterId);
-                  return (
-                    <tr key={w.id} className="hover:bg-gray-50">
-                      <td className="px-3 py-2 font-medium text-gray-900">
-                        {tg?.name ?? '— gelöscht —'}
-                      </td>
-                      <td className="px-3 py-2 text-gray-700">
-                        {bisheriger?.name ?? <span className="text-gray-400 italic">—</span>}
-                      </td>
-                      <td className="px-3 py-2 text-gray-900">
-                        {neuer?.name ?? <span className="text-red-600 italic">—</span>}
-                      </td>
-                      <td className="px-3 py-2 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => handleUebernehmen(w)}
-                          disabled={busyId === w.id}
-                          className="text-xs bg-green-600 text-white px-2.5 py-1 rounded hover:bg-green-700 disabled:opacity-50 mr-1.5"
-                        >
-                          {busyId === w.id ? '…' : '✓ Übernehmen'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (!confirm('Diesen vorbereiteten Wechsel verwerfen?')) return;
-                            await loescheAustraegerwechsel(w.id);
-                          }}
-                          className="text-xs text-red-500 hover:text-red-700"
-                          title="Wechsel verwerfen"
-                        >
-                          ✕
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-        <div className="px-5 py-3 border-t border-gray-200 flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700"
-          >
-            Schließen
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -1390,12 +1422,11 @@ function WechselplanUebernahmeDialog({
             Geplante Standardausträger-Wechsel ({offen.length})
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Aus der Personalplanung — die letzte Ausgabe des bisherigen
-            Austrägers liegt in dieser Periode. Pro TG einzeln bestätigen:
-            der neue Standardausträger wird am Teilgebiet eingetragen.
-            Lücken-Einsätze (zwischen letzter und erster Ausgabe) bleiben
-            in der Abrechnung als „unbesetzt" stehen und sind dort separat
-            zu klären.
+            Aus der Personalplanung — Wechselpläne, deren letzte Ausgabe
+            (bei besetzten TGs) bzw. „ab Ausgabe" (bei zuvor unbesetzten
+            TGs) in dieser Periode liegt. Pro TG einzeln bestätigen: der
+            neue Standardausträger wird am Teilgebiet eingetragen.
+            Lücken-/Springer-Einsätze bleiben in der Abrechnung erhalten.
           </p>
         </div>
         <div className="overflow-y-auto flex-1">
@@ -2581,6 +2612,101 @@ function SummaryCard({
 // ausschließlich manuell im Mitarbeiter-Stamm gesetzt/entfernt.
 // ============================================================
 
+// ============================================================
+// PeriodenMemoBlock — Memos zur Lohnübermittlung
+// ============================================================
+// Zeigt am Ende der Abrechnung alle Memos, die DIESER Periode zugeordnet
+// sind. Filtert admin-only-Memos für die Rolle „abrechnung" aus. Bei
+// abgeschlossener Periode read-only.
+
+function PeriodenMemoBlock({
+  periodeId,
+  istGesperrt,
+}: {
+  periodeId: string;
+  istGesperrt: boolean;
+}) {
+  const { mitarbeiter, mitarbeiterMemos, userRole } = useApp();
+  const istAdmin = userRole === 'admin';
+  const sichtbar = mitarbeiterMemos
+    .filter((memo) => memo.abrechnungsperiodeId === periodeId)
+    .filter((memo) => istAdmin || !memo.nurAdmin);
+
+  if (sichtbar.length === 0) return null;
+
+  const maById = new Map(mitarbeiter.map((m) => [m.id, m]));
+  const sortiert = [...sichtbar].sort((a, b) => {
+    const na = maById.get(a.mitarbeiterId)?.name ?? '';
+    const nb = maById.get(b.mitarbeiterId)?.name ?? '';
+    return na.localeCompare(nb, 'de');
+  });
+
+  return (
+    <div className="mt-8 mb-4 bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-200 bg-blue-50/40 flex items-center justify-between">
+        <h3 className="font-semibold text-gray-900 text-sm">
+          📝 Memos zur Lohnübermittlung ({sichtbar.length})
+        </h3>
+        {istGesperrt && (
+          <span className="text-xs text-gray-500">🔒 Periode abgeschlossen — read-only</span>
+        )}
+      </div>
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium">Mitarbeiter</th>
+            <th className="px-3 py-2 text-left font-medium">Nr.</th>
+            <th className="px-3 py-2 text-left font-medium">Kategorie</th>
+            <th className="px-3 py-2 text-left font-medium">Memo</th>
+            <th className="px-3 py-2 text-left font-medium">Ersteller</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {sortiert.map((memo) => {
+            const ma = maById.get(memo.mitarbeiterId);
+            return (
+              <tr key={memo.id} className={memo.nurAdmin ? 'bg-red-50/40' : ''}>
+                <td className="px-3 py-2 font-medium text-gray-900">
+                  {ma?.name ?? '— gelöschter MA —'}
+                  {memo.nurAdmin && (
+                    <span className="ml-2 text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded" title="Nur Admin">🔒</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-xs text-gray-500 font-mono">{ma?.nummer ?? '—'}</td>
+                <td className="px-3 py-2">
+                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
+                    {MEMO_KATEGORIE_LABELS[memo.kategorie]}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-gray-800 whitespace-pre-wrap break-words">
+                  {memo.text}
+                  {memo.externerLink?.trim() && (
+                    <a
+                      href={memo.externerLink.trim()}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-2 inline-flex items-center text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 align-middle"
+                      title={`Externer Link: ${memo.externerLink}`}
+                    >
+                      🔗 öffnen
+                    </a>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-xs text-gray-500">
+                  {memo.erstellerName || memo.erstellerRolle}
+                  <div className="text-[10px] text-gray-400">
+                    {new Date(memo.erstelltAm).toLocaleDateString('de-DE')}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function AnAbmeldungenListe({
   periode,
   istGesperrt,
@@ -2590,7 +2716,8 @@ function AnAbmeldungenListe({
   istGesperrt: boolean;
   ergebnisse: MitarbeiterAbrechnung[];
 }) {
-  const { mitarbeiter, teilgebiete, austraegerwechsel } = useApp();
+  const { mitarbeiter, teilgebiete: _teilgebiete } = useApp();
+  void _teilgebiete;
 
   // IDs der MA, die in der aktuellen Berechnung mit Beträgen vorkommen
   const idsMitBetrag = new Set<string>();
@@ -2621,41 +2748,21 @@ function AnAbmeldungenListe({
     .filter(
       (m) =>
         !m.abgemeldet &&
+        !m.vorlaeufigNichtAbmelden &&
         (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === periode.id)
     )
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  // Wechsel-Verlierer: bisherige Standardausträger der TGs auf der
-  // Austrägerwechsel-Liste, die durch den Wechsel komplett ohne aktives
-  // Standardausträger-TG dastehen — sie sollen explizit als Abmelde-
-  // Kandidaten erscheinen, auch wenn sie in der Periode noch Beträge haben.
-  const wechselTgIds = new Set(austraegerwechsel.map((w) => w.teilgebietId));
-  const wechselNeuPerTg = new Map(austraegerwechsel.map((w) => [w.teilgebietId, w.neuerMitarbeiterId]));
-  const wechselVerlierer = new Set<string>();
-  for (const w of austraegerwechsel) {
-    const tg = teilgebiete.find((t) => t.id === w.teilgebietId);
-    if (!tg || !tg.isActive) continue;
-    const bisheriger = tg.standardAustraegerId;
-    if (!bisheriger || bisheriger === w.neuerMitarbeiterId) continue;
-    // Bleibt dem bisherigen MA nach Anwendung ALLER Wechsel noch ein TG?
-    const hatNochTg = teilgebiete.some((t) => {
-      if (!t.isActive) return false;
-      if (t.id === tg.id) return false;
-      if (wechselTgIds.has(t.id)) {
-        // Auch dieses TG ist im Wechsel — bleibt nur, wenn der Neuvorschlag
-        // weiterhin der bisherige MA ist (Edge-Fall, selten).
-        return wechselNeuPerTg.get(t.id) === bisheriger;
-      }
-      return t.standardAustraegerId === bisheriger;
-    });
-    if (!hatNochTg) wechselVerlierer.add(bisheriger);
-  }
-
   // Vorschläge: aktive MA ohne Betrag in dieser Abrechnung — Kandidaten für
-  // Abmeldung. Plus: MAs, die durch einen vorbereiteten Austrägerwechsel ihr
-  // letztes Teilgebiet verlieren (auch wenn sie in dieser Periode noch
-  // Beträge haben). Ausschluss in beiden Pfaden: Festgehalt, Geschäftsführer,
-  // bereits abgemeldet, noch nicht angemeldet, schon in Abmeldungs-Liste.
+  // Abmeldung. Ausschluss: Festgehalt, Geschäftsführer, bereits abgemeldet,
+  // noch nicht angemeldet, schon in Abmeldungs-Liste.
+  //
+  // Hinweis: Der frühere „Wechsel-Verlierer"-Pfad (Standardausträger, der
+  // sein letztes TG durch einen vorbereiteten Austrägerwechsel verliert)
+  // ist entfallen, weil der separate Reiter „Austrägerwechsel vorbereiten"
+  // abgeschafft wurde. Wechsel laufen jetzt über den Wechselplan in der
+  // Personalplanung — ihre Auswirkung auf die Abmelde-Liste wird zum
+  // Zeitpunkt der Wechsel-Übernahme im Monatswechsel-Dialog sichtbar.
   const abmeldungVorschlaege = mitarbeiter
     .filter((m) => {
       const grund =
@@ -2667,9 +2774,7 @@ function AnAbmeldungenListe({
         && !ersetzteIds.has(m.id)
         && m.letzteAbrechnungsperiodeId !== periode.id;
       if (!grund) return false;
-      const istWechselVerlierer = wechselVerlierer.has(m.id);
-      const istLiveVorschlag = !idsMitBetrag.has(m.id);
-      return istWechselVerlierer || istLiveVorschlag;
+      return !idsMitBetrag.has(m.id);
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -2907,26 +3012,16 @@ function AnAbmeldungenListe({
                 💡 {abmeldungVorschlaege.length} Vorschlag{abmeldungVorschlaege.length === 1 ? '' : 'e'} (aktive MA ohne Betrag in dieser Periode)
               </summary>
               <p className="mt-1 mb-2 text-[11px] text-red-700">
-                Vorschläge enthalten MAs ohne Betrag in der Periode UND MAs, die
-                durch einen vorbereiteten Austrägerwechsel ihr letztes Teilgebiet
-                verlieren. Klick auf „+", um sie zur Abmelde-Liste hinzuzufügen.
+                Vorschläge: aktive MAs ohne Betrag in der Periode. Klick auf
+                „+", um sie zur Abmelde-Liste hinzuzufügen.
               </p>
               <ul className="space-y-1 max-h-48 overflow-y-auto">
                 {abmeldungVorschlaege.map((m) => {
-                  const istVerlierer = wechselVerlierer.has(m.id);
                   return (
                     <li key={m.id} className="flex items-center justify-between bg-white rounded border border-red-100 px-2 py-1">
                       <span>
                         <span className="font-medium text-gray-900">{m.name}</span>
                         <span className="ml-1 text-gray-400 text-[10px]">({m.nummer})</span>
-                        {istVerlierer && (
-                          <span
-                            className="ml-2 text-[10px] bg-amber-100 text-amber-800 border border-amber-200 px-1.5 py-0.5 rounded"
-                            title="Verliert durch vorbereiteten Austrägerwechsel sein letztes Teilgebiet"
-                          >
-                            🔄 verliert TG durch Wechsel
-                          </span>
-                        )}
                       </span>
                       <button
                         onClick={() => handleAuswahlAb(m)}
