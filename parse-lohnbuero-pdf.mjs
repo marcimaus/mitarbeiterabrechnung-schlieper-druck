@@ -68,33 +68,104 @@ function geldWerteMitPos(line) {
   }));
 }
 
-// Wert anhand eines Lohnart-Schlüssels (z. B. "9074"): erste Zeile, die den
-// Schlüssel als eigenständiges Token trägt; davon der Geldwert direkt rechts
-// des Schlüssels (sonst der letzte Geldwert der Zeile). Beispiele:
-//   "Fahrtkosten   9,40   9074   9,40"        → 9,40
-//   "Abschlag …    500,00  9001  500,00-"     → 500,00
-function wertNachSchluessel(lines, key) {
+// Wert für eine Lohnart-Schlüssel-Nummer (z. B. "9074", "9001", "9993").
+// Layout im PDF:
+//   Linke Spalte (Steuern)         Mittlere Spalte (Lohnart-Block)
+//   Lohnsteuer    1.000,00         9074 Fahrtkosten             Betrag
+//                                  9994 Priv. Kfz-Nutzung       6,72-
+//                                                              112,00-
+// Der Wert kann auf der gleichen Zeile als Schlüssel rechts daneben stehen
+// (Inline-Layout) ODER mehrere Zeilen darunter in der rechten Spalte (wenn
+// der Schlüssel mit „Betrag"-Header alleine steht). Heuristik:
+//   1. Geld auf der gleichen Zeile rechts vom Schlüssel → das ist der Wert.
+//   2. Sonst die nächsten 6 nicht-leeren Zeilen scannen. Abbruch sobald
+//      - eine NEUE Lohnart-Nummer in (nahe) gleicher Spalte steht, oder
+//      - eine Block-Ende-Marker-Zeile beginnt (Bank, Konto, Pfändung Rest,
+//        Darlehen Rest).
+//   3. Der erste Geldwert in der rechten Spalte (idx >= keyCol-5) ist der Wert.
+// Wichtig: Whitespace VOR der 4-stelligen Nummer ist Pflicht, damit z. B.
+// „3.50400" nicht als Lohnart „0400" missinterpretiert wird.
+function wertNachSchluessel(lines, key, prevSearch = false, nextSearch = true) {
   const re = new RegExp(`(?:^|\\s)${key}(?:\\s|$)`);
-  for (const l of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
     const m = re.exec(l);
     if (!m) continue;
-    const keyIdx = m.index + (m[0].startsWith(' ') ? 1 : 0);
-    const gelder = geldWerteMitPos(l);
-    if (gelder.length === 0) continue;
-    const rechts = gelder.filter((g) => g.idx > keyIdx);
-    return (rechts[0] ?? gelder[gelder.length - 1]).val;
+    const keyCol = m.index + (m[0].startsWith(' ') ? 1 : 0);
+    const sameLine = geldWerteMitPos(l).filter((x) => x.idx > keyCol);
+    if (sameLine.length > 0) return sameLine[0].val;
+    // VORHER-Suche (z. B. für 029/041): pdftotext gibt den Wert der
+    // Betrag-Spalte manchmal EINE Zeile VOR der Bezeichnung aus. Akzeptiere
+    // nur eine FREISTEHENDE Geldzeile (kein anderer Text, genau 1 Wert in
+    // der rechten Spalte) und brich ab bei vorheriger Lohnart-Zeile.
+    if (prevSearch) {
+      for (let pj = 1; pj <= 2; pj++) {
+        const prev = lines[i - pj];
+        if (prev == null) break;
+        const trimmed = prev.trim();
+        if (!trimmed) continue;
+        const otherPrev = prev.match(/(?:^|\s)(\d{3,4})(?:\s|$)/);
+        if (otherPrev && otherPrev[1] !== key) break;
+        const allMoney = geldWerteMitPos(prev);
+        const inCol = allMoney.filter((x) => x.idx >= keyCol - 5);
+        const onlyMoney = /^\d{1,3}(?:\.\d{3})*,\d{2}-?$/.test(trimmed);
+        if (allMoney.length === 1 && inCol.length === 1 && onlyMoney) return inCol[0].val;
+        break;
+      }
+    }
+    if (!nextSearch) return undefined;
+    let seen = 0;
+    for (let j = 1; j <= 8 && seen < 6; j++) {
+      const cand = lines[i + j];
+      if (cand == null) break;
+      const trimmed = cand.trim();
+      if (!trimmed) continue;
+      seen++;
+      if (/^Bank\b|^Konto\b|^Pfändung Rest|^Darlehen Rest/.test(trimmed)) break;
+      const other = cand.match(/(?:^|\s)(\d{3,4})(?:\s|$)/);
+      if (other && other[1] !== key) {
+        const oki = (other.index ?? 0) + (other[0].startsWith(' ') ? 1 : 0);
+        if (Math.abs(oki - keyCol) <= 5) break;
+      }
+      const ms = geldWerteMitPos(cand).filter((x) => x.idx >= keyCol - 5);
+      if (ms.length > 0) return ms[0].val;
+    }
+    return undefined;
   }
   return undefined;
 }
 
-// Wert anhand eines Bezeichnungs-Labels (z. B. "Darlehen Rest"): letzter
-// Geldwert rechts des Labels.
+// Wert anhand eines Bezeichnungs-Labels (z. B. "Darlehen Rest"): das Label
+// steht in der linken Spalte; der Wert (falls vorhanden) auf derselben Zeile
+// rechts daneben. Ist die Zeile leer rechts → kein Wert.
+// Summe aller Fahrtkosten-Lohnarten. Das Steuerbüro verwendet je nach
+// Software-Version / MA-Vertragstyp verschiedene Schlüssel für „Fahrtkosten":
+//   9074 „Fahrtkosten"
+//   029  „Fahrgeld ST+SV frei"
+//   041  „Fahrgeld ST+SV frei"
+// Wenn mehrere davon auf einer Seite stehen, addieren wir. `undefined`, wenn
+// keiner der Schlüssel auf der Seite einen Wert hat.
+function fahrtkostenSumme(lines) {
+  // 9074: Inline-Layout (Wert auf Schlüsselzeile rechts). Keine NACHHER-
+  //       Suche, sonst werden Werte anderer Lohnarten fälschlich übernommen.
+  // 029/041: Lohnart-Tabellen-Layout; Wert steht oft 1 Zeile VOR der
+  //          Bezeichnung in der Betrag-Spalte → prevSearch=true.
+  const teile = [
+    wertNachSchluessel(lines, '9074', /*prev*/ false, /*next*/ false),
+    wertNachSchluessel(lines, '029',  /*prev*/ true,  /*next*/ false),
+    wertNachSchluessel(lines, '041',  /*prev*/ true,  /*next*/ false),
+  ].filter((v) => v != null);
+  if (teile.length === 0) return undefined;
+  return teile.reduce((s, v) => s + v, 0);
+}
+
 function wertNachLabel(lines, label) {
   for (const l of lines) {
     const li = l.indexOf(label);
     if (li < 0) continue;
     const rechts = geldWerteMitPos(l).filter((g) => g.idx > li);
     if (rechts.length) return rechts[rechts.length - 1].val;
+    return undefined;
   }
   return undefined;
 }
@@ -287,7 +358,7 @@ for (const raw of pages) {
       nettoVerdienst: valueAfterLabel(/Netto-Verdienst/),
       auszahlungsbetrag: valueAfterLabel(/Auszahlungsbetrag/),
       // Weitere Werte per Lohnart-Schlüssel des Steuerbüros:
-      fahrtkosten: wertNachSchluessel(lines, '9074'),
+      fahrtkosten: fahrtkostenSumme(lines),
       vorschuss: wertNachSchluessel(lines, '9001'),
       darlehensRueckzahlung: wertNachSchluessel(lines, '9993'),
       darlehenRest: wertNachLabel(lines, 'Darlehen Rest'),

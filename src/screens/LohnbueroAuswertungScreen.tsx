@@ -79,6 +79,34 @@ function LohnbueroAuswertungInhalt() {
     return map;
   }, [abrechnungsperioden]);
 
+  // App-Fahrtkosten je (Jahr, Monat, MA) aus den Perioden-Snapshots —
+  // wird zum Vergleich mit den Lohnbüro-Fahrtkosten (Schlüssel 9074) genutzt.
+  const appFahrtkostenMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const p of abrechnungsperioden) {
+      const erg = (p.abrechnungSnapshot?.ergebnisse ?? []) as MitarbeiterAbrechnung[];
+      for (const e of erg) {
+        if (!e.mitarbeiter?.id) continue;
+        map.set(`${p.jahr}-${p.monat}-${e.mitarbeiter.id}`, e.fahrtkostenGesamt ?? 0);
+      }
+    }
+    return map;
+  }, [abrechnungsperioden]);
+
+  // App-Vorschüsse (Abschlagszahlungen, Lohnbüro-Schlüssel 9001) je
+  // (Jahr, Monat, MA) — Summe aller Vorschüsse der Periode.
+  const appVorschussMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const p of abrechnungsperioden) {
+      const erg = (p.abrechnungSnapshot?.ergebnisse ?? []) as MitarbeiterAbrechnung[];
+      for (const e of erg) {
+        if (!e.mitarbeiter?.id) continue;
+        map.set(`${p.jahr}-${p.monat}-${e.mitarbeiter.id}`, e.vorschussSumme ?? 0);
+      }
+    }
+    return map;
+  }, [abrechnungsperioden]);
+
   return (
     <div className="p-6">
       <div className="mb-6">
@@ -115,6 +143,8 @@ function LohnbueroAuswertungInhalt() {
           mitarbeiter={mitarbeiter}
           onZuordnen={setZuordnenName}
           appBruttoMap={appBruttoMap}
+          appFahrtkostenMap={appFahrtkostenMap}
+          appVorschussMap={appVorschussMap}
         />
       )}
       {tab === 'anmeldungen' && (
@@ -472,12 +502,16 @@ function AbrechnungenTab({
   mitarbeiter,
   onZuordnen,
   appBruttoMap,
+  appFahrtkostenMap,
+  appVorschussMap,
 }: {
   eintraege: LohnbueroAbrechnung[];
   maMap: Map<string, Mitarbeiter>;
   mitarbeiter: Mitarbeiter[];
   onZuordnen: (nameRoh: string) => void;
   appBruttoMap: Map<string, number>;
+  appFahrtkostenMap: Map<string, number>;
+  appVorschussMap: Map<string, number>;
 }) {
   const [filterText, setFilterText] = useState('');
   const [filterJahr, setFilterJahr] = useState<number | ''>('');
@@ -540,20 +574,26 @@ function AbrechnungenTab({
       acc.sv += e.svAbzuege ?? 0;
       acc.netto += e.nettoVerdienst ?? 0;
       acc.auszahlung += e.auszahlungsbetrag ?? 0;
+      acc.fahrtLB += e.fahrtkosten ?? 0;
+      acc.vorschussLB += e.vorschuss ?? 0;
+      acc.darlRueck += e.darlehensRueckzahlung ?? 0;
       // App-Brutto-Summe nur über Zeilen, die einen App-Wert haben.
       // Differenz analog — sonst würde die Footer-Summe Äpfel und
       // Birnen mischen.
-      const appB = e.mitarbeiterId
-        ? appBruttoMap.get(`${e.jahr}-${e.monat}-${e.mitarbeiterId}`)
-        : undefined;
+      const key = e.mitarbeiterId ? `${e.jahr}-${e.monat}-${e.mitarbeiterId}` : '';
+      const appB = key ? appBruttoMap.get(key) : undefined;
       if (appB != null) {
         acc.appBrutto += appB;
         acc.appBruttoCount += 1;
         acc.diff += (e.gesamtBrutto ?? 0) - appB;
       }
+      const appF = key ? appFahrtkostenMap.get(key) : undefined;
+      if (appF != null) acc.appFahrt += appF;
+      const appV = key ? appVorschussMap.get(key) : undefined;
+      if (appV != null) acc.appVorschuss += appV;
       return acc;
     },
-    { brutto: 0, sv: 0, netto: 0, auszahlung: 0, appBrutto: 0, appBruttoCount: 0, diff: 0 },
+    { brutto: 0, sv: 0, netto: 0, auszahlung: 0, appBrutto: 0, appBruttoCount: 0, diff: 0, fahrtLB: 0, vorschussLB: 0, darlRueck: 0, appFahrt: 0, appVorschuss: 0 },
   );
 
   return (
@@ -648,6 +688,12 @@ function AbrechnungenTab({
                 <th className="px-3 py-2 text-right font-medium">SV-Abzüge</th>
                 <th className="px-3 py-2 text-right font-medium">Netto-Verdienst</th>
                 <th className="px-3 py-2 text-right font-medium">Auszahlung</th>
+                <th className="px-3 py-2 text-right font-medium" title="Fahrtkosten laut Lohnbüro-PDF (Lohnart-Schlüssel 9074)">Fahrt&nbsp;LB</th>
+                <th className="px-3 py-2 text-right font-medium" title="Fahrtkosten, die von der App ans Lohnbüro übermittelt wurden (fahrtkostenGesamt aus dem App-Snapshot)">Fahrt&nbsp;App</th>
+                <th className="px-3 py-2 text-right font-medium" title="Vorschuss / Abschlag laut Lohnbüro-PDF (Lohnart-Schlüssel 9001)">Vorsch.&nbsp;LB</th>
+                <th className="px-3 py-2 text-right font-medium" title="Vorschüsse-Summe, die von der App ans Lohnbüro übermittelt wurde (vorschussSumme aus dem App-Snapshot)">Vorsch.&nbsp;App</th>
+                <th className="px-3 py-2 text-right font-medium" title="Darlehensrückzahlung im Monat laut Lohnbüro-PDF (Lohnart-Schlüssel 9993)">Darl.-Rückz.</th>
+                <th className="px-3 py-2 text-right font-medium" title="Darlehen-Restbetrag laut Lohnbüro-PDF (Label Darlehen Rest)">Darl.&nbsp;Rest</th>
                 <th className="px-3 py-2 text-left font-medium">PDF</th>
               </tr>
             </thead>
@@ -659,6 +705,17 @@ function AbrechnungenTab({
                   : undefined;
                 const diff = appBrutto != null ? e.gesamtBrutto - appBrutto : null;
                 const diffSignifikant = diff != null && Math.abs(diff) >= 0.01;
+                const key = e.mitarbeiterId ? `${e.jahr}-${e.monat}-${e.mitarbeiterId}` : '';
+                const appFahrt = key ? appFahrtkostenMap.get(key) : undefined;
+                const appVorschuss = key ? appVorschussMap.get(key) : undefined;
+                const lbZelle = (v: number | undefined) =>
+                  v != null && v !== 0 ? eur(v) : <span className="text-gray-300">—</span>;
+                const appZelle = (lb: number | undefined, app: number | undefined) => {
+                  if (app == null) return <span className="text-gray-300" title="Kein App-Wert für diese Periode">—</span>;
+                  if (app === 0 && (lb == null || lb === 0)) return <span className="text-gray-300">—</span>;
+                  const abweich = Math.abs((lb ?? 0) - app) >= 0.005;
+                  return <span className={abweich ? 'text-red-600 font-semibold' : 'text-gray-700'}>{eur(app)}</span>;
+                };
                 return (
                   <tr key={e.id} className={`hover:bg-gray-50 ${e.istKorrektur ? 'bg-orange-50/60' : ''}`}>
                     <td className="px-3 py-2 font-mono text-xs text-gray-700 whitespace-nowrap">
@@ -711,6 +768,12 @@ function AbrechnungenTab({
                     <td className="px-3 py-2 text-right font-mono font-semibold text-gray-900">
                       {eur(e.auszahlungsbetrag)}
                     </td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-700">{lbZelle(e.fahrtkosten)}</td>
+                    <td className="px-3 py-2 text-right font-mono">{appZelle(e.fahrtkosten, appFahrt)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-700">{lbZelle(e.vorschuss)}</td>
+                    <td className="px-3 py-2 text-right font-mono">{appZelle(e.vorschuss, appVorschuss)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-700">{lbZelle(e.darlehensRueckzahlung)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-gray-700">{lbZelle(e.darlehenRest)}</td>
                     <td className="px-3 py-2 text-xs">
                       <a
                         href={deepLink(e.fileId, e.seite)}
@@ -752,6 +815,12 @@ function AbrechnungenTab({
                   <td className="px-3 py-2 text-right font-mono text-gray-700">{eur(summe.sv)}</td>
                   <td className="px-3 py-2 text-right font-mono text-gray-700">{eur(summe.netto)}</td>
                   <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{eur(summe.auszahlung)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-700">{eur(summe.fahrtLB)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-700">{eur(summe.appFahrt)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-700">{eur(summe.vorschussLB)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-700">{eur(summe.appVorschuss)}</td>
+                  <td className="px-3 py-2 text-right font-mono text-gray-700">{eur(summe.darlRueck)}</td>
+                  <td />
                   <td />
                 </tr>
               </tfoot>
