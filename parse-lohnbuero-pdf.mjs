@@ -105,11 +105,21 @@ function wertNachSchluessel(lines, key, prevSearch = false, nextSearch = true) {
         const trimmed = prev.trim();
         if (!trimmed) continue;
         const otherPrev = prev.match(/(?:^|\s)(\d{3,4})(?:\s|$)/);
-        if (otherPrev && otherPrev[1] !== key) break;
+        if (otherPrev && otherPrev[1] !== key) {
+          // pdftotext places the Betrag of the current Lohnart on the PRECEDING
+          // Lohnart's line when their y-coordinates are close in the PDF. Accept
+          // if exactly ONE money value sits in the right column on that line.
+          const allMoney = geldWerteMitPos(prev);
+          const inCol = allMoney.filter((x) => x.idx >= keyCol - 5);
+          if (allMoney.length === 1 && inCol.length === 1) return inCol[0].val;
+          break;
+        }
         const allMoney = geldWerteMitPos(prev);
         const inCol = allMoney.filter((x) => x.idx >= keyCol - 5);
-        const onlyMoney = /^\d{1,3}(?:\.\d{3})*,\d{2}-?$/.test(trimmed);
-        if (allMoney.length === 1 && inCol.length === 1 && onlyMoney) return inCol[0].val;
+        // The preceding line can be a standalone money value OR carry the
+        // Lohnart-tax-code (e.g. "FFJ 69,90") when pdftotext renders the
+        // code-column before the label. Accept if exactly one money in col.
+        if (allMoney.length === 1 && inCol.length === 1) return inCol[0].val;
         break;
       }
     }
