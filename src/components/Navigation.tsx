@@ -35,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/abrechnung', label: 'Abrechnung', icon: '💰', roles: ['admin'] },
   { to: '/abrechnung-auswerten', label: 'Abrechnung auswerten', icon: '🔎', roles: ['admin', 'abrechnung'] },
   { to: '/abrechnung-lohnbuero', label: 'Abrechnungen Lohnbüro auswerten', icon: '🧾', roles: ['admin'] },
+  { to: '/mitarbeiterdarlehen', label: 'Mitarbeiterdarlehen', icon: '💸', roles: ['admin'] },
   { to: '/parameter', label: 'Parameter', icon: '⚙️', roles: ['admin'] },
 ];
 

@@ -1005,6 +1005,33 @@ export interface Vorschuss {
   aktualisiertAm: number;
 }
 
+// ---- Mitarbeiterdarlehen -----------------------------------
+//
+// Kurzfristige, zinslose Darlehen an Mitarbeiter, die monatlich mit dem
+// Lohn verrechnet werden. Der Tilgungsplan wird deterministisch aus den
+// Stammdaten abgeleitet (siehe `src/lib/darlehen.ts`); berechnete Felder
+// (Status, getilgter Betrag, Restschuld) werden im Frontend bestimmt.
+// Der Vergleich mit den tatsächlich abgezogenen Beträgen erfolgt über
+// das Feld `darlehensRueckzahlung` der `LohnbueroAbrechnung` (Lohnart 9993).
+export interface MitarbeiterDarlehen {
+  id: string;
+  mitarbeiterId: string;
+  /** Auszahlungsbetrag in EUR, > 0. */
+  auszahlungsbetragEur: number;
+  /** Auszahlungsdatum (ISO YYYY-MM-DD). */
+  auszahlungsdatum: string;
+  /** Vereinbarte monatliche Tilgungsrate in EUR, > 0. */
+  monatsRateEur: number;
+  /** Erster Verrechnungs-Monat (Jahr + Monat 1..12). */
+  startJahr: number;
+  startMonat: number;
+  /** Optionaler externer Link, z. B. Google-Drive-Link zum unterschriebenen Vertrag. */
+  externerLink?: string;
+  bemerkung?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
 // ---- Lohnbüro-Abrechnungen (indizierte PDFs) ---------------
 //
 // Das Steuer-/Lohnbüro liefert pro Monat ein PDF mit einer Seite je

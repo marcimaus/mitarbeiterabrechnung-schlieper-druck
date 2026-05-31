@@ -19,6 +19,7 @@ import type {
   LohnbueroAnmeldung,
   LohnbueroDriveLink,
   MitarbeiterMemo,
+  MitarbeiterDarlehen,
 } from '../types';
 import {
   mitarbeiterListener,
@@ -33,6 +34,7 @@ import {
   lohnbueroAnmeldungenListener,
   lohnbueroDriveLinksListener,
   mitarbeiterMemosListener,
+  mitarbeiterDarlehenListener,
 } from '../lib/db';
 
 // ---- State -------------------------------------------------
@@ -56,6 +58,7 @@ interface AppState {
   lohnbueroAnmeldungen: LohnbueroAnmeldung[];
   lohnbueroDriveLinks: LohnbueroDriveLink[];
   mitarbeiterMemos: MitarbeiterMemo[];
+  mitarbeiterDarlehen: MitarbeiterDarlehen[];
   aktivePeriodeId: string | null;
   isOnline: boolean;
   isLoading: boolean;
@@ -77,6 +80,7 @@ const initialState: AppState = {
   lohnbueroAnmeldungen: [],
   lohnbueroDriveLinks: [],
   mitarbeiterMemos: [],
+  mitarbeiterDarlehen: [],
   aktivePeriodeId: null,
   isOnline: navigator.onLine,
   isLoading: true,
@@ -98,6 +102,7 @@ type Action =
   | { type: 'SET_LOHNBUERO_ANMELDUNGEN'; payload: LohnbueroAnmeldung[] }
   | { type: 'SET_LOHNBUERO_DRIVE_LINKS'; payload: LohnbueroDriveLink[] }
   | { type: 'SET_MITARBEITER_MEMOS'; payload: MitarbeiterMemo[] }
+  | { type: 'SET_MITARBEITER_DARLEHEN'; payload: MitarbeiterDarlehen[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_LOADING'; payload: boolean };
@@ -137,6 +142,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, lohnbueroDriveLinks: action.payload };
     case 'SET_MITARBEITER_MEMOS':
       return { ...state, mitarbeiterMemos: action.payload };
+    case 'SET_MITARBEITER_DARLEHEN':
+      return { ...state, mitarbeiterDarlehen: action.payload };
     case 'SET_AKTIVE_PERIODE':
       return { ...state, aktivePeriodeId: action.payload };
     case 'SET_ONLINE':
@@ -237,6 +244,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubDriveLinks = lohnbueroDriveLinksListener((list) => {
       dispatch({ type: 'SET_LOHNBUERO_DRIVE_LINKS', payload: list });
     });
+    const unsubDarlehen = mitarbeiterDarlehenListener((list) => {
+      dispatch({ type: 'SET_MITARBEITER_DARLEHEN', payload: list });
+    });
 
     return () => {
       unsubMitarbeiter();
@@ -251,6 +261,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubLohnbueroAnm();
       unsubMemos();
       unsubDriveLinks();
+      unsubDarlehen();
     };
   }, []);
 

@@ -1257,6 +1257,46 @@ export async function loescheMitarbeiterMemo(id: string): Promise<void> {
   await deleteDoc(doc(db, 'mitarbeiterMemos', id));
 }
 
+// ---- Mitarbeiterdarlehen -----------------------------------
+//
+// Zinslose Kurzfrist-Darlehen an Mitarbeiter (siehe Typ
+// `MitarbeiterDarlehen`). Tilgungsplan + Soll/Ist-Vergleich werden im
+// Frontend abgeleitet (`src/lib/darlehen.ts`).
+
+export function mitarbeiterDarlehenListener(
+  cb: (list: import('../types').MitarbeiterDarlehen[]) => void,
+): Unsubscribe {
+  return onSnapshot(collection(db, 'mitarbeiterDarlehen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as import('../types').MitarbeiterDarlehen)));
+  });
+}
+
+export async function erstelleMitarbeiterDarlehen(
+  data: Omit<import('../types').MitarbeiterDarlehen, 'id' | 'erstelltAm' | 'aktualisiertAm'>,
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'mitarbeiterDarlehen'), {
+    ...stripUndef(data as Record<string, unknown>),
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereMitarbeiterDarlehen(
+  id: string,
+  data: Partial<import('../types').MitarbeiterDarlehen>,
+): Promise<void> {
+  await updateDoc(doc(db, 'mitarbeiterDarlehen', id), {
+    ...undefAsDelete(data as Record<string, unknown>),
+    aktualisiertAm: now(),
+  });
+}
+
+export async function loescheMitarbeiterDarlehen(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'mitarbeiterDarlehen', id));
+}
+
 // ---- Lohnkonto-Buchungen -----------------------------------
 
 export async function ladeLohnkontoBuchungen(

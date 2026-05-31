@@ -15,6 +15,7 @@ import FahrtenScreen from './screens/FahrtenScreen';
 import AbrechnungScreen from './screens/AbrechnungScreen';
 import AbrechnungAuswertungScreen from './screens/AbrechnungAuswertungScreen';
 import LohnbueroAuswertungScreen from './screens/LohnbueroAuswertungScreen';
+import MitarbeiterDarlehenScreen from './screens/MitarbeiterDarlehenScreen';
 import AbrechnungsvorschauScreen from './screens/AbrechnungsvorschauScreen';
 import AbrechnungsvorbereitungScreen from './screens/AbrechnungsvorbereitungScreen';
 import ParameterScreen from './screens/ParameterScreen';
@@ -77,6 +78,7 @@ function AppLayout() {
             <Route path="/abrechnung" element={<AbrechnungScreen />} />
             <Route path="/abrechnung-auswerten" element={<AbrechnungAuswertungScreen />} />
             <Route path="/abrechnung-lohnbuero" element={<LohnbueroAuswertungScreen />} />
+            <Route path="/mitarbeiterdarlehen" element={<MitarbeiterDarlehenScreen />} />
             <Route path="/parameter" element={<ParameterScreen />} />
             <Route path="/reklamationen" element={<ReklamationenScreen />} />
             <Route path="/nfc" element={<NfcLandingScreen />} />
