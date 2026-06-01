@@ -1028,6 +1028,12 @@ export interface MitarbeiterDarlehen {
   /** Optionaler externer Link, z. B. Google-Drive-Link zum unterschriebenen Vertrag. */
   externerLink?: string;
   bemerkung?: string;
+  /**
+   * Geplante Sondertilgungen je Periode (Key: "YYYY-MM", Value: EUR > 0).
+   * Überschreibt für die jeweilige Periode die feste Monatsrate im
+   * Tilgungsplan. Folge-Perioden verschieben sich entsprechend automatisch.
+   */
+  sondertilgungen?: Record<string, number>;
   erstelltAm: number;
   aktualisiertAm: number;
 }

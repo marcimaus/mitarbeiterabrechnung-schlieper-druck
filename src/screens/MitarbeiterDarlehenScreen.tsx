@@ -19,6 +19,7 @@ import {
   darlehenStatus,
   aggregiereMaDarlehen,
   klassifiziereAbweichung,
+  ymKey,
   type AbweichungsKlasse,
 } from '../lib/darlehen';
 import { MONATSNAMEN } from '../lib/kalender';
@@ -43,10 +44,12 @@ export default function MitarbeiterDarlehenScreen() {
 function Inhalt() {
   const { mitarbeiter, mitarbeiterDarlehen, lohnbueroAbrechnungen } = useApp();
   const [selectedMaId, setSelectedMaId] = useState<string>('');
-  const [editTarget, setEditTarget] = useState<MitarbeiterDarlehen | null>(null);
+  // ID-basiert → Komponenten sehen immer den aktuellen Firestore-Stand
+  // (AppContext-Listener feuert nach jedem Speichern automatisch).
+  const [editTargetId, setEditTargetId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [planFor, setPlanFor] = useState<MitarbeiterDarlehen | null>(null);
-  const [printFor, setPrintFor] = useState<MitarbeiterDarlehen | null>(null);
+  const [planForId, setPlanForId] = useState<string | null>(null);
+  const [printForId, setPrintForId] = useState<string | null>(null);
   const [filterMaText, setFilterMaText] = useState('');
 
   // MA-Liste: alle mit ≥1 Darlehen, plus alphabetisch alle anderen.
@@ -87,6 +90,11 @@ function Inhalt() {
         : [],
     [mitarbeiterDarlehen, lohnbueroAbrechnungen, selectedMaId],
   );
+
+  // Aus ID abgeleitet — reagiert live auf Firestore-Updates
+  const editTarget = editTargetId ? darlehenOfMa.find((d) => d.id === editTargetId) ?? null : null;
+  const planFor    = planForId    ? darlehenOfMa.find((d) => d.id === planForId)    ?? null : null;
+  const printFor   = printForId   ? darlehenOfMa.find((d) => d.id === printForId)   ?? null : null;
 
   // ---- MA-Auswahl-Liste (mit Suche) ----
   const maListeGefiltert = useMemo(() => {
@@ -179,7 +187,7 @@ function Inhalt() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => { setEditTarget(null); setShowForm(true); }}
+                  onClick={() => { setEditTargetId(null); setShowForm(true); }}
                   className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
                 >
                   + Neues Darlehen
@@ -189,9 +197,9 @@ function Inhalt() {
               {/* Darlehen-Liste */}
               <DarlehenListe
                 darlehen={darlehenOfMa}
-                onEdit={(d) => { setEditTarget(d); setShowForm(true); }}
-                onShowPlan={(d) => setPlanFor(d)}
-                onPrint={(d) => setPrintFor(d)}
+                onEdit={(d) => { setEditTargetId(d.id); setShowForm(true); }}
+                onShowPlan={(d) => setPlanForId(d.id)}
+                onPrint={(d) => setPrintForId(d.id)}
                 onDelete={async (d) => {
                   const txt = `Darlehen vom ${new Date(d.auszahlungsdatum).toLocaleDateString('de-DE')} über ${eur(d.auszahlungsbetragEur)} wirklich löschen?`;
                   if (confirm(txt)) await loescheMitarbeiterDarlehen(d.id);
@@ -224,7 +232,7 @@ function Inhalt() {
       {/* Tilgungsplan-Detail-Modal */}
       <Modal
         isOpen={!!planFor}
-        onClose={() => setPlanFor(null)}
+        onClose={() => setPlanForId(null)}
         title="Tilgungsplan"
         size="md"
       >
@@ -234,7 +242,7 @@ function Inhalt() {
       {/* Druck-Vorschau-Modal */}
       <Modal
         isOpen={!!printFor}
-        onClose={() => setPrintFor(null)}
+        onClose={() => setPrintForId(null)}
         title="Druckvorschau — Mitarbeiterdarlehen"
         size="xl"
       >
@@ -242,7 +250,7 @@ function Inhalt() {
           <DarlehenDruckVorschau
             darlehen={printFor}
             ma={selectedMa}
-            onClose={() => setPrintFor(null)}
+            onClose={() => setPrintForId(null)}
           />
         )}
       </Modal>
@@ -420,38 +428,181 @@ function Gesamtuebersicht({
 function TilgungsplanDetail({ darlehen }: { darlehen: MitarbeiterDarlehen }) {
   const plan = berechneTilgungsplan(darlehen);
   const st = darlehenStatus(darlehen);
+  const endeZeile = plan.length ? plan[plan.length - 1] : null;
+
+  // Inline-Bearbeitung: welche Periode wird gerade editiert?
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editVal, setEditVal] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const anzahlSonder = Object.keys(darlehen.sondertilgungen ?? {}).length;
+
+  function startEdit(key: string) {
+    const existing = darlehen.sondertilgungen?.[key];
+    setEditVal(existing != null ? String(existing).replace('.', ',') : '');
+    setEditingKey(key);
+  }
+
+  async function saveEdit(key: string) {
+    const raw = editVal.trim().replace(',', '.');
+    const val = parseFloat(raw);
+    setSaving(true);
+    try {
+      const aktuell = { ...(darlehen.sondertilgungen ?? {}) };
+      if (!raw || !Number.isFinite(val) || val <= 0) {
+        // Leere Eingabe = Sondertilgung entfernen
+        delete aktuell[key];
+      } else {
+        aktuell[key] = Math.round(val * 100) / 100;
+      }
+      await aktualisiereMitarbeiterDarlehen(darlehen.id, {
+        sondertilgungen: Object.keys(aktuell).length ? aktuell : undefined,
+      });
+      setEditingKey(null);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteEdit(key: string) {
+    setSaving(true);
+    try {
+      const aktuell = { ...(darlehen.sondertilgungen ?? {}) };
+      delete aktuell[key];
+      await aktualisiereMitarbeiterDarlehen(darlehen.id, {
+        sondertilgungen: Object.keys(aktuell).length ? aktuell : undefined,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <div>
-      <div className="text-sm text-gray-600 mb-3">
-        Auszahlung: <strong>{eur(darlehen.auszahlungsbetragEur)}</strong> am{' '}
-        {new Date(darlehen.auszahlungsdatum).toLocaleDateString('de-DE')} •{' '}
-        Rate: <strong>{eur(darlehen.monatsRateEur)}</strong> •{' '}
-        Start: <strong>{String(darlehen.startMonat).padStart(2,'0')}/{darlehen.startJahr}</strong> •{' '}
-        Gesamt: <strong>{st.rateGesamt} Raten</strong>
-        {plan.length > 0 && (
-          <> • Ende: <strong>{String(plan[plan.length-1].monat).padStart(2,'0')}/{plan[plan.length-1].jahr}</strong></>
+    <div className="space-y-3">
+      {/* Zusammenfassung */}
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
+        <span>Auszahlung: <strong>{eur(darlehen.auszahlungsbetragEur)}</strong></span>
+        <span>Std.-Rate: <strong>{eur(darlehen.monatsRateEur)}</strong></span>
+        <span>Start: <strong>{String(darlehen.startMonat).padStart(2,'0')}/{darlehen.startJahr}</strong></span>
+        <span>Raten gesamt: <strong>{st.rateGesamt}</strong></span>
+        {endeZeile && (
+          <span>Ende: <strong>{String(endeZeile.monat).padStart(2,'0')}/{endeZeile.jahr}</strong></span>
+        )}
+        {anzahlSonder > 0 && (
+          <span className="text-amber-700 font-medium">⚡ {anzahlSonder} Sondertilgung{anzahlSonder > 1 ? 'en' : ''} geplant</span>
         )}
       </div>
-      <div className="max-h-[60vh] overflow-y-auto border border-gray-200 rounded">
+
+      <div className="text-xs text-gray-500 bg-blue-50 border border-blue-200 rounded px-3 py-2">
+        💡 Klicke auf <strong>✎</strong> in einer Zeile, um einen abweichenden Betrag für diese Periode zu planen.
+        Ein höherer Betrag verkürzt den Plan; leere Eingabe setzt auf Standardrate zurück.
+      </div>
+
+      <div className="max-h-[55vh] overflow-y-auto border border-gray-200 rounded">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs sticky top-0">
             <tr>
+              <th className="px-3 py-2 text-left font-medium">#</th>
               <th className="px-3 py-2 text-left font-medium">Periode</th>
-              <th className="px-3 py-2 text-right font-medium">Geplante Tilgung</th>
+              <th className="px-3 py-2 text-right font-medium">Tilgung</th>
               <th className="px-3 py-2 text-right font-medium">Restschuld danach</th>
+              <th className="px-3 py-2 w-8"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {plan.map((z, i) => (
-              <tr key={i} className="hover:bg-gray-50">
-                <td className="px-3 py-1.5 font-mono text-xs">{String(z.monat).padStart(2,'0')}/{z.jahr}</td>
-                <td className="px-3 py-1.5 text-right font-mono">{eur(z.geplanteTilgung)}</td>
-                <td className="px-3 py-1.5 text-right font-mono text-gray-700">{eur(z.restSchuldDanach)}</td>
-              </tr>
-            ))}
+            {plan.map((z, i) => {
+              const key = ymKey(z.jahr, z.monat);
+              const isEditing = editingKey === key;
+              const isSonder = z.istSondertilgung === true;
+              return (
+                <tr
+                  key={i}
+                  className={`${isSonder ? 'bg-amber-50' : 'hover:bg-gray-50'}`}
+                >
+                  <td className="px-3 py-1.5 text-gray-400 text-xs">{i + 1}</td>
+                  <td className="px-3 py-1.5 font-mono text-xs">
+                    {String(z.monat).padStart(2,'0')}/{z.jahr}
+                    {isSonder && (
+                      <span className="ml-1.5 text-[9px] bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded-full font-semibold">Sonder</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono">
+                    {isEditing ? (
+                      <div className="flex items-center gap-1 justify-end">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={editVal}
+                          onChange={(e) => setEditVal(e.target.value)}
+                          placeholder={String(darlehen.monatsRateEur).replace('.', ',')}
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') saveEdit(key);
+                            if (e.key === 'Escape') setEditingKey(null);
+                          }}
+                          className="w-24 border border-blue-400 rounded px-2 py-0.5 text-sm text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                        <span className="text-xs text-gray-500">€</span>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => saveEdit(key)}
+                          className="text-xs text-green-700 hover:text-green-900 font-semibold px-1"
+                          title="Speichern"
+                        >✓</button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingKey(null)}
+                          className="text-xs text-gray-400 hover:text-gray-600 px-1"
+                          title="Abbrechen"
+                        >✕</button>
+                      </div>
+                    ) : (
+                      <span className={isSonder ? 'font-semibold text-amber-800' : ''}>
+                        {eur(z.geplanteTilgung)}
+                        {isSonder && (
+                          <span className="ml-1 text-[10px] text-gray-400 font-normal">
+                            (Std: {eur(darlehen.monatsRateEur)})
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-1.5 text-right font-mono text-gray-700">{eur(z.restSchuldDanach)}</td>
+                  <td className="px-3 py-1.5 text-center">
+                    {!isEditing && (
+                      <div className="flex gap-0.5 justify-center">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(key)}
+                          className="text-gray-400 hover:text-blue-600 text-xs px-1"
+                          title="Sondertilgung für diese Periode planen"
+                        >✎</button>
+                        {isSonder && (
+                          <button
+                            type="button"
+                            disabled={saving}
+                            onClick={() => deleteEdit(key)}
+                            className="text-amber-400 hover:text-red-600 text-xs px-1"
+                            title="Sondertilgung entfernen"
+                          >✕</button>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {anzahlSonder > 0 && (
+        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          ⚡ <strong>{anzahlSonder} Sondertilgung{anzahlSonder > 1 ? 'en' : ''}</strong> — Plan endet jetzt{' '}
+          {endeZeile ? `in ${String(endeZeile.monat).padStart(2,'0')}/${endeZeile.jahr}` : '–'} mit {st.rateGesamt} Raten.
+        </div>
+      )}
     </div>
   );
 }
@@ -482,14 +633,22 @@ function druckHtml(darlehen: MitarbeiterDarlehen, ma: Mitarbeiter): string {
     const ym = z.jahr * 12 + (z.monat - 1);
     const istVerg = ym < heuteYm;
     const istAktuell = ym === heuteYm;
-    const bg = istAktuell ? 'background:#e8f4fd;font-weight:bold;' : istVerg ? 'color:#555;' : '';
+    const isSonder = z.istSondertilgung === true;
+    const bg = isSonder
+      ? 'background:#fef3c7;'
+      : istAktuell ? 'background:#e8f4fd;font-weight:bold;'
+      : istVerg ? 'color:#555;' : '';
+    const tilgungCell = isSonder
+      ? `<strong>${fmtEur(z.geplanteTilgung)}</strong> <span style="font-size:7.5pt;color:#92400e">(Sonder; Std: ${fmtEur(darlehen.monatsRateEur)})</span>`
+      : fmtEur(z.geplanteTilgung);
     return `<tr style="${bg}">
       <td>${i + 1}</td>
       <td>${String(z.monat).padStart(2,'0')}/${z.jahr}</td>
-      <td class="r">${fmtEur(z.geplanteTilgung)}</td>
+      <td class="r">${tilgungCell}</td>
       <td class="r">${fmtEur(z.restSchuldDanach)}</td>
     </tr>`;
   }).join('\n');
+  const anzahlSonder = plan.filter((z) => z.istSondertilgung).length;
 
   const statusStr = st.status === 'getilgt'
     ? '✓ vollständig getilgt'
@@ -603,7 +762,7 @@ ${darlehen.bemerkung ? `<div class="section"><div class="section-title">Bemerkun
       ${planZeilen}
     </tbody>
   </table>
-  <div class="legende">Fett/blau = aktueller Monat · Grau = vergangene Perioden · Letzte Zeile = tatsächlich letzte Rate (ggf. gekürzt)</div>
+  <div class="legende">Fett/blau = aktueller Monat · Grau = vergangene Perioden · Gelb = Sondertilgung · Letzte Zeile = tatsächlich letzte Rate${anzahlSonder > 0 ? ` · ⚡ ${anzahlSonder} Sondertilgung${anzahlSonder > 1 ? 'en' : ''} geplant` : ''}</div>
 </div>
 
 <div class="section">
@@ -748,13 +907,17 @@ function DarlehenDruckVorschau({
               </thead>
               <tbody>
                 {plan.map((z, i) => {
-                  const heuteYm = new Date().getFullYear() * 12 + new Date().getMonth();
+                  const heuteYm2 = new Date().getFullYear() * 12 + new Date().getMonth();
                   const ym = z.jahr * 12 + (z.monat - 1);
-                  const isNow = ym === heuteYm;
+                  const isNow = ym === heuteYm2;
+                  const isSonder = z.istSondertilgung === true;
                   return (
-                    <tr key={i} className={`border-b border-gray-100 ${isNow ? 'bg-blue-50 font-semibold' : ''}`}>
+                    <tr key={i} className={`border-b border-gray-100 ${isSonder ? 'bg-amber-50' : isNow ? 'bg-blue-50 font-semibold' : ''}`}>
                       <td className="px-2 py-1 text-gray-500">{i + 1}</td>
-                      <td className="px-2 py-1 font-mono">{String(z.monat).padStart(2,'0')}/{z.jahr}</td>
+                      <td className="px-2 py-1 font-mono">
+                        {String(z.monat).padStart(2,'0')}/{z.jahr}
+                        {isSonder && <span className="ml-1 text-[9px] bg-amber-200 text-amber-800 px-1 rounded-full">Sonder</span>}
+                      </td>
                       <td className="px-2 py-1 text-right font-mono">{eur(z.geplanteTilgung)}</td>
                       <td className="px-2 py-1 text-right font-mono">{eur(z.restSchuldDanach)}</td>
                     </tr>

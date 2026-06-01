@@ -13,12 +13,21 @@ import type { MitarbeiterDarlehen, LohnbueroAbrechnung } from '../types';
  *  - `geplanteTilgung`: vereinbarte Monatsrate; die LETZTE Zeile ist ggf.
  *    auf die verbleibende Restschuld reduziert.
  *  - `restSchuldDanach`: Restschuld nach Verrechnung dieser Tilgung, ≥ 0.
+ *  - `istSondertilgung`: true, wenn für diese Periode eine abweichende
+ *    Sondertilgung geplant ist (und der Betrag ≠ Standard-Rate).
  */
 export interface TilgungsplanZeile {
   jahr: number;
   monat: number; // 1..12
   geplanteTilgung: number;
   restSchuldDanach: number;
+  /** true wenn diese Periode eine explizit hinterlegte Sondertilgung hat. */
+  istSondertilgung?: boolean;
+}
+
+/** Perioden-Schlüssel im Format "YYYY-MM" (z. B. "2026-03"). */
+export function ymKey(jahr: number, monat: number): string {
+  return `${jahr}-${String(monat).padStart(2, '0')}`;
 }
 
 /**
@@ -44,9 +53,19 @@ export function berechneTilgungsplan(d: MitarbeiterDarlehen): TilgungsplanZeile[
   // Sicherheits-Cap: maximal 240 Raten (20 Jahre) — schützt vor
   // Endlosschleifen bei kaputten Daten.
   for (let i = 0; i < 240 && rest > 0; i++) {
-    const tilgung = Math.min(rest, rate);
+    const key = ymKey(jahr, monat);
+    const sonder = d.sondertilgungen?.[key];
+    // Sondertilgung verwenden wenn vorhanden und > 0, sonst Standardrate.
+    const planRate = (sonder != null && sonder > 0) ? sonder : rate;
+    const tilgung = round2(Math.min(rest, planRate));
+    const hatSonder = sonder != null && sonder > 0 && Math.abs(sonder - rate) > 0.005;
     rest = round2(rest - tilgung);
-    zeilen.push({ jahr, monat, geplanteTilgung: round2(tilgung), restSchuldDanach: rest });
+    zeilen.push({
+      jahr, monat,
+      geplanteTilgung: tilgung,
+      restSchuldDanach: rest,
+      ...(hatSonder ? { istSondertilgung: true } : {}),
+    });
     // Nächster Monat
     monat++;
     if (monat > 12) { monat = 1; jahr++; }
