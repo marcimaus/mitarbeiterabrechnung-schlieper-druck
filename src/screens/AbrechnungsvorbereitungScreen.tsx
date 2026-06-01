@@ -13,6 +13,7 @@
 import { useMemo, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
+import Modal from '../components/Modal';
 import {
   erstelleMitarbeiterMemo,
   aktualisiereMitarbeiterMemo,
@@ -61,6 +62,8 @@ function Inhalt() {
   const [filterMonat, setFilterMonat] = useState<number | ''>(() => new Date().getMonth() + 1);
   const [nurUnzugeordnet, setNurUnzugeordnet] = useState(false);
   const filterPeriodeAktiv = nurUnzugeordnet || filterJahr !== '' || filterMonat !== '';
+
+  const [neuesMemoOffen, setNeuesMemoOffen] = useState(false);
 
   /** Map: Periode-ID → Periode (für schnellen Lookup beim Filtern). */
   const periodeById = useMemo(
@@ -152,7 +155,25 @@ function Inhalt() {
             Memos je Mitarbeiter — werden bei der Lohnübermittlung an das Lohnbüro mitgeschickt.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setNeuesMemoOffen(true)}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition-colors"
+        >
+          + Neues Memo
+        </button>
       </div>
+
+      <NeuesMemoModal
+        isOpen={neuesMemoOffen}
+        onClose={() => setNeuesMemoOffen(false)}
+        mitarbeiter={mitarbeiter.filter((m) => !m.istInteressent && m.isActive)}
+        alleMitarbeiter={mitarbeiter.filter((m) => !m.istInteressent)}
+        perioden={periodenSortiert}
+        istAdmin={istAdmin}
+        adminName={adminName}
+        userRole={userRole}
+      />
 
       {unzugeordnet > 0 && (
         <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
@@ -580,6 +601,260 @@ function MemoEintrag({
         </div>
       )}
     </div>
+  );
+}
+
+function NeuesMemoModal({
+  isOpen,
+  onClose,
+  mitarbeiter,
+  alleMitarbeiter,
+  perioden,
+  istAdmin,
+  adminName,
+  userRole,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  /** Aktive MA (Vorauswahl-Liste). */
+  mitarbeiter: Mitarbeiter[];
+  /** Alle MA (inkl. inaktive) für die Suche. */
+  alleMitarbeiter: Mitarbeiter[];
+  perioden: Abrechnungsperiode[];
+  istAdmin: boolean;
+  adminName: string;
+  userRole: 'admin' | 'abrechnung' | 'mitarbeiter' | null;
+}) {
+  const [maFilter, setMaFilter] = useState('');
+  const [selectedMaId, setSelectedMaId] = useState('');
+  const [kategorie, setKategorie] = useState<MemoKategorie>('sonstiges');
+  const [text, setText] = useState('');
+  const [periodeId, setPeriodeId] = useState('');
+  const [externerLink, setExternerLink] = useState('');
+  const [nurAdmin, setNurAdmin] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showInaktive, setShowInaktive] = useState(false);
+
+  const quelle = showInaktive ? alleMitarbeiter : mitarbeiter;
+  const gefilterteMas = useMemo(() => {
+    const q = maFilter.trim().toLowerCase();
+    if (!q) return quelle.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    return quelle
+      .filter(
+        (m) =>
+          m.name.toLowerCase().includes(q) ||
+          m.nummer.includes(q),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  }, [quelle, maFilter]);
+
+  const selectedMa = alleMitarbeiter.find((m) => m.id === selectedMaId);
+
+  function reset() {
+    setMaFilter('');
+    setSelectedMaId('');
+    setKategorie('sonstiges');
+    setText('');
+    setPeriodeId('');
+    setExternerLink('');
+    setNurAdmin(false);
+    setShowInaktive(false);
+  }
+
+  function handleClose() {
+    reset();
+    onClose();
+  }
+
+  async function speichern() {
+    if (!selectedMaId || !text.trim()) return;
+    if (userRole !== 'admin' && userRole !== 'abrechnung') return;
+    setSaving(true);
+    try {
+      await erstelleMitarbeiterMemo({
+        mitarbeiterId: selectedMaId,
+        kategorie,
+        text: text.trim(),
+        abrechnungsperiodeId: periodeId || undefined,
+        externerLink: externerLink.trim() || undefined,
+        nurAdmin: istAdmin ? nurAdmin : false,
+        erstellerName: adminName || (istAdmin ? 'Admin' : 'Abrechnung'),
+        erstellerRolle: istAdmin ? 'admin' : 'abrechnung',
+      });
+      reset();
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={handleClose} title="Neues Memo anlegen" size="lg">
+      <div className="space-y-4">
+        {/* MA-Auswahl */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Mitarbeiter *</label>
+          {!selectedMaId ? (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={maFilter}
+                  onChange={(e) => setMaFilter(e.target.value)}
+                  placeholder="Name oder Nummer suchen…"
+                  autoFocus
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={showInaktive}
+                    onChange={(e) => setShowInaktive(e.target.checked)}
+                    className="rounded"
+                  />
+                  inkl. inaktive
+                </label>
+              </div>
+              <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                {gefilterteMas.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-gray-400">Keine Treffer</div>
+                ) : (
+                  gefilterteMas.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => { setSelectedMaId(m.id); setMaFilter(''); }}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 flex items-center gap-2"
+                    >
+                      <span className="font-medium text-gray-900">{m.name}</span>
+                      <span className="text-xs text-gray-400 font-mono">{m.nummer}</span>
+                      {!m.isActive && (
+                        <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">inaktiv</span>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+              <span className="font-medium text-gray-900 flex-1">{selectedMa?.name}</span>
+              <span className="text-xs text-gray-500 font-mono">{selectedMa?.nummer}</span>
+              <button
+                type="button"
+                onClick={() => setSelectedMaId('')}
+                className="text-xs text-blue-600 hover:text-blue-800 ml-1"
+                title="Mitarbeiter ändern"
+              >
+                ✎ ändern
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Formular — erst sichtbar wenn MA gewählt */}
+        {selectedMaId && (
+          <>
+            <div className="flex gap-2">
+              <div className="flex-shrink-0">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Kategorie</label>
+                <select
+                  value={kategorie}
+                  onChange={(e) => setKategorie(e.target.value as MemoKategorie)}
+                  className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+                >
+                  {Object.entries(MEMO_KATEGORIE_LABELS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex-1">
+                <label className="block text-xs font-medium text-gray-600 mb-1">Abrechnungsperiode</label>
+                <select
+                  value={periodeId}
+                  onChange={(e) => setPeriodeId(e.target.value)}
+                  className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+                >
+                  <option value="">— keine Periode zugeordnet —</option>
+                  {perioden.map((p) => (
+                    <option key={p.id} value={p.id} disabled={p.status === 'abgeschlossen'}>
+                      {p.bezeichnung}{p.status === 'abgeschlossen' ? ' 🔒' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Memo-Text *</label>
+              <textarea
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                rows={4}
+                autoFocus
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="z. B. IBAN-Änderung, Auswertungsanfrage, Besonderheit für das Lohnbüro…"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Externer Link <span className="font-normal text-gray-400">(optional — wird nicht ans Lohnbüro übermittelt)</span>
+              </label>
+              <div className="flex items-center gap-1">
+                <input
+                  type="url"
+                  value={externerLink}
+                  onChange={(e) => setExternerLink(e.target.value)}
+                  placeholder="https://…"
+                  className="flex-1 border border-gray-300 rounded px-3 py-1.5 text-sm"
+                />
+                {externerLink.trim() && (
+                  <a
+                    href={externerLink.trim()}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1.5"
+                  >
+                    🔗
+                  </a>
+                )}
+              </div>
+            </div>
+
+            {istAdmin && (
+              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={nurAdmin}
+                  onChange={(e) => setNurAdmin(e.target.checked)}
+                  className="rounded"
+                />
+                🔒 Nur für Admin sichtbar (Abrechnung sieht dieses Memo nicht)
+              </label>
+            )}
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={speichern}
+                disabled={!text.trim() || saving}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+              >
+                {saving ? 'Speichert…' : 'Memo speichern'}
+              </button>
+              <button
+                type="button"
+                onClick={handleClose}
+                className="text-sm text-gray-500 hover:text-gray-700"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 
