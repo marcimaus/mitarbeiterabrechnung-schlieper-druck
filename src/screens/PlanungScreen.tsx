@@ -2765,6 +2765,15 @@ function AusfallModal({
     if (existing.autoVomWechselplan === true) {
       return [existing];
     }
+    // Single-Cell-Ausfälle (kein ausfallBisKw) sind voneinander unabhängig —
+    // auch wenn dasselbe TG in mehreren KWs jeweils einzeln erfasst ist.
+    // Ohne diese Guard würden ALLE Single-Cell-Ausfälle desselben TG über
+    // den Schlüssel ausfallBisKw==null zusammenfallen, und das Bearbeiten
+    // einer KW würde die übrigen als „verwaiste Geschwister" löschen.
+    // Nur echte Mehrwochen-Ausfälle (ausfallBisKw != null) bilden eine Gruppe.
+    if (existing.ausfallBisKw == null) {
+      return [existing];
+    }
     return einsaetzeImJahr.filter(
       (e) =>
         e.teilgebietId === existing.teilgebietId &&
