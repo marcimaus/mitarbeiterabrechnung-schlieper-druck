@@ -19,6 +19,57 @@ function now(): number {
   return Date.now();
 }
 
+// ---- Zeitzonen-Helfer (fix auf Europe/Berlin) --------------
+// WICHTIG: Tagesgrenzen und Wanduhrzeiten dürfen NICHT von der lokalen
+// Zeitzone des auslösenden Geräts abhängen. Die Stempeluhr läuft auf
+// beliebigen Tablets/Smartphones; ist dort die Zeitzone falsch
+// eingestellt (z. B. UTC-7 statt Europe/Berlin), wertet die alte Logik
+// eine Session vom selben Tag fälschlich als „Vortag" und schließt sie
+// automatisch — die 23:59-Schließzeit landet zudem auf einer falschen
+// absoluten Uhrzeit (real beobachtet: 08:59 statt 23:59). Daher rechnen
+// wir Tagesgrenze und Schließzeit explizit in Berliner Zeit.
+const BERLIN_TZ = 'Europe/Berlin';
+
+/** {jahr, monat (1–12), tag} eines Zeitpunkts in Berliner Zeit. */
+function berlinDatumsteile(ms: number): { jahr: number; monat: number; tag: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BERLIN_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(ms));
+  const wert = (typ: string) => Number(parts.find((p) => p.type === typ)?.value);
+  return { jahr: wert('year'), monat: wert('month'), tag: wert('day') };
+}
+
+/** Sortierbarer Tagesschlüssel YYYYMMDD eines Zeitpunkts in Berliner Zeit. */
+function berlinTagSchluessel(ms: number): number {
+  const { jahr, monat, tag } = berlinDatumsteile(ms);
+  return jahr * 10000 + monat * 100 + tag;
+}
+
+/**
+ * Epoch-ms einer Berliner Wanduhrzeit (monat 1–12). Bestimmt den
+ * Berliner UTC-Offset zum betreffenden Datum (Sommer-/Winterzeit) und
+ * rechnet zurück — unabhängig von der Geräte-Zeitzone.
+ */
+function berlinWanduhrMs(
+  jahr: number,
+  monat: number,
+  tag: number,
+  stunde: number,
+  minute: number
+): number {
+  const naiveUtc = Date.UTC(jahr, monat - 1, tag, stunde, minute, 0);
+  // Offset = (Berliner Wandzeit − UTC-Wandzeit) zu diesem Zeitpunkt.
+  // Beide Strings werden von Date.parse in derselben Geräte-Zeitzone
+  // interpretiert, sodass sich die Geräte-Zeitzone heraushebt.
+  const alsBerlin = new Date(naiveUtc).toLocaleString('en-US', { timeZone: BERLIN_TZ });
+  const alsUtc = new Date(naiveUtc).toLocaleString('en-US', { timeZone: 'UTC' });
+  const offset = Date.parse(alsBerlin) - Date.parse(alsUtc);
+  return naiveUtc - offset;
+}
+
 // ---- Aktive Sessions laden ---------------------------------
 
 export function aktiveSessions(cb: (list: Arbeitszeit[]) => void): Unsubscribe {
@@ -161,17 +212,19 @@ export async function schliesseAbgelaufeneSessions(): Promise<Arbeitszeit[]> {
     where('status', 'in', ['aktiv', 'pause'])
   );
   const snap = await getDocs(q);
-  const heute = new Date();
+  // Heutiger Tag in Berliner Zeit (Geräte-Zeitzone irrelevant — Epoch ist
+  // zeitzonenunabhängig, nur die Tageszuordnung erfolgt in Berlin).
+  const heuteTag = berlinTagSchluessel(now());
   const geschlossene: Arbeitszeit[] = [];
 
   for (const d of snap.docs) {
     const session = { id: d.id, ...d.data() } as Arbeitszeit;
-    const startDatum = new Date(session.startTime);
-    const startTag = new Date(startDatum.getFullYear(), startDatum.getMonth(), startDatum.getDate());
-    const heute2 = new Date(heute.getFullYear(), heute.getMonth(), heute.getDate());
-    // Wenn Session von gestern oder früher → automatisch schließen
-    if (startTag < heute2) {
-      const schliesszeit = new Date(startDatum.getFullYear(), startDatum.getMonth(), startDatum.getDate(), 23, 59, 0).getTime();
+    const start = berlinDatumsteile(session.startTime);
+    const startTag = start.jahr * 10000 + start.monat * 100 + start.tag;
+    // Nur schließen, wenn der Start-Tag (Berliner Zeit) VOR dem heutigen
+    // Berliner Tag liegt. Same-Day-Sessions bleiben offen.
+    if (startTag < heuteTag) {
+      const schliesszeit = berlinWanduhrMs(start.jahr, start.monat, start.tag, 23, 59);
       const pausen = [...session.pausen];
       const offenePause = pausen.findLastIndex((p) => p.ende === null);
       if (offenePause >= 0) {
