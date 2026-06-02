@@ -19,6 +19,57 @@ function now(): number {
   return Date.now();
 }
 
+// ---- Zeitzonen-Helfer (fix auf Europe/Berlin) --------------
+// WICHTIG: Tagesgrenzen und Wanduhrzeiten dürfen NICHT von der lokalen
+// Zeitzone des auslösenden Geräts abhängen. Die Stempeluhr läuft auf
+// beliebigen Tablets/Smartphones; ist dort die Zeitzone falsch
+// eingestellt (z. B. UTC-7 statt Europe/Berlin), wertet die alte Logik
+// eine Session vom selben Tag fälschlich als „Vortag" und schließt sie
+// automatisch — die 23:59-Schließzeit landet zudem auf einer falschen
+// absoluten Uhrzeit (real beobachtet: 08:59 statt 23:59). Daher rechnen
+// wir Tagesgrenze und Schließzeit explizit in Berliner Zeit.
+const BERLIN_TZ = 'Europe/Berlin';
+
+/** {jahr, monat (1–12), tag} eines Zeitpunkts in Berliner Zeit. */
+function berlinDatumsteile(ms: number): { jahr: number; monat: number; tag: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BERLIN_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(ms));
+  const wert = (typ: string) => Number(parts.find((p) => p.type === typ)?.value);
+  return { jahr: wert('year'), monat: wert('month'), tag: wert('day') };
+}
+
+/** Sortierbarer Tagesschlüssel YYYYMMDD eines Zeitpunkts in Berliner Zeit. */
+function berlinTagSchluessel(ms: number): number {
+  const { jahr, monat, tag } = berlinDatumsteile(ms);
+  return jahr * 10000 + monat * 100 + tag;
+}
+
+/**
+ * Epoch-ms einer Berliner Wanduhrzeit (monat 1–12). Bestimmt den
+ * Berliner UTC-Offset zum betreffenden Datum (Sommer-/Winterzeit) und
+ * rechnet zurück — unabhängig von der Geräte-Zeitzone.
+ */
+function berlinWanduhrMs(
+  jahr: number,
+  monat: number,
+  tag: number,
+  stunde: number,
+  minute: number
+): number {
+  const naiveUtc = Date.UTC(jahr, monat - 1, tag, stunde, minute, 0);
+  // Offset = (Berliner Wandzeit − UTC-Wandzeit) zu diesem Zeitpunkt.
+  // Beide Strings werden von Date.parse in derselben Geräte-Zeitzone
+  // interpretiert, sodass sich die Geräte-Zeitzone heraushebt.
+  const alsBerlin = new Date(naiveUtc).toLocaleString('en-US', { timeZone: BERLIN_TZ });
+  const alsUtc = new Date(naiveUtc).toLocaleString('en-US', { timeZone: 'UTC' });
+  const offset = Date.parse(alsBerlin) - Date.parse(alsUtc);
+  return naiveUtc - offset;
+}
+
 // ---- Aktive Sessions laden ---------------------------------
 
 export function aktiveSessions(cb: (list: Arbeitszeit[]) => void): Unsubscribe {
@@ -49,7 +100,8 @@ export async function ladeAktiveSessionFuerMitarbeiter(
 export async function einstempeln(
   mitarbeiterId: string,
   typ: ArbeitszeitsTyp,
-  quelle: 'nfc' | 'manuell' = 'nfc'
+  quelle: import('../types').ArbeitszeitsQuelle = 'nfc',
+  ausgabeId?: string
 ): Promise<Arbeitszeit> {
   // Sicherheitscheck: keine doppelte Session
   const existing = await ladeAktiveSessionFuerMitarbeiter(mitarbeiterId);
@@ -68,6 +120,7 @@ export async function einstempeln(
     korrekturLog: [],
     erstelltAm: ts,
     aktualisiertAm: ts,
+    ...(ausgabeId ? { ausgabeId } : {}),
   };
   const ref = await addDoc(collection(db, 'arbeitszeiten'), session);
   return { id: ref.id, ...session };
@@ -145,37 +198,88 @@ export async function pauseBeenden(session: Arbeitszeit): Promise<void> {
 
 // ---- Auto-Schließen um Mitternacht ------------------------
 
-export async function schliesseAbgelaufeneSessions(): Promise<void> {
+/**
+ * Schließt alle Sessions, die an einem früheren Tag gestartet und nicht
+ * ausgestempelt wurden. endTime wird auf 23:59 Uhr des Start-Tages
+ * gesetzt, Flag `autoGeschlossenUm24` aktiviert, ein Audit-Eintrag im
+ * `korrekturLog` hinterlegt. Rückgabe: Liste der gerade geschlossenen
+ * Sessions (für UI-Banner). Bereits zuvor geschlossene Sessions werden
+ * NICHT erneut angefasst und NICHT zurückgegeben.
+ */
+export async function schliesseAbgelaufeneSessions(): Promise<Arbeitszeit[]> {
   const q = query(
     collection(db, 'arbeitszeiten'),
     where('status', 'in', ['aktiv', 'pause'])
   );
   const snap = await getDocs(q);
-  const heute = new Date();
+  // Heutiger Tag in Berliner Zeit (Geräte-Zeitzone irrelevant — Epoch ist
+  // zeitzonenunabhängig, nur die Tageszuordnung erfolgt in Berlin).
+  const heuteTag = berlinTagSchluessel(now());
+  const geschlossene: Arbeitszeit[] = [];
 
   for (const d of snap.docs) {
     const session = { id: d.id, ...d.data() } as Arbeitszeit;
-    const startDatum = new Date(session.startTime);
-    const startTag = new Date(startDatum.getFullYear(), startDatum.getMonth(), startDatum.getDate());
-    const heute2 = new Date(heute.getFullYear(), heute.getMonth(), heute.getDate());
-    // Wenn Session von gestern oder früher → automatisch schließen
-    if (startTag < heute2) {
-      const schliesszeit = new Date(startDatum.getFullYear(), startDatum.getMonth(), startDatum.getDate(), 23, 59, 0).getTime();
+    const start = berlinDatumsteile(session.startTime);
+    const startTag = start.jahr * 10000 + start.monat * 100 + start.tag;
+    // Nur schließen, wenn der Start-Tag (Berliner Zeit) VOR dem heutigen
+    // Berliner Tag liegt. Same-Day-Sessions bleiben offen.
+    if (startTag < heuteTag) {
+      const schliesszeit = berlinWanduhrMs(start.jahr, start.monat, start.tag, 23, 59);
       const pausen = [...session.pausen];
       const offenePause = pausen.findLastIndex((p) => p.ende === null);
       if (offenePause >= 0) {
         pausen[offenePause] = { ...pausen[offenePause], ende: schliesszeit };
       }
+      const autoLog: AuditEintrag = {
+        zeitstempel: now(),
+        adminName: '— System —',
+        aktion: 'Auto-Close: vergessen auszustempeln, geschlossen um 23:59',
+        vorher: JSON.stringify({ endTime: null, status: session.status }),
+        nachher: JSON.stringify({ endTime: schliesszeit, status: 'abgeschlossen' }),
+      };
+      const naechstesGesamtPause = berechnePausenminuten(pausen);
       await updateDoc(d.ref, {
         endTime: schliesszeit,
         status: 'abgeschlossen',
         pausen,
-        gesamtPauseMinuten: berechnePausenminuten(pausen),
+        gesamtPauseMinuten: naechstesGesamtPause,
         autoGeschlossenUm24: true,
+        korrekturLog: [...(session.korrekturLog ?? []), autoLog],
         aktualisiertAm: now(),
+      });
+      geschlossene.push({
+        ...session,
+        endTime: schliesszeit,
+        status: 'abgeschlossen',
+        pausen,
+        gesamtPauseMinuten: naechstesGesamtPause,
+        autoGeschlossenUm24: true,
+        korrekturLog: [...(session.korrekturLog ?? []), autoLog],
       });
     }
   }
+  return geschlossene;
+}
+
+// ---- Auto-geschlossene Session vom Vortag laden ------------
+
+export async function ladeVortagesAutoGeschlossen(
+  mitarbeiterId: string
+): Promise<Arbeitszeit | null> {
+  // Suche in den letzten 3 Tagen nach auto-geschlossenen Sessions
+  const grenze = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  const q = query(
+    collection(db, 'arbeitszeiten'),
+    where('mitarbeiterId', '==', mitarbeiterId),
+    where('startTime', '>=', grenze),
+    orderBy('startTime', 'desc')
+  );
+  const snap = await getDocs(q);
+  for (const d of snap.docs) {
+    const s = { id: d.id, ...d.data() } as Arbeitszeit;
+    if (s.autoGeschlossenUm24) return s;
+  }
+  return null;
 }
 
 // ---- NFC-Scan verarbeiten ----------------------------------
@@ -184,12 +288,13 @@ export type NfcAktion = 'eingestempelt' | 'ausgestempelt' | 'pause_gestartet' | 
 
 export async function verarbeiteNfcScan(
   mitarbeiterId: string,
-  standardTyp: ArbeitszeitsTyp = 'büro'
+  standardTyp: ArbeitszeitsTyp = 'sonstige',
+  ausgabeId?: string
 ): Promise<{ aktion: NfcAktion; session: Arbeitszeit }> {
   const aktive = await ladeAktiveSessionFuerMitarbeiter(mitarbeiterId);
 
   if (!aktive) {
-    const session = await einstempeln(mitarbeiterId, standardTyp, 'nfc');
+    const session = await einstempeln(mitarbeiterId, standardTyp, 'nfc', ausgabeId);
     return { aktion: 'eingestempelt', session };
   }
 
@@ -223,12 +328,19 @@ export async function korrigiereSession(
   };
 
   const neuerPausenstand = aenderungen.pausen ?? session.pausen;
-  await updateDoc(doc(db, 'arbeitszeiten', session.id), {
+  const update: Record<string, unknown> = {
     ...aenderungen,
     gesamtPauseMinuten: berechnePausenminuten(neuerPausenstand),
     korrekturLog: [...session.korrekturLog, logEintrag],
     aktualisiertAm: now(),
-  });
+  };
+  // Wenn die endTime überschrieben wird, ist das automatisch gesetzte
+  // 23:59-Ende der Auto-Close-Routine nicht mehr „aktiv" — das Flag
+  // soll dann zurück, damit Amber-Highlight & ⚠-Symbol verschwinden.
+  if (aenderungen.endTime != null && session.autoGeschlossenUm24) {
+    update.autoGeschlossenUm24 = false;
+  }
+  await updateDoc(doc(db, 'arbeitszeiten', session.id), update);
 }
 
 // ---- NFC-Tag beschreiben -----------------------------------
@@ -237,10 +349,12 @@ export async function beschreibeNfcTag(mitarbeiterId: string): Promise<void> {
   if (!('NDEFReader' in window)) {
     throw new Error('Web NFC wird von diesem Browser nicht unterstützt (Chrome auf Android erforderlich).');
   }
+  // Schreibt eine URL auf den Chip — Scannen öffnet die App direkt auf der Mitarbeiter-Seite
+  const url = `${window.location.origin}/nfc?ma=${encodeURIComponent(mitarbeiterId)}`;
   // @ts-ignore — NDEFReader ist noch nicht in allen TypeScript-Definitionen
   const ndef = new NDEFReader();
   await ndef.write({
-    records: [{ recordType: 'text', data: mitarbeiterId }],
+    records: [{ recordType: 'url', data: url }],
   });
 }
 
@@ -346,4 +460,67 @@ export async function ladeAlleMonatsarbeitszeiten(
   );
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
+}
+
+// ---- Überlappungs-Prüfung (Plausi-Check) --------------------
+// Für manuelle Erfassung / Korrektur von Arbeitszeiten.
+// Ein Mitarbeiter kann zu einem Zeitpunkt nur EINE Tätigkeit ausführen.
+
+/**
+ * Prüft, ob sich [start, end) mit einer vorhandenen Arbeitszeit des Mitarbeiters
+ * überschneidet. Offene Sessions (endTime === null) werden bis "jetzt" gewertet.
+ * @param mitarbeiterId Mitarbeiter-ID
+ * @param start Start in ms (inklusive)
+ * @param end Ende in ms (exklusive)
+ * @param excludeId Optionale Arbeitszeit-ID, die ignoriert werden soll (beim Bearbeiten)
+ * @returns Konflikt-Session oder null
+ */
+export async function pruefeZeitUeberlappung(
+  mitarbeiterId: string,
+  start: number,
+  end: number,
+  excludeId?: string
+): Promise<Arbeitszeit | null> {
+  const q = query(
+    collection(db, 'arbeitszeiten'),
+    where('mitarbeiterId', '==', mitarbeiterId)
+  );
+  const snap = await getDocs(q);
+  const jetzt = Date.now();
+  for (const d of snap.docs) {
+    if (excludeId && d.id === excludeId) continue;
+    const a = { id: d.id, ...d.data() } as Arbeitszeit;
+    const aEnde = a.endTime ?? jetzt;
+    // Überlappung: NICHT (neu komplett davor ODER neu komplett danach)
+    if (!(end <= a.startTime || start >= aEnde)) {
+      return a;
+    }
+  }
+  return null;
+}
+
+/**
+ * Formatiert einen Konflikt als Fehlermeldung für Alerts.
+ */
+export function formatiereUeberlappungsFehler(konflikt: Arbeitszeit): string {
+  const fmt = (ts: number) =>
+    new Date(ts).toLocaleString('de-DE', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  const typLabels: Record<string, string> = {
+    austragen: 'Austragen',
+    zusammentragen: 'Zusammentragen',
+    vorarbeit: 'Vorarbeit',
+    buero: 'Büro',
+    fahrt: 'Fahrt',
+    sonstiges: 'Sonstiges',
+  };
+  const typText = typLabels[konflikt.typ] ?? konflikt.typ;
+  const endText = konflikt.endTime ? fmt(konflikt.endTime) : '(noch aktiv)';
+  return (
+    `Überlappung mit bestehender Arbeitszeit (${typText}):\n` +
+    `${fmt(konflikt.startTime)} → ${endText}\n\n` +
+    `Eine Person kann zu einem Zeitpunkt nur eine Tätigkeit ausführen.`
+  );
 }

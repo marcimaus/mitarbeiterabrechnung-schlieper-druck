@@ -6,22 +6,22 @@ import {
   ladeAusgaben,
   erstelleAusgabe,
   aktualisiereAusgabe,
+  loescheAusgabe,
   ladeBeilagen,
   erstelleBeilage,
   aktualisiereBeilage,
   loescheBeilage,
+  ladeEinsaetze,
+  mergeAusgaben,
 } from '../lib/db';
-import { berechneStapel } from '../lib/berechnung';
+import { berechneStapel, berechneGewichtProExemplarG } from '../lib/berechnung';
 import {
   getCurrentKW,
-  alleKWsImJahr,
   kwLabel,
   formatDonnerstag,
-  maxKWinJahr,
 } from '../lib/kalender';
-import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, AusgabeStatus } from '../types';
+import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, Einsatz } from '../types';
 
-const SEITENZAHLEN = [8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32];
 const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
   { value: 'A4', label: 'DIN A4' },
   { value: 'A5', label: 'DIN A5' },
@@ -30,7 +30,7 @@ const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
 
 export default function AusgabenScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <AusgabenInhalt />
     </AdminPinGate>
   );
@@ -42,7 +42,7 @@ function AusgabenInhalt() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Ausgabenplanung</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Ausgaben & Beilagen</h1>
         <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm">
           <button
             onClick={() => setTab('ausgaben')}
@@ -71,22 +71,99 @@ function AusgabenInhalt() {
 function AusgabenListe() {
   const { parameter } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
+  const [allePerioden, setAllePerioden] = useState<Abrechnungsperiode[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Ausgabe | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Ausgabe | null>(null);
   const [filterJahr, setFilterJahr] = useState(new Date().getFullYear());
+  const [filterPeriodeId, setFilterPeriodeId] = useState<string | 'alle'>('alle');
 
   useEffect(() => {
-    ladeAusgaben().then((list) => {
-      setAusgaben(list);
+    // Lade Ausgaben und Perioden parallel; lege fehlende Ausgaben für Periode-KWs automatisch an
+    Promise.all([ladeAusgaben(), ladeAbrechnungsperioden()]).then(async ([list, perioden]) => {
+      setAllePerioden(perioden);
+      const vorhandeneKeys = new Set(list.map((a) => `${a.jahr}-${a.kw}`));
+      const neuAngelegt: Ausgabe[] = [];
+      for (const periode of perioden) {
+        for (const kw of periode.kalenderwochen) {
+          const key = `${periode.jahr}-${kw}`;
+          if (!vorhandeneKeys.has(key)) {
+            vorhandeneKeys.add(key); // Duplikate innerhalb des Loops verhindern
+            // Seitenzahl + Stapelzahl stehen bei der automatischen Anlage
+            // noch nicht fest → leer (0) anlegen; werden später manuell
+            // gepflegt.
+            const id = await erstelleAusgabe({
+              kw,
+              jahr: periode.jahr,
+              seitenzahl: 0,
+              stapelAnzahl: 0,
+              grammaturGqm: parameter?.standardGrammurGqm ?? 65,
+              seitenformatMm: {
+                breite: parameter?.standardSeitenformatBreiteMm ?? 305,
+                hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
+              },
+              status: 'geplant',
+            });
+            neuAngelegt.push({
+              id, kw, jahr: periode.jahr,
+              seitenzahl: 0,
+              stapelAnzahl: 0,
+              grammaturGqm: parameter?.standardGrammurGqm ?? 65,
+              seitenformatMm: {
+                breite: parameter?.standardSeitenformatBreiteMm ?? 305,
+                hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
+              },
+              status: 'geplant',
+              erstelltAm: Date.now(),
+              aktualisiertAm: Date.now(),
+            });
+          }
+        }
+      }
+      const alle = [...list, ...neuAngelegt].sort((a, b) => b.jahr - a.jahr || b.kw - a.kw);
+      setAusgaben(alle);
       setLoading(false);
-      if (list.length > 0) setSelected(list[0]);
+      if (alle.length > 0) {
+        setFilterJahr(alle[0].jahr); // aktuellstes Jahr mit Ausgaben auswählen
+        setSelected(alle[0]);
+        // Aktuelle Periode vorauswählen, falls vorhanden
+        const aktuellePeriode = perioden
+          .filter((p) => p.jahr === alle[0].jahr)
+          .sort((a, b) => b.monat - a.monat)[0];
+        if (aktuellePeriode) setFilterPeriodeId(aktuellePeriode.id);
+      }
     });
   }, []);
 
-  const gefilterteAusgaben = ausgaben.filter((a) => a.jahr === filterJahr);
+  const periodenFuerJahr = allePerioden
+    .filter((p) => p.jahr === filterJahr)
+    .sort((a, b) => a.monat - b.monat);
+
+  const gefilterteAusgaben = (() => {
+    const nachJahr = ausgaben.filter((a) => a.jahr === filterJahr);
+    if (filterPeriodeId === 'alle') return nachJahr;
+    const periode = allePerioden.find((p) => p.id === filterPeriodeId);
+    if (!periode) return nachJahr;
+    const kwSet = new Set(periode.kalenderwochen);
+    return nachJahr.filter((a) => kwSet.has(a.kw));
+  })();
   const jahre = [...new Set(ausgaben.map((a) => a.jahr))].sort((a, b) => b - a);
+
+  // Duplikat-Erkennung: Gruppen mit gleichem (kw, jahr) und >1 Eintrag.
+  const duplikatGruppen = (() => {
+    const map = new Map<string, Ausgabe[]>();
+    for (const a of ausgaben) {
+      const key = `${a.jahr}-${a.kw}`;
+      const arr = map.get(key) ?? [];
+      arr.push(a);
+      map.set(key, arr);
+    }
+    return [...map.values()]
+      .filter((arr) => arr.length > 1)
+      .sort((a, b) => b[0].jahr - a[0].jahr || b[0].kw - a[0].kw);
+  })();
+  const [duplikatDialogOffen, setDuplikatDialogOffen] = useState(false);
 
   async function handleSave(neu: Ausgabe) {
     setAusgaben((prev) => {
@@ -102,35 +179,72 @@ function AusgabenListe() {
     setShowForm(false);
   }
 
-  const statusBadge = (status: AusgabeStatus) => {
-    const map = {
-      geplant: 'bg-gray-100 text-gray-600',
-      laufend: 'bg-blue-100 text-blue-700',
-      abgeschlossen: 'bg-green-100 text-green-700',
-    };
-    const labels = { geplant: 'Geplant', laufend: 'Laufend', abgeschlossen: 'Abgeschlossen' };
-    return <span className={`text-xs px-2 py-0.5 rounded-full ${map[status]}`}>{labels[status]}</span>;
-  };
-
   return (
+    <>
+      {duplikatGruppen.length > 0 && (
+        <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm flex items-start gap-3">
+          <span className="text-red-600 text-xl">⚠</span>
+          <div className="flex-1">
+            <div className="font-semibold text-red-900 mb-0.5">
+              {duplikatGruppen.length} doppelt angelegte Ausgabe
+              {duplikatGruppen.length === 1 ? '' : 'n'} gefunden
+            </div>
+            <p className="text-xs text-red-800">
+              Für die folgenden Kalenderwochen existieren mehrere Ausgaben:
+              {' '}
+              {duplikatGruppen.map((g) => `KW ${g[0].kw}/${g[0].jahr} (${g.length}×)`).join(', ')}
+              . Bitte zusammenführen — abhängige Daten (Beilagen, Einsätze,
+              Memos) werden dabei automatisch auf die behaltene Ausgabe
+              umgehängt.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDuplikatDialogOffen(true)}
+            className="bg-red-600 text-white text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-red-700"
+          >
+            🛠 Duplikate auflösen
+          </button>
+        </div>
+      )}
+
+      {duplikatDialogOffen && (
+        <DuplikatDialog
+          gruppen={duplikatGruppen}
+          onClose={() => setDuplikatDialogOffen(false)}
+          onResolved={async () => {
+            const neu = await ladeAusgaben();
+            setAusgaben(neu);
+          }}
+        />
+      )}
+
     <div className="flex gap-6">
       {/* Liste links */}
       <div className="w-64 shrink-0">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-col gap-2 mb-2">
           <select
             value={filterJahr}
-            onChange={(e) => setFilterJahr(Number(e.target.value))}
+            onChange={(e) => {
+              const j = Number(e.target.value);
+              setFilterJahr(j);
+              setFilterPeriodeId('alle');
+            }}
             className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             {jahre.length === 0 && <option value={new Date().getFullYear()}>{new Date().getFullYear()}</option>}
             {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
           </select>
-          <button
-            onClick={() => { setEditTarget(null); setShowForm(true); }}
-            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
+          <select
+            value={filterPeriodeId}
+            onChange={(e) => setFilterPeriodeId(e.target.value)}
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            + Neu
-          </button>
+            <option value="alle">Alle Ausgaben</option>
+            {periodenFuerJahr.map((p) => (
+              <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+            ))}
+          </select>
         </div>
 
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -141,7 +255,7 @@ function AusgabenListe() {
           {gefilterteAusgaben.map((a) => (
             <button
               key={a.id}
-              onClick={() => setSelected(a)}
+              onClick={() => { setSelected(a); setFilterJahr(a.jahr); }}
               className={`w-full text-left px-4 py-3 border-b border-gray-100 last:border-0 transition-colors ${
                 selected?.id === a.id ? 'bg-blue-50' : 'hover:bg-gray-50'
               }`}
@@ -150,7 +264,6 @@ function AusgabenListe() {
                 <span className={`font-medium text-sm ${selected?.id === a.id ? 'text-blue-700' : 'text-gray-800'}`}>
                   {kwLabel(a.kw, a.jahr)}
                 </span>
-                {statusBadge(a.status)}
               </div>
               <div className="text-xs text-gray-400 mt-0.5">{formatDonnerstag(a.kw, a.jahr)}</div>
             </button>
@@ -164,11 +277,10 @@ function AusgabenListe() {
           <AusgabeDetail
             ausgabe={selected}
             onEdit={() => { setEditTarget(selected); setShowForm(true); }}
-            onStatusChange={async (status) => {
-              await aktualisiereAusgabe(selected.id, { status });
-              const aktualisiert = { ...selected, status };
-              setSelected(aktualisiert);
-              handleSave(aktualisiert);
+            onDelete={async () => {
+              await loescheAusgabe(selected.id);
+              setAusgaben((prev) => prev.filter((a) => a.id !== selected.id));
+              setSelected(null);
             }}
           />
         ) : (
@@ -193,6 +305,7 @@ function AusgabenListe() {
         />
       </Modal>
     </div>
+    </>
   );
 }
 
@@ -201,12 +314,29 @@ function AusgabenListe() {
 function AusgabeDetail({
   ausgabe,
   onEdit,
-  onStatusChange,
+  onDelete,
 }: {
   ausgabe: Ausgabe;
   onEdit: () => void;
-  onStatusChange: (s: AusgabeStatus) => void;
+  onDelete: () => Promise<void>;
 }) {
+  const { abrechnungsperioden } = useApp();
+  const zugehoerigerPeriode = abrechnungsperioden.find(
+    (p) => p.jahr === ausgabe.jahr && p.kalenderwochen.includes(ausgabe.kw)
+  );
+  // Sperre: Periode abgeschlossen ODER Monatswechsel-Snapshot existiert.
+  // Nach dem Monatswechsel sind die Mengen der Teilgebiete fixiert — eine
+  // Änderung an Beilagen/Zusammentragen würde das Ergebnis verschieben.
+  const istAbgeschlossen = zugehoerigerPeriode?.status === 'abgeschlossen';
+  const istMonatswechsel = !!zugehoerigerPeriode?.monatswechselSnapshot;
+  const istGesperrt = istAbgeschlossen || istMonatswechsel;
+  const kannGeloeschtWerden = !zugehoerigerPeriode;
+
+  async function handleLoeschen() {
+    if (!confirm(`Ausgabe ${kwLabel(ausgabe.kw, ausgabe.jahr)} wirklich löschen?`)) return;
+    await onDelete();
+  }
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -216,35 +346,75 @@ function AusgabeDetail({
             <h2 className="text-lg font-bold text-gray-900">{kwLabel(ausgabe.kw, ausgabe.jahr)}</h2>
             <p className="text-sm text-gray-500">Erscheint: {formatDonnerstag(ausgabe.kw, ausgabe.jahr)}</p>
           </div>
-          <button onClick={onEdit} className="text-sm text-blue-600 hover:text-blue-800">Bearbeiten</button>
+          <div className="flex items-center gap-3">
+            {!istGesperrt && (
+              <button onClick={onEdit} className="text-sm text-blue-600 hover:text-blue-800">Bearbeiten</button>
+            )}
+            {kannGeloeschtWerden && (
+              <button onClick={handleLoeschen} className="text-sm text-red-500 hover:text-red-700">Löschen</button>
+            )}
+          </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-4 mt-4">
-          <InfoBox label="Seitenzahl" value={`${ausgabe.seitenzahl} Seiten`} />
-          <InfoBox label="Stapel" value={ausgabe.stapel.join(' + ')} hint="Bogen-Zusammensetzung" />
+        {istAbgeschlossen && (
+          <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 flex items-center gap-1">
+            🔒 Abrechnungsperiode abgeschlossen — keine Änderungen möglich
+          </div>
+        )}
+        {!istAbgeschlossen && istMonatswechsel && (
+          <div className="mt-3 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-900 flex items-center gap-1">
+            📌 Monatswechsel durchgeführt — Beilagen und Zusammentragen sind
+            fixiert (Mengen der Teilgebiete würden Berechnung verschieben).
+          </div>
+        )}
+
+        {zugehoerigerPeriode ? (
+          <div className="mt-3">
+            <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${
+              zugehoerigerPeriode.status === 'abgeschlossen'
+                ? 'bg-green-100 text-green-700'
+                : 'bg-blue-100 text-blue-700'
+            }`}>
+              📅 {zugehoerigerPeriode.bezeichnung}
+              {zugehoerigerPeriode.status === 'abgeschlossen' ? ' ✓' : ''}
+            </span>
+          </div>
+        ) : (
+          <div className="mt-3">
+            <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-amber-100 text-amber-700 font-medium">
+              ⚠ Keine Abrechnungsperiode zugeordnet
+            </span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-4 gap-4 mt-4">
+          <InfoBox
+            label="Seitenzahl"
+            value={ausgabe.seitenzahl > 0 ? `${ausgabe.seitenzahl} Seiten` : '— fehlt —'}
+            hint={ausgabe.seitenzahl > 0 ? undefined : 'Noch nicht erfasst'}
+          />
+          <InfoBox
+            label="Stapel"
+            value={ausgabe.stapelAnzahl > 0 ? `${ausgabe.stapelAnzahl} Stapel` : '— fehlt —'}
+            hint={ausgabe.stapelAnzahl > 0 ? 'Für Zusammentragen' : 'Noch nicht erfasst'}
+          />
           <InfoBox label="Grammatur" value={`${ausgabe.grammaturGqm} g/m²`} />
-        </div>
-
-        <div className="mt-4 flex items-center gap-3">
-          <span className="text-sm text-gray-600">Status:</span>
-          {(['geplant', 'laufend', 'abgeschlossen'] as AusgabeStatus[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => onStatusChange(s)}
-              className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                ausgabe.status === s
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-gray-600 border-gray-300 hover:border-blue-400'
-              }`}
-            >
-              {s === 'geplant' ? 'Geplant' : s === 'laufend' ? 'Laufend' : 'Abgeschlossen'}
-            </button>
-          ))}
+          <InfoBox
+            label="Gewicht je Exemplar"
+            value={`${berechneGewichtProExemplarG(ausgabe).toLocaleString('de-DE', { maximumFractionDigits: 1 })} g`}
+            hint={`${ausgabe.seitenformatMm.breite}×${ausgabe.seitenformatMm.hoehe} mm · ohne Beilagen`}
+          />
         </div>
       </div>
 
       {/* Beilagen */}
-      <BeilagenVerwaltung ausgabe={ausgabe} />
+      <BeilagenVerwaltung ausgabe={ausgabe} istGesperrt={istGesperrt} />
+
+      {/* Austräger-Einsätze */}
+      <EinsaetzeUebersicht ausgabe={ausgabe} />
+
+      {/* Teilgebiet-Beilagen-Matrix: für jedes Teilgebiet die gebuchten Beilagen */}
+      <TeilgebietBeilagenUebersicht ausgabe={ausgabe} />
     </div>
   );
 }
@@ -274,55 +444,146 @@ function AusgabeForm({
   onSave: (a: Ausgabe) => void;
   onCancel: () => void;
 }) {
+  const { abrechnungsperioden } = useApp();
   const aktuelleKW = getCurrentKW();
   const [kw, setKw] = useState(initial?.kw ?? aktuelleKW.kw);
   const [jahr, setJahr] = useState(initial?.jahr ?? aktuelleKW.jahr);
   const [seitenzahl, setSeitenzahl] = useState(initial?.seitenzahl ?? 16);
+  const [stapelAnzahl, setStapelAnzahl] = useState(
+    initial?.stapelAnzahl ?? berechneStapel(initial?.seitenzahl ?? 16).length
+  );
   const [grammatur, setGrammatur] = useState(
     initial?.grammaturGqm ?? parameter?.standardGrammurGqm ?? 65
+  );
+  const [vorarbeitFreigegeben, setVorarbeitFreigegeben] = useState<boolean>(
+    initial?.vorarbeitFreigegeben ?? false
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const stapelVorschau = berechneStapel(seitenzahl);
-  const maxKW = maxKWinJahr(jahr);
+  // Welche Periode enthält diese KW aktuell?
+  const findPeriodeForKW = (kwVal: number, jahrVal: number) =>
+    abrechnungsperioden.find((p) => p.jahr === jahrVal && p.kalenderwochen.includes(kwVal));
+
+  // Beim Öffnen des Formulars: ursprüngliche Periode merken (für Umhängen bei Edit)
+  const originalPeriodeId = initial ? (findPeriodeForKW(initial.kw, initial.jahr)?.id ?? '') : '';
+
+  // Perioden-Auswahl im Formular
+  const [periodeId, setPeriodeId] = useState<string>(
+    () => (initial ? (findPeriodeForKW(initial.kw, initial.jahr)?.id ?? '') : '')
+  );
+
+  // Offene Perioden für die Auswahl (abgeschlossene sind gesperrt)
+  const offenePerioden = [...abrechnungsperioden]
+    .filter((p) => p.status === 'offen')
+    .sort((a, b) => b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat);
+
+  // Ausgewählte Periode und ob sie KWs vorgibt
+  const selectedPeriode = periodeId ? abrechnungsperioden.find((p) => p.id === periodeId) : null;
+  const periodeHatKWs = !!(selectedPeriode && selectedPeriode.kalenderwochen.length > 0);
 
   const kwBereitsVorhanden = vorhandeneKWs.some(
     (v) => v.kw === kw && v.jahr === jahr && v.kw !== initial?.kw
   );
 
+  // KW gehört zu einer abgeschlossenen Periode?
+  const kwInGesperrterPeriode = abrechnungsperioden.some(
+    (p) => p.status === 'abgeschlossen' && p.jahr === jahr && p.kalenderwochen.includes(kw) &&
+           p.id !== originalPeriodeId
+  );
+
+  // Periode geändert → Jahr und KW anpassen
+  function handlePeriodeChange(newPeriodeId: string) {
+    setPeriodeId(newPeriodeId);
+    const p = abrechnungsperioden.find((x) => x.id === newPeriodeId);
+    if (!p) return;
+    setJahr(p.jahr);
+    if (p.kalenderwochen.length > 0) {
+      const sortedKWs = [...p.kalenderwochen].sort((a, b) => a - b);
+      const ersteFreie = sortedKWs.find(
+        (kwVal) =>
+          kwVal === initial?.kw ||
+          !vorhandeneKWs.some((v) => v.kw === kwVal && v.jahr === p.jahr)
+      );
+      if (ersteFreie != null) setKw(ersteFreie);
+    }
+  }
+
+  // Automatisch Periode vorschlagen wenn KW/Jahr manuell geändert wird (Fallback ohne Perioden-KWs)
+  function handleKWChange(newKw: number) {
+    setKw(newKw);
+    if (!periodeHatKWs) {
+      const auto = findPeriodeForKW(newKw, jahr);
+      if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+    }
+  }
+  function handleJahrChange(newJahr: number) {
+    setJahr(newJahr);
+    if (!periodeHatKWs) {
+      const auto = findPeriodeForKW(kw, newJahr);
+      if (auto && auto.status === 'offen') setPeriodeId(auto.id);
+    }
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!periodeId) { setError('Bitte eine Abrechnungsperiode zuordnen.'); return; }
     if (kwBereitsVorhanden) { setError(`KW ${kw}/${jahr} ist bereits angelegt.`); return; }
+    if (kwInGesperrterPeriode) { setError(`KW ${kw}/${jahr} gehört zu einer abgeschlossenen Abrechnungsperiode.`); return; }
+    if (stapelAnzahl < 1) { setError('Mindestens 1 Stapel erforderlich.'); return; }
     setSaving(true);
     setError('');
     try {
+      // Ausgabe speichern
       if (initial) {
         await aktualisiereAusgabe(initial.id, {
-          kw, jahr, seitenzahl, grammaturGqm: grammatur,
+          kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur,
           seitenformatMm: initial.seitenformatMm,
+          vorarbeitFreigegeben,
         });
-        onSave({ ...initial, kw, jahr, seitenzahl, stapel: berechneStapel(seitenzahl), grammaturGqm: grammatur });
+        onSave({ ...initial, kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur, vorarbeitFreigegeben });
       } else {
         const id = await erstelleAusgabe({
-          kw, jahr, seitenzahl, grammaturGqm: grammatur,
+          kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur,
           seitenformatMm: {
             breite: parameter?.standardSeitenformatBreiteMm ?? 305,
             hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
           },
           status: 'geplant',
+          vorarbeitFreigegeben,
         });
         onSave({
-          id, kw, jahr, seitenzahl, stapel: berechneStapel(seitenzahl),
+          id, kw, jahr, seitenzahl, stapelAnzahl,
           grammaturGqm: grammatur,
           seitenformatMm: {
             breite: parameter?.standardSeitenformatBreiteMm ?? 305,
             hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
           },
           status: 'geplant',
+          vorarbeitFreigegeben,
           erstelltAm: Date.now(),
           aktualisiertAm: Date.now(),
         });
+      }
+
+      // Perioden-Zuordnung aktualisieren
+      const neuerPeriode = abrechnungsperioden.find((p) => p.id === periodeId);
+      if (neuerPeriode) {
+        // Alte KW aus alter Periode entfernen (falls Periode oder KW geändert)
+        if (originalPeriodeId && (originalPeriodeId !== periodeId || initial?.kw !== kw)) {
+          const altePeriode = abrechnungsperioden.find((p) => p.id === originalPeriodeId);
+          if (altePeriode) {
+            await aktualisiereAbrechnungsperiode(originalPeriodeId, {
+              kalenderwochen: altePeriode.kalenderwochen.filter((k) => k !== (initial?.kw ?? kw)),
+            });
+          }
+        }
+        // Neue KW in neue Periode eintragen (falls noch nicht vorhanden)
+        if (!neuerPeriode.kalenderwochen.includes(kw)) {
+          await aktualisiereAbrechnungsperiode(periodeId, {
+            kalenderwochen: [...neuerPeriode.kalenderwochen, kw].sort((a, b) => a - b),
+          });
+        }
       }
     } catch (err) {
       setError('Fehler beim Speichern.');
@@ -334,33 +595,90 @@ function AusgabeForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+
+      {/* ① Abrechnungsperiode — zuerst wählen */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Abrechnungsperiode <span className="text-red-500">*</span>
+        </label>
+        {offenePerioden.length === 0 ? (
+          <p className="text-sm text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            ⚠ Keine offene Abrechnungsperiode vorhanden. Bitte zuerst eine Periode anlegen.
+          </p>
+        ) : (
+          <select
+            value={periodeId}
+            onChange={(e) => handlePeriodeChange(e.target.value)}
+            className={inputClass}
+            required
+          >
+            <option value="">— Periode auswählen —</option>
+            {offenePerioden.map((p) => (
+              <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {/* ② KW-Auswahl — gefiltert nach Periode (wenn Periode KWs hat) */}
+      {periodeHatKWs ? (
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Kalenderwoche</label>
-          <input
-            type="number"
-            min={1}
-            max={maxKW}
+          <select
             value={kw}
             onChange={(e) => setKw(Number(e.target.value))}
             className={inputClass}
-          />
+          >
+            {[...selectedPeriode!.kalenderwochen].sort((a, b) => a - b).map((kwVal) => {
+              const vergeben = kwVal !== initial?.kw && vorhandeneKWs.some((v) => v.kw === kwVal && v.jahr === jahr);
+              return (
+                <option key={kwVal} value={kwVal} disabled={vergeben}>
+                  KW {kwVal.toString().padStart(2, '0')}/{jahr}{vergeben ? ' (bereits vorhanden)' : ''}
+                </option>
+              );
+            })}
+          </select>
+          <p className="text-xs text-gray-400 mt-1">
+            Jahr {jahr} · {selectedPeriode!.kalenderwochen.length} KWs in dieser Periode
+          </p>
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Jahr</label>
-          <input
-            type="number"
-            min={2020}
-            max={2099}
-            value={jahr}
-            onChange={(e) => setJahr(Number(e.target.value))}
-            className={inputClass}
-          />
+      ) : (
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Kalenderwoche</label>
+            <input
+              type="number"
+              min={1}
+              max={53}
+              value={kw}
+              onChange={(e) => handleKWChange(Number(e.target.value))}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Jahr</label>
+            <input
+              type="number"
+              min={2020}
+              max={2099}
+              value={jahr}
+              onChange={(e) => handleJahrChange(Number(e.target.value))}
+              className={inputClass}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {kwBereitsVorhanden && (
         <p className="text-amber-600 text-sm">⚠ KW {kw}/{jahr} ist bereits angelegt.</p>
+      )}
+      {kwInGesperrterPeriode && (
+        <p className="text-red-600 text-sm">🔒 KW {kw}/{jahr} gehört zu einer abgeschlossenen Abrechnungsperiode — keine neue Ausgabe möglich.</p>
+      )}
+      {periodeId && !periodeHatKWs && (
+        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          ℹ Diese Periode hat noch keine Kalenderwochen festgelegt. KW wird beim Speichern automatisch hinzugefügt.
+        </p>
       )}
 
       <div>
@@ -372,18 +690,46 @@ function AusgabeForm({
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Seitenzahl</label>
-        <select
-          value={seitenzahl}
-          onChange={(e) => setSeitenzahl(Number(e.target.value))}
-          className={inputClass}
-        >
-          {SEITENZAHLEN.map((s) => (
-            <option key={s} value={s}>{s} Seiten</option>
-          ))}
-        </select>
-        <p className="text-xs text-gray-400 mt-1">
-          Stapel: {stapelVorschau.map((s) => `${s}-Seiten-Bogen`).join(' + ')}
-        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={2}
+            max={128}
+            step={2}
+            value={seitenzahl}
+            onChange={(e) => {
+              const val = Math.max(2, Number(e.target.value));
+              setSeitenzahl(val);
+              setStapelAnzahl(berechneStapel(val).length);
+            }}
+            className={inputClass + ' w-28'}
+          />
+          <span className="text-sm text-gray-500">Seiten (gerade Zahl)</span>
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Anzahl Stapel (für Zusammentragen)
+        </label>
+        <div className="flex items-center gap-3">
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={stapelAnzahl}
+            onChange={(e) => setStapelAnzahl(Math.max(1, Number(e.target.value)))}
+            className={inputClass + ' w-24'}
+          />
+          <span className="text-sm text-gray-500">Stapel je Teilgebiet</span>
+          <button
+            type="button"
+            onClick={() => setStapelAnzahl(berechneStapel(seitenzahl).length)}
+            className="text-xs text-blue-500 hover:text-blue-700 underline"
+          >
+            ↺ Vorschlag ({berechneStapel(seitenzahl).length})
+          </button>
+        </div>
       </div>
 
       <div>
@@ -398,13 +744,30 @@ function AusgabeForm({
         />
       </div>
 
+      <div className="border-t pt-4">
+        <label className="flex items-start gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={vorarbeitFreigegeben}
+            onChange={(e) => setVorarbeitFreigegeben(e.target.checked)}
+            className="mt-0.5 rounded"
+          />
+          <span>
+            <span className="font-medium">Vorarbeit für diese Ausgabe erlauben</span>
+            <p className="text-xs text-gray-400 mt-0.5">
+              Nur wenn aktiviert, wird Vorarbeit in die Lohnberechnung aufgenommen.
+            </p>
+          </span>
+        </label>
+      </div>
+
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">Abbrechen</button>
         <button
           type="submit"
-          disabled={saving || kwBereitsVorhanden}
+          disabled={saving || kwBereitsVorhanden || kwInGesperrterPeriode || !periodeId}
           className="bg-blue-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
         >
           {saving ? 'Speichere...' : initial ? 'Speichern' : 'Anlegen'}
@@ -415,10 +778,221 @@ function AusgabeForm({
 }
 
 // ============================================================
+// EINSÄTZE-ÜBERSICHT (read-only in Ausgaben-Detail)
+// ============================================================
+
+function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
+  const { teilgebiete, mitarbeiter, touren } = useApp();
+  const [einsaetze, setEinsaetze] = useState<Einsatz[]>([]);
+  const [loading, setLoading] = useState(true);
+  // Welche Gruppen sind aufgeklappt? Standardmäßig alle zu.
+  const [offeneGruppen, setOffeneGruppen] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    setLoading(true);
+    ladeEinsaetze(ausgabe.id).then((list) => {
+      setEinsaetze(list);
+      setLoading(false);
+    });
+  }, [ausgabe.id]);
+
+  const getMaName = (id: string | null) =>
+    id ? (mitarbeiter.find((m) => m.id === id)?.name ?? '?') : '—';
+
+  function toggleGruppe(key: string) {
+    setOffeneGruppen((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  // Teilgebiete nach Tour gruppieren, natürlich sortiert (Uslar1 < Uslar2 < … < Uslar10)
+  const aktiveTeilgebiete = teilgebiete
+    .filter((tg) => tg.isActive)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+
+  // Gruppen aufbauen: zuerst bekannte Touren (alphabetisch), dann "Ohne Tour"
+  const tourGruppen = touren
+    .filter((t) => aktiveTeilgebiete.some((tg) => tg.tourId === t.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const ohneTour = aktiveTeilgebiete.filter((tg) => !tg.tourId);
+
+  // Gesamt-Statistik
+  const gesamtStats = aktiveTeilgebiete.reduce(
+    (acc, tg) => {
+      const e = einsaetze.find((x) => x.teilgebietId === tg.id);
+      const typ = e?.typ ?? 'standard';
+      if (typ === 'standard') acc.standard++;
+      else if (typ === 'springer') acc.springer++;
+      else if (typ === 'ausfall') acc.ausfall++;
+      else acc.ungeklaert++;
+      return acc;
+    },
+    { standard: 0, springer: 0, ausfall: 0, ungeklaert: 0 }
+  );
+
+  // Hilfsfunktion: Statistik einer Teilgebiet-Gruppe
+  function gruppenStats(tgIds: string[]) {
+    return tgIds.reduce(
+      (acc, id) => {
+        const e = einsaetze.find((x) => x.teilgebietId === id);
+        const typ = e?.typ ?? 'standard';
+        if (typ === 'standard') acc.standard++;
+        else if (typ === 'springer') acc.springer++;
+        else if (typ === 'ausfall') acc.ausfall++;
+        else acc.ungeklaert++;
+        return acc;
+      },
+      { standard: 0, springer: 0, ausfall: 0, ungeklaert: 0 }
+    );
+  }
+
+  // Zeile rendern
+  function renderZeile(tgId: string) {
+    const tg = aktiveTeilgebiete.find((t) => t.id === tgId)!;
+    const einsatz = einsaetze.find((e) => e.teilgebietId === tgId);
+    const typ = einsatz?.typ ?? 'standard';
+
+    const zeileFarbe =
+      typ === 'ausfall' ? 'bg-red-50' :
+      typ === 'springer' ? 'bg-blue-50' :
+      typ === 'ungeklärt' ? 'bg-yellow-50' : '';
+
+    const statusBadge =
+      typ === 'ausfall'    ? <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 font-medium text-xs">Ausfall</span> :
+      typ === 'springer'   ? <span className="px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium text-xs">Springer</span> :
+      typ === 'ungeklärt'  ? <span className="px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium text-xs">Ungeklärt</span> :
+                             <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 text-xs">Standard</span>;
+
+    const austraeger =
+      typ === 'ausfall'   ? <span className="text-red-400 italic text-xs">—</span> :
+      typ === 'ungeklärt' ? <span className="text-yellow-600 italic text-xs">ungeklärt</span> :
+      typ === 'springer'  ? (
+        <span className="text-blue-700 font-medium text-xs">
+          {getMaName(einsatz?.mitarbeiterId ?? null)}
+          {einsatz?.springerZuschlagProzent != null &&
+            <span className="text-blue-400 ml-1">+{einsatz.springerZuschlagProzent}%</span>}
+        </span>
+      ) : <span className="text-gray-400 italic text-xs">{getMaName(tg.standardAustraegerId)}</span>;
+
+    return (
+      <tr key={tg.id} className={`border-b border-gray-100 last:border-0 ${zeileFarbe}`}>
+        <td className="px-3 py-2">
+          <div className="font-medium text-gray-900 text-xs">{tg.name}</div>
+          <div className="text-gray-400 text-xs">{tg.plz} · {tg.stueckzahl.toLocaleString('de-DE')} Stk</div>
+        </td>
+        <td className="px-3 py-2 text-xs text-gray-600">{getMaName(tg.standardAustraegerId)}</td>
+        <td className="px-3 py-2">{statusBadge}</td>
+        <td className="px-3 py-2">{austraeger}</td>
+      </tr>
+    );
+  }
+
+  // Tour-Gruppe rendern
+  function renderGruppe(key: string, label: string, farbe: string, tgIds: string[]) {
+    const offen = offeneGruppen.has(key);
+    const s = gruppenStats(tgIds);
+    const hatAuffaellig = s.springer > 0 || s.ausfall > 0 || s.ungeklaert > 0;
+
+    return (
+      <div key={key} className="border border-gray-200 rounded-lg overflow-hidden">
+        {/* Gruppen-Header */}
+        <button
+          type="button"
+          onClick={() => toggleGruppe(key)}
+          className="w-full flex items-center gap-3 px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+        >
+          <span
+            className="w-3 h-3 rounded-full shrink-0"
+            style={{ backgroundColor: farbe }}
+          />
+          <span className="font-medium text-sm text-gray-800 flex-1">{label}</span>
+          <span className="text-xs text-gray-500">{tgIds.length} Gebiete</span>
+          {/* Mini-Badges für auffällige Einträge */}
+          <div className="flex gap-1">
+            {s.springer > 0 && <span className="text-xs px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">{s.springer} Springer</span>}
+            {s.ausfall > 0 && <span className="text-xs px-1.5 py-0.5 rounded-full bg-red-100 text-red-700">{s.ausfall} Ausfall</span>}
+            {s.ungeklaert > 0 && <span className="text-xs px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-700">{s.ungeklaert} Ungekl.</span>}
+            {!hatAuffaellig && <span className="text-xs text-gray-400">✓ alle Standard</span>}
+          </div>
+          <span className="text-gray-400 text-xs ml-1">{offen ? '▲' : '▼'}</span>
+        </button>
+
+        {/* Tabelle (nur wenn aufgeklappt) */}
+        {offen && (
+          <table className="w-full">
+            <thead className="bg-white border-b border-gray-100">
+              <tr>
+                <th className="text-left px-3 py-1.5 text-xs font-medium text-gray-500">Teilgebiet</th>
+                <th className="text-left px-3 py-1.5 text-xs font-medium text-gray-500">Standardausträger</th>
+                <th className="text-left px-3 py-1.5 text-xs font-medium text-gray-500">Status</th>
+                <th className="text-left px-3 py-1.5 text-xs font-medium text-gray-500">Tatsächlicher Austräger</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tgIds.map((id) => renderZeile(id))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      {/* Kopfzeile */}
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-semibold text-gray-800">Austräger-Einsätze</h3>
+        {!loading && (
+          <div className="flex items-center gap-3">
+            <div className="flex gap-1.5 flex-wrap">
+              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Standard: {gesamtStats.standard}</span>
+              {gesamtStats.springer > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">Springer: {gesamtStats.springer}</span>}
+              {gesamtStats.ausfall > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-700">Ausfall: {gesamtStats.ausfall}</span>}
+              {gesamtStats.ungeklaert > 0 && <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">Ungeklärt: {gesamtStats.ungeklaert}</span>}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const alleKeys = [...tourGruppen.map((t) => t.id), ...(ohneTour.length > 0 ? ['__ohne__'] : [])];
+                if (offeneGruppen.size === alleKeys.length) {
+                  setOffeneGruppen(new Set());
+                } else {
+                  setOffeneGruppen(new Set(alleKeys));
+                }
+              }}
+              className="text-xs text-blue-500 hover:text-blue-700 underline"
+            >
+              {offeneGruppen.size > 0 ? 'Alle zuklappen' : 'Alle aufklappen'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="text-sm text-gray-400">Lade Einsätze…</div>
+      ) : (
+        <div className="space-y-2">
+          {tourGruppen.map((tour) => {
+            const tgIds = aktiveTeilgebiete
+              .filter((tg) => tg.tourId === tour.id)
+              .map((tg) => tg.id);
+            return renderGruppe(tour.id, tour.name, tour.farbe, tgIds);
+          })}
+          {ohneTour.length > 0 &&
+            renderGruppe('__ohne__', 'Ohne Tour', '#9ca3af', ohneTour.map((tg) => tg.id))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // BEILAGEN
 // ============================================================
 
-function BeilagenVerwaltung({ ausgabe }: { ausgabe: Ausgabe }) {
+function BeilagenVerwaltung({ ausgabe, istGesperrt }: { ausgabe: Ausgabe; istGesperrt: boolean }) {
   const { teilgebiete } = useApp();
   const [beilagen, setBeilagen] = useState<Beilage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -449,16 +1023,23 @@ function BeilagenVerwaltung({ ausgabe }: { ausgabe: Ausgabe }) {
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      {istGesperrt && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4 text-xs text-amber-800 flex items-center gap-1">
+          🔒 Abgeschlossene Periode — keine Änderungen möglich
+        </div>
+      )}
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-semibold text-gray-800">
           Beilagen <span className="text-gray-400 font-normal text-sm">({beilagen.length})</span>
         </h3>
-        <button
-          onClick={() => { setEditTarget(null); setShowForm(true); }}
-          className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
-        >
-          + Beilage hinzufügen
-        </button>
+        {!istGesperrt && (
+          <button
+            onClick={() => { setEditTarget(null); setShowForm(true); }}
+            className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
+          >
+            + Beilage hinzufügen
+          </button>
+        )}
       </div>
 
       {loading && <div className="text-gray-400 text-sm">Lädt...</div>}
@@ -486,18 +1067,22 @@ function BeilagenVerwaltung({ ausgabe }: { ausgabe: Ausgabe }) {
                 </div>
               </div>
               <div className="flex gap-2 ml-3">
-                <button
-                  onClick={() => { setEditTarget(b); setShowForm(true); }}
-                  className="text-xs text-blue-600 hover:text-blue-800"
-                >
-                  Bearbeiten
-                </button>
-                <button
-                  onClick={() => handleLoeschen(b.id)}
-                  className="text-xs text-red-500 hover:text-red-700"
-                >
-                  Löschen
-                </button>
+                {!istGesperrt && (
+                  <>
+                    <button
+                      onClick={() => { setEditTarget(b); setShowForm(true); }}
+                      className="text-xs text-blue-600 hover:text-blue-800"
+                    >
+                      Bearbeiten
+                    </button>
+                    <button
+                      onClick={() => handleLoeschen(b.id)}
+                      className="text-xs text-red-500 hover:text-red-700"
+                    >
+                      Löschen
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -552,12 +1137,37 @@ function BeilageForm({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [tourFilter, setTourFilter] = useState('');
+  const [tourFilterIds, setTourFilterIds] = useState<Set<string>>(new Set());
+  const [plzFilterSet, setPlzFilterSet] = useState<Set<string>>(new Set());
 
   const aktiveTeilgebiete = teilgebiete.filter((t) => t.isActive);
-  const gefilterteTG = tourFilter
-    ? aktiveTeilgebiete.filter((t) => t.tourId === tourFilter)
-    : aktiveTeilgebiete;
+  // Verfügbare PLZ aus aktiven TG, eindeutig + sortiert
+  const verfuegbarePlz = Array.from(
+    new Set(aktiveTeilgebiete.map((t) => t.plz).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, 'de', { numeric: true }));
+  const gefilterteTG = aktiveTeilgebiete.filter((t) => {
+    if (tourFilterIds.size > 0 && (!t.tourId || !tourFilterIds.has(t.tourId))) return false;
+    if (plzFilterSet.size > 0 && !plzFilterSet.has(t.plz)) return false;
+    return true;
+  });
+
+  function togglePlzFilter(plz: string) {
+    setPlzFilterSet((prev) => {
+      const n = new Set(prev);
+      if (n.has(plz)) n.delete(plz);
+      else n.add(plz);
+      return n;
+    });
+  }
+
+  function toggleTourFilter(tourId: string) {
+    setTourFilterIds((prev) => {
+      const n = new Set(prev);
+      if (n.has(tourId)) n.delete(tourId);
+      else n.add(tourId);
+      return n;
+    });
+  }
 
   function toggleTeilgebiet(id: string) {
     setAusgewaehlteTeilgebiete((prev) =>
@@ -687,23 +1297,90 @@ function BeilageForm({
           <label className="text-sm font-medium text-gray-700">
             Teilgebiete ({ausgewaehlteTeilgebiete.length} gewählt · {gesamtStueckzahl.toLocaleString('de-DE')} Stk)
           </label>
-          <div className="flex gap-2">
-            <select
-              value={tourFilter}
-              onChange={(e) => setTourFilter(e.target.value)}
-              className="border border-gray-300 rounded px-2 py-1 text-xs"
-            >
-              <option value="">Alle Touren</option>
-              {touren.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-            </select>
-            <button
-              type="button"
-              onClick={alleToggeln}
-              className="text-xs text-blue-600 hover:text-blue-800"
-            >
-              {gefilterteTG.every((t) => ausgewaehlteTeilgebiete.includes(t.id)) ? 'Alle abwählen' : 'Alle wählen'}
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={alleToggeln}
+            className="text-xs text-blue-600 hover:text-blue-800"
+          >
+            {gefilterteTG.every((t) => ausgewaehlteTeilgebiete.includes(t.id)) ? 'Alle abwählen' : 'Alle wählen'}
+          </button>
+        </div>
+        {/* Tour-Filter: Mehrfachauswahl als Chips */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <span className="text-xs text-gray-500 mr-1">Nach Touren filtern:</span>
+          <button
+            type="button"
+            onClick={() => setTourFilterIds(new Set())}
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              tourFilterIds.size === 0
+                ? 'bg-gray-800 text-white border-gray-800'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+            }`}
+          >
+            Alle
+          </button>
+          {touren.map((t) => {
+            const active = tourFilterIds.has(t.id);
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => toggleTourFilter(t.id)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  active
+                    ? 'text-white border-transparent'
+                    : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                }`}
+                style={active ? { backgroundColor: t.farbe } : undefined}
+                title={active ? 'Tour entfernen' : 'Tour hinzufügen'}
+              >
+                {active && '✓ '}{t.name}
+              </button>
+            );
+          })}
+          {tourFilterIds.size > 0 && (
+            <span className="text-xs text-gray-400 ml-1">
+              ({tourFilterIds.size} Tour{tourFilterIds.size === 1 ? '' : 'en'} · {gefilterteTG.length} TG)
+            </span>
+          )}
+        </div>
+        {/* PLZ-Filter: Mehrfachauswahl der verfügbaren PLZ als Chips */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <span className="text-xs text-gray-500 mr-1">Nach PLZ filtern:</span>
+          <button
+            type="button"
+            onClick={() => setPlzFilterSet(new Set())}
+            className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+              plzFilterSet.size === 0
+                ? 'bg-gray-800 text-white border-gray-800'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'
+            }`}
+          >
+            Alle
+          </button>
+          {verfuegbarePlz.map((plz) => {
+            const active = plzFilterSet.has(plz);
+            return (
+              <button
+                key={plz}
+                type="button"
+                onClick={() => togglePlzFilter(plz)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  active
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                }`}
+                title={active ? 'PLZ entfernen' : 'PLZ hinzufügen'}
+              >
+                {active && '✓ '}{plz}
+              </button>
+            );
+          })}
+          {plzFilterSet.size > 0 && (
+            <span className="text-xs text-gray-400 ml-1">
+              ({plzFilterSet.size} PLZ · {gefilterteTG.length} TG)
+            </span>
+          )}
         </div>
         <div className="border border-gray-200 rounded-lg p-3 max-h-48 overflow-y-auto grid grid-cols-3 gap-1">
           {gefilterteTG.map((tg) => (
@@ -745,6 +1422,8 @@ function BeilageForm({
 // ============================================================
 
 import { ladeAbrechnungsperioden, erstelleAbrechnungsperiode, aktualisiereAbrechnungsperiode } from '../lib/db';
+import { collection, getDocs, query, where } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import type { Abrechnungsperiode } from '../types';
 import { MONATSNAMEN } from '../lib/kalender';
 
@@ -806,22 +1485,24 @@ function AbrechnungsperiodenInhalt() {
                 </div>
               </div>
               <div className="flex gap-2">
-                <button
-                  onClick={() => { setEditTarget(p); setShowForm(true); }}
-                  className="text-sm text-blue-600 hover:text-blue-800"
-                >
-                  Bearbeiten
-                </button>
                 {p.status === 'offen' && (
-                  <button
-                    onClick={async () => {
-                      await aktualisiereAbrechnungsperiode(p.id, { status: 'abgeschlossen' });
-                      setPerioden((prev) => prev.map((x) => x.id === p.id ? { ...x, status: 'abgeschlossen' } : x));
-                    }}
-                    className="text-sm text-green-600 hover:text-green-800"
-                  >
-                    Abschließen
-                  </button>
+                  <>
+                    <button
+                      onClick={() => { setEditTarget(p); setShowForm(true); }}
+                      className="text-sm text-blue-600 hover:text-blue-800"
+                    >
+                      Bearbeiten
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await aktualisiereAbrechnungsperiode(p.id, { status: 'abgeschlossen' });
+                        setPerioden((prev) => prev.map((x) => x.id === p.id ? { ...x, status: 'abgeschlossen' } : x));
+                      }}
+                      className="text-sm text-green-600 hover:text-green-800"
+                    >
+                      Abschließen
+                    </button>
+                  </>
                 )}
               </div>
             </div>
@@ -847,6 +1528,7 @@ function AbrechnungsperiodenInhalt() {
             });
             setShowForm(false);
           }}
+          onAusgabenChanged={(neu) => setAusgaben(neu)}
           onCancel={() => setShowForm(false)}
         />
       </Modal>
@@ -859,14 +1541,19 @@ function PeriodeForm({
   ausgaben,
   belegteKWs,
   onSave,
+  onAusgabenChanged,
   onCancel,
 }: {
   initial: Abrechnungsperiode | null;
   ausgaben: Ausgabe[];
   belegteKWs: string[];
   onSave: (p: Abrechnungsperiode) => void;
+  /** Wird nach evtl. Auto-Erstellung von Ausgaben mit der frischen Liste
+   *  aufgerufen, damit der Parent-State synchron bleibt. */
+  onAusgabenChanged: (neueListe: Ausgabe[]) => void;
   onCancel: () => void;
 }) {
+  const { parameter } = useApp();
   const heute = new Date();
   const [monat, setMonat] = useState(initial?.monat ?? heute.getMonth() + 1);
   const [jahr, setJahr] = useState(initial?.jahr ?? heute.getFullYear());
@@ -875,7 +1562,7 @@ function PeriodeForm({
   const [error, setError] = useState('');
 
   const bezeichnung = `${MONATSNAMEN[monat - 1]} ${jahr}`;
-  const verfuegbareKWs = alleKWsImJahr(jahr);
+  const verfuegbareKWs = Array.from({ length: 53 }, (_, i) => i + 1);
 
   // KWs die bereits zu Ausgaben existieren
   const kwsMitAusgabe = new Set(
@@ -905,6 +1592,44 @@ function PeriodeForm({
           monat, jahr, bezeichnung, kalenderwochen: gewaehlteKWs, status: 'offen',
         });
         onSave({ id, monat, jahr, bezeichnung, kalenderwochen: gewaehlteKWs, status: 'offen', erstelltAm: Date.now() });
+      }
+
+      // Für jede KW in der Periode automatisch eine Ausgabe anlegen, falls
+      // noch keine vorhanden. Seitenzahl + Stapelzahl bewusst LEER (0)
+      // anlegen — werden später erfasst.
+      //
+      // Wichtig: Vor jedem `erstelleAusgabe` direkt in Firestore prüfen, ob
+      // schon eine Ausgabe für (kw,jahr) existiert. Sonst können Duplikate
+      // entstehen, wenn der Parent-State (`ausgaben`-Prop) durch eine
+      // vorherige Auto-Anlage noch nicht aktualisiert wurde.
+      for (const kw of gewaehlteKWs) {
+        const existing = await getDocs(query(
+          collection(db, 'ausgaben'),
+          where('kw', '==', kw),
+          where('jahr', '==', jahr),
+        ));
+        if (!existing.empty) continue;
+        await erstelleAusgabe({
+          kw,
+          jahr,
+          seitenzahl: 0,
+          stapelAnzahl: 0,
+          grammaturGqm: parameter?.standardGrammurGqm ?? 65,
+          seitenformatMm: {
+            breite: parameter?.standardSeitenformatBreiteMm ?? 305,
+            hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
+          },
+          status: 'geplant',
+        });
+      }
+
+      // Frisch nachladen und Parent-State synchronisieren, damit der nächste
+      // PeriodeForm-Edit eine aktuelle Ausgaben-Prop bekommt.
+      try {
+        const neu = await ladeAusgaben();
+        onAusgabenChanged(neu);
+      } catch (loadErr) {
+        console.warn('Ausgaben-Refresh fehlgeschlagen:', loadErr);
       }
     } catch (err) {
       setError('Fehler beim Speichern.');
@@ -949,9 +1674,9 @@ function PeriodeForm({
       <div>
         <div className="flex items-center justify-between mb-2">
           <label className="text-sm font-medium text-gray-700">
-            Kalenderwochen ({gewaehlteKWs.length} gewählt)
+            Ausgaben / Kalenderwochen ({gewaehlteKWs.length} gewählt)
           </label>
-          <p className="text-xs text-gray-400">Grau = bereits vergeben · Blau = hat Ausgabe</p>
+          <p className="text-xs text-gray-400">Grau = vergeben · Blau = Ausgabe bereits vorhanden</p>
         </div>
         <div className="border border-gray-200 rounded-lg p-3 grid grid-cols-6 gap-1.5 max-h-52 overflow-y-auto">
           {verfuegbareKWs.map((kw) => {
@@ -982,7 +1707,7 @@ function PeriodeForm({
           })}
         </div>
         <p className="text-xs text-gray-400 mt-1">
-          Jede KW darf nur einer Periode zugeordnet sein.
+          Jede gewählte KW wird automatisch als Ausgabe angelegt (falls noch nicht vorhanden).
         </p>
       </div>
 
@@ -1003,3 +1728,418 @@ function PeriodeForm({
 }
 
 const inputClass = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+
+// ============================================================
+// TEILGEBIET × BEILAGEN — Übersicht für eine Ausgabe
+// Zeigt alle aktiven Teilgebiete und welche Beilagen je TG gebucht sind
+// (intern + extern getrennt). Wird unten in der Ausgaben-Detailansicht
+// angezeigt — komplementär zur Beilagen-Verwaltung darüber, die je
+// Beilage zeigt, welche Teilgebiete sie erhält.
+// ============================================================
+
+function TeilgebietBeilagenUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
+  const { teilgebiete, touren } = useApp();
+  const [beilagen, setBeilagen] = useState<Beilage[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    ladeBeilagen(ausgabe.id).then((list) => {
+      setBeilagen(list);
+      setLoading(false);
+    });
+  }, [ausgabe.id]);
+
+  const aktiveTeilgebiete = teilgebiete
+    .filter((tg) => tg.isActive)
+    .sort((a, b) => {
+      // Erst nach Tour, dann TG-Name (Natural Sort: Uslar1 < Uslar2 < … < Uslar10)
+      const ta = touren.find((t) => t.id === a.tourId)?.name ?? 'zzz';
+      const tb = touren.find((t) => t.id === b.tourId)?.name ?? 'zzz';
+      if (ta !== tb) return ta.localeCompare(tb, 'de', { numeric: true });
+      return a.name.localeCompare(b.name, 'de', { numeric: true });
+    });
+
+  const tourFarbe = (tourId: string | null): string => {
+    const t = touren.find((x) => x.id === tourId);
+    return t?.farbe ?? '#9ca3af';
+  };
+  const tourName = (tourId: string | null): string => {
+    if (!tourId) return 'Ohne Tour';
+    return touren.find((t) => t.id === tourId)?.name ?? '?';
+  };
+
+  // Reihenfolge der Beilagen-Spalten: erst intern (grau), dann extern (orange).
+  const beilagenSortiert = [
+    ...beilagen.filter((b) => b.kennzeichen === 'int'),
+    ...beilagen.filter((b) => b.kennzeichen === 'ext'),
+  ].sort((a, b) => {
+    if (a.kennzeichen !== b.kennzeichen) return a.kennzeichen === 'int' ? -1 : 1;
+    return a.arbeitstitel.localeCompare(b.arbeitstitel);
+  });
+
+  // Pro Beilage: Anzahl Teilgebiete in denen sie gebucht ist (für Σ-Zeile).
+  function anzahlTgFuerBeilage(b: Beilage): number {
+    return aktiveTeilgebiete.filter((tg) => b.teilgebietIds.includes(tg.id)).length;
+  }
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-semibold text-gray-800">
+          Teilgebiete &amp; gebuchte Beilagen
+          <span className="ml-2 text-sm text-gray-400 font-normal">
+            ({aktiveTeilgebiete.length} TG · {beilagenSortiert.length} Beilagen)
+          </span>
+        </h3>
+      </div>
+
+      {loading ? (
+        <div className="text-center py-6 text-gray-400 text-sm">Lädt…</div>
+      ) : beilagenSortiert.length === 0 ? (
+        <div className="text-center py-6 text-gray-400 text-sm">
+          Keine Beilagen für diese Ausgabe gebucht.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="text-xs border-separate" style={{ borderSpacing: 0 }}>
+            <thead>
+              <tr>
+                <th className="sticky left-0 z-10 bg-gray-50 px-2 py-1.5 text-left font-medium text-gray-600 border-b border-gray-200 whitespace-nowrap">
+                  Tour
+                </th>
+                <th className="sticky bg-gray-50 px-2 py-1.5 text-left font-medium text-gray-600 border-b border-gray-200 whitespace-nowrap"
+                    style={{ left: '70px' }}>
+                  Teilgebiet
+                </th>
+                <th className="bg-gray-50 px-2 py-1.5 text-right font-medium text-gray-600 border-b border-gray-200 whitespace-nowrap">
+                  Stk
+                </th>
+                {beilagenSortiert.map((b) => (
+                  <th
+                    key={b.id}
+                    className={`px-1 py-1.5 text-center font-medium border-b border-gray-200 align-bottom ${
+                      b.kennzeichen === 'int' ? 'bg-gray-50' : 'bg-orange-50'
+                    }`}
+                    style={{ minWidth: '48px', maxWidth: '90px' }}
+                  >
+                    <div
+                      className={`flex flex-col items-center text-[10px] leading-tight ${
+                        b.kennzeichen === 'int' ? 'text-gray-700' : 'text-orange-800'
+                      }`}
+                      title={`${b.arbeitstitel} · ${b.kundenname} · ${b.format} · ${b.gewichtGStk} g/Stk · ${b.kennzeichen === 'int' ? 'intern' : 'extern'}`}
+                    >
+                      <span className="font-semibold truncate w-full">{b.arbeitstitel}</span>
+                      <span className="text-gray-500 truncate w-full">{b.kundenname}</span>
+                      <span className="text-gray-400">
+                        {b.format} · {b.gewichtGStk}g
+                      </span>
+                      <span className="mt-0.5 inline-block">
+                        {b.kennzeichen === 'int' ? '🏭' : '🚚'}
+                      </span>
+                    </div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {aktiveTeilgebiete.length === 0 && (
+                <tr>
+                  <td colSpan={3 + beilagenSortiert.length} className="text-center py-4 text-gray-400">
+                    Keine aktiven Teilgebiete
+                  </td>
+                </tr>
+              )}
+              {aktiveTeilgebiete.map((tg) => (
+                <tr key={tg.id} className="hover:bg-blue-50/40">
+                  <td className="sticky left-0 z-10 bg-white hover:bg-blue-50/40 px-2 py-1 whitespace-nowrap border-b border-gray-100"
+                      style={{ width: '70px' }}>
+                    <span className="inline-flex items-center gap-1">
+                      <span
+                        className="w-2 h-2 rounded-full inline-block shrink-0"
+                        style={{ backgroundColor: tourFarbe(tg.tourId) }}
+                      />
+                      <span className="text-gray-600 text-[10px] truncate">
+                        {tourName(tg.tourId)}
+                      </span>
+                    </span>
+                  </td>
+                  <td className="sticky bg-white hover:bg-blue-50/40 px-2 py-1 whitespace-nowrap border-b border-gray-100 font-medium text-gray-900"
+                      style={{ left: '70px' }}>
+                    {tg.name}
+                  </td>
+                  <td className="bg-white px-2 py-1 text-right text-gray-600 font-mono border-b border-gray-100 whitespace-nowrap">
+                    {tg.stueckzahl.toLocaleString('de-DE')}
+                  </td>
+                  {beilagenSortiert.map((b) => {
+                    const istGebucht = b.teilgebietIds.includes(tg.id);
+                    return (
+                      <td
+                        key={b.id}
+                        className={`px-1 py-1 text-center border-b border-gray-100 ${
+                          b.kennzeichen === 'int' ? 'bg-gray-50/30' : 'bg-orange-50/30'
+                        }`}
+                      >
+                        {istGebucht ? (
+                          <span
+                            className={b.kennzeichen === 'int' ? 'text-gray-700' : 'text-orange-700'}
+                            title={`${b.arbeitstitel} bei ${tg.name} gebucht`}
+                          >
+                            ✓
+                          </span>
+                        ) : (
+                          <span className="text-gray-200">·</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+              {/* Σ-Zeile: in wie vielen Teilgebieten ist diese Beilage gebucht? */}
+              <tr className="bg-blue-50 font-semibold text-blue-900">
+                <td colSpan={2}
+                    className="sticky left-0 z-10 bg-blue-50 px-2 py-1.5 text-right border-t-2 border-blue-200 whitespace-nowrap">
+                  Σ Teilgebiete (von {aktiveTeilgebiete.length})
+                </td>
+                <td className="bg-blue-50 px-2 py-1.5 border-t-2 border-blue-200" />
+                {beilagenSortiert.map((b) => {
+                  const n = anzahlTgFuerBeilage(b);
+                  const alle = n === aktiveTeilgebiete.length;
+                  return (
+                    <td
+                      key={b.id}
+                      className="px-1 py-1.5 text-center border-t-2 border-blue-200"
+                      title={
+                        alle
+                          ? 'In allen Teilgebieten gebucht'
+                          : `In ${n} von ${aktiveTeilgebiete.length} Teilgebieten gebucht`
+                      }
+                    >
+                      <span className={alle ? 'text-green-700' : n === 0 ? 'text-gray-400' : 'text-blue-800'}>
+                        {n}
+                      </span>
+                    </td>
+                  );
+                })}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Duplikat-Auflösungs-Dialog
+// =====================================================================
+
+function DuplikatDialog({
+  gruppen,
+  onClose,
+  onResolved,
+}: {
+  gruppen: Ausgabe[][];
+  onClose: () => void;
+  onResolved: () => Promise<void>;
+}) {
+  // Map: ausgabeId → Anzahl abhängiger Datensätze (Beilagen + Einsätze).
+  const [abhaengig, setAbhaengig] = useState<Map<string, { beilagen: number; einsaetze: number }>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [meldung, setMeldung] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const m = new Map<string, { beilagen: number; einsaetze: number }>();
+      for (const gruppe of gruppen) {
+        for (const a of gruppe) {
+          const [b, e] = await Promise.all([
+            ladeBeilagen(a.id),
+            ladeEinsaetze(a.id),
+          ]);
+          m.set(a.id, { beilagen: b.length, einsaetze: e.length });
+        }
+      }
+      if (!cancelled) {
+        setAbhaengig(m);
+        setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [gruppen]);
+
+  /** Heuristik: Survivor = die Ausgabe mit den meisten abhängigen Daten;
+   *  bei Gleichstand die mit gesetzter Seitenzahl > 0; sonst die älteste. */
+  function vorschlagSurvivor(gruppe: Ausgabe[]): string {
+    return [...gruppe].sort((a, b) => {
+      const da = (abhaengig.get(a.id)?.beilagen ?? 0) + (abhaengig.get(a.id)?.einsaetze ?? 0);
+      const db_ = (abhaengig.get(b.id)?.beilagen ?? 0) + (abhaengig.get(b.id)?.einsaetze ?? 0);
+      if (da !== db_) return db_ - da;
+      const sa = a.seitenzahl > 0 ? 1 : 0;
+      const sb = b.seitenzahl > 0 ? 1 : 0;
+      if (sa !== sb) return sb - sa;
+      return a.erstelltAm - b.erstelltAm;
+    })[0].id;
+  }
+
+  const [survivors, setSurvivors] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (loading) return;
+    const initial: Record<string, string> = {};
+    for (const gruppe of gruppen) {
+      const key = `${gruppe[0].jahr}-${gruppe[0].kw}`;
+      initial[key] = vorschlagSurvivor(gruppe);
+    }
+    setSurvivors(initial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, gruppen]);
+
+  async function handleMerge(gruppe: Ausgabe[]) {
+    const key = `${gruppe[0].jahr}-${gruppe[0].kw}`;
+    const survivorId = survivors[key];
+    if (!survivorId) return;
+    const verlierer = gruppe.filter((a) => a.id !== survivorId);
+    setBusy(key);
+    setMeldung('');
+    try {
+      for (const v of verlierer) {
+        await mergeAusgaben(survivorId, v.id);
+      }
+      await onResolved();
+      setMeldung(`✓ ${verlierer.length} Duplikat${verlierer.length === 1 ? '' : 'e'} zur KW ${gruppe[0].kw}/${gruppe[0].jahr} zusammengeführt.`);
+    } catch (err: any) {
+      console.error(err);
+      setMeldung('Fehler: ' + (err.message ?? err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <div className="px-5 py-3 border-b border-gray-200">
+          <h3 className="text-base font-semibold text-gray-900">
+            Doppelt angelegte Ausgaben zusammenführen
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Pro KW eine Ausgabe wählen, die behalten werden soll
+            („Survivor"). Alle abhängigen Daten (Beilagen, Einsätze,
+            Memos, Zusammentragezeiten, Arbeitszeiten) werden automatisch
+            auf den Survivor umgehängt; die übrigen Ausgaben werden danach
+            gelöscht.
+          </p>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-5">
+          {loading ? (
+            <div className="text-center text-gray-400 py-8">Lade abhängige Daten…</div>
+          ) : gruppen.length === 0 ? (
+            <div className="text-center text-green-700 py-8">
+              ✓ Keine Duplikate mehr — alles sauber.
+            </div>
+          ) : (
+            gruppen.map((gruppe) => {
+              const key = `${gruppe[0].jahr}-${gruppe[0].kw}`;
+              const survivor = survivors[key];
+              return (
+                <div key={key} className="rounded-lg border border-gray-200 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-semibold text-sm text-gray-900">
+                      KW {gruppe[0].kw}/{gruppe[0].jahr}
+                      <span className="ml-2 text-xs text-gray-500 font-normal">
+                        {gruppe.length} Datensätze
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleMerge(gruppe)}
+                      disabled={busy === key || !survivor}
+                      className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {busy === key ? '…' : '✓ Zusammenführen'}
+                    </button>
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead className="text-gray-500 border-b border-gray-200">
+                      <tr>
+                        <th className="px-2 py-1 text-left font-medium">Behalten</th>
+                        <th className="px-2 py-1 text-left font-medium">ID</th>
+                        <th className="px-2 py-1 text-right font-medium">Seiten</th>
+                        <th className="px-2 py-1 text-right font-medium">Stapel</th>
+                        <th className="px-2 py-1 text-right font-medium">Beilagen</th>
+                        <th className="px-2 py-1 text-right font-medium">Einsätze</th>
+                        <th className="px-2 py-1 text-left font-medium">Erstellt</th>
+                        <th className="px-2 py-1 text-left font-medium">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gruppe.map((a) => {
+                        const d = abhaengig.get(a.id);
+                        const istSurvivor = survivor === a.id;
+                        return (
+                          <tr key={a.id} className={istSurvivor ? 'bg-green-50' : ''}>
+                            <td className="px-2 py-1.5">
+                              <input
+                                type="radio"
+                                name={`survivor-${key}`}
+                                checked={istSurvivor}
+                                onChange={() => setSurvivors((prev) => ({ ...prev, [key]: a.id }))}
+                              />
+                            </td>
+                            <td className="px-2 py-1.5 font-mono text-[10px] text-gray-500" title={a.id}>
+                              {a.id.slice(0, 8)}…
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {a.seitenzahl > 0 ? a.seitenzahl : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {a.stapelAnzahl > 0 ? a.stapelAnzahl : <span className="text-gray-300">—</span>}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {d?.beilagen ?? '?'}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              {d?.einsaetze ?? '?'}
+                            </td>
+                            <td className="px-2 py-1.5 text-gray-500">
+                              {new Date(a.erstelltAm).toLocaleDateString('de-DE')}
+                            </td>
+                            <td className="px-2 py-1.5 text-gray-500">{a.status}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })
+          )}
+
+          {meldung && (
+            <div className={`rounded-md px-3 py-2 text-xs ${
+              meldung.startsWith('✓') ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'
+            }`}>
+              {meldung}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-200 flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700"
+          >
+            Schließen
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

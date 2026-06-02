@@ -32,3 +32,10 @@ firestore-debug.log
 .env
 .env.local
 .env.*.local
+
+# Firebase Service-Account-Schlüssel (NIEMALS einchecken!)
+firebase-service-account*.json
+service-account*.json
+
+# Lokale Firestore-Backups
+backups/

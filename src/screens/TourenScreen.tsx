@@ -8,14 +8,16 @@ import { STANDARD_TOUREN } from '../types';
 
 export default function TourenScreen() {
   return (
-    <AdminPinGate>
+    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
       <TourenInhalt />
     </AdminPinGate>
   );
 }
 
 function TourenInhalt() {
-  const { touren, teilgebiete } = useApp();
+  const { touren, teilgebiete, userRole } = useApp();
+  // Abrechnung-Rolle: nur lesender Zugriff.
+  const isAdmin = userRole === 'admin';
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Tour | null>(null);
   const [selectedTourId, setSelectedTourId] = useState<string | null>(
@@ -50,22 +52,24 @@ function TourenInhalt() {
           <h1 className="text-2xl font-bold text-gray-900">Touren</h1>
           <p className="text-gray-500 text-sm">{touren.length} Touren angelegt</p>
         </div>
-        <div className="flex gap-2">
-          {touren.length === 0 && (
+        {isAdmin && (
+          <div className="flex gap-2">
+            {touren.length === 0 && (
+              <button
+                onClick={initialisierStandardTouren}
+                className="border border-blue-600 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
+              >
+                Standard-Touren anlegen
+              </button>
+            )}
             <button
-              onClick={initialisierStandardTouren}
-              className="border border-blue-600 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors"
+              onClick={() => { setEditTarget(null); setShowForm(true); }}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
             >
-              Standard-Touren anlegen
+              + Neue Tour
             </button>
-          )}
-          <button
-            onClick={() => { setEditTarget(null); setShowForm(true); }}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-          >
-            + Neue Tour
-          </button>
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-6">
@@ -124,15 +128,24 @@ function TourenInhalt() {
                   style={{ backgroundColor: selectedTour.farbe }}
                 />
                 <h2 className="font-semibold text-lg text-gray-900">{selectedTour.name}</h2>
-                <div className="flex gap-2 ml-auto">
-                  <button
-                    onClick={() => { setEditTarget(selectedTour); setShowForm(true); }}
-                    className="text-sm text-blue-600 hover:text-blue-800"
-                  >
-                    Bearbeiten
-                  </button>
-                </div>
+                {isAdmin && (
+                  <div className="flex gap-2 ml-auto">
+                    <button
+                      onClick={() => { setEditTarget(selectedTour); setShowForm(true); }}
+                      className="text-sm text-blue-600 hover:text-blue-800"
+                    >
+                      Bearbeiten
+                    </button>
+                  </div>
+                )}
               </div>
+
+              {selectedTour.streckeFahrkostenKm != null && (
+                <div className="mb-4 rounded-lg bg-blue-50 border border-blue-200 px-3 py-2 text-sm text-blue-900">
+                  🚗 <span className="font-medium">Strecke (Fahrkosten):</span>{' '}
+                  {selectedTour.streckeFahrkostenKm} km regelmäßig pro Auslieferung
+                </div>
+              )}
 
               <h3 className="text-sm font-medium text-gray-600 mb-3">
                 Teilgebiete dieser Tour ({teilgebieteDerTour.length})
@@ -193,21 +206,48 @@ function TourForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
+  const { userRole } = useApp();
+  const isAdmin = userRole === 'admin';
   const [name, setName] = useState(initial?.name ?? '');
   const [farbe, setFarbe] = useState(initial?.farbe ?? '#3b82f6');
+  const [streckeKm, setStreckeKm] = useState<string>(
+    initial?.streckeFahrkostenKm != null ? String(initial.streckeFahrkostenKm) : ''
+  );
+  const [kartenLink, setKartenLink] = useState<string>(initial?.kartenLink ?? '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!name.trim()) { setError('Name ist erforderlich.'); return; }
+    let streckeFahrkostenKm: number | undefined;
+    if (streckeKm.trim()) {
+      const n = parseInt(streckeKm.trim(), 10);
+      if (!Number.isFinite(n) || n < 0) {
+        setError('Strecke muss eine positive ganze Zahl sein.');
+        return;
+      }
+      streckeFahrkostenKm = n;
+    }
     setSaving(true);
     setError('');
     try {
+      // Leerer Karten-Link: bei Update als leerer String speichern, damit
+      // ein zuvor gesetzter Wert beim Speichern verschwindet. Beim Neu-
+      // Anlegen leer lassen.
+      const kartenLinkValue = kartenLink.trim();
       if (initial) {
-        await aktualisiereTour(initial.id, { name, farbe });
+        await aktualisiereTour(initial.id, {
+          name,
+          farbe,
+          streckeFahrkostenKm,
+          kartenLink: kartenLinkValue || '',
+        });
       } else {
-        await erstelleTour({ name, farbe });
+        const payload: Omit<Tour, 'id' | 'erstelltAm'> = { name, farbe };
+        if (streckeFahrkostenKm != null) payload.streckeFahrkostenKm = streckeFahrkostenKm;
+        if (kartenLinkValue) payload.kartenLink = kartenLinkValue;
+        await erstelleTour(payload);
       }
       onSave();
     } catch (err) {
@@ -247,6 +287,67 @@ function TourForm({
             className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
           />
         </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Strecke (Fahrkosten) in km
+          {!isAdmin && (
+            <span className="ml-1 text-xs text-gray-400 font-normal">— nur Admin</span>
+          )}
+        </label>
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={streckeKm}
+          onChange={(e) => setStreckeKm(e.target.value)}
+          placeholder="z. B. 45"
+          readOnly={!isAdmin}
+          className={`w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+            !isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''
+          }`}
+        />
+        <p className="text-xs text-gray-400 mt-1">
+          Regelmäßig gefahrene Strecke pro Tour. Wird in der Fahrtkosten-
+          Erfassung summiert, sobald der Fahrer Touren statt Ziel auswählt.
+        </p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Karten-Link (Standard für alle TGs dieser Tour)
+          {!isAdmin && (
+            <span className="ml-1 text-xs text-gray-400 font-normal">— nur Admin</span>
+          )}
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            type="url"
+            value={kartenLink}
+            onChange={(e) => setKartenLink(e.target.value)}
+            placeholder="https://www.google.com/maps/d/u/1/viewer?mid=…"
+            readOnly={!isAdmin}
+            className={`flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+              !isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''
+            }`}
+          />
+          {kartenLink.trim() && (
+            <a
+              href={kartenLink.trim()}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1.5"
+              title="Link in neuem Tab öffnen"
+            >
+              🔗 öffnen
+            </a>
+          )}
+        </div>
+        <p className="text-xs text-gray-400 mt-1">
+          Default-Link zur Kartenansicht (Google My Maps o. ä.) für alle
+          Teilgebiete dieser Tour. Im Strassen-Tab des TGs sichtbar; pro TG
+          überschreibbar.
+        </p>
       </div>
 
       {error && <p className="text-red-600 text-sm">{error}</p>}

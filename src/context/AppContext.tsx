@@ -12,6 +12,14 @@ import type {
   Teilgebiet,
   Parameter,
   Abrechnungsperiode,
+  VariablerPeriodenZusatz,
+  LohnkontoBuchung,
+  StueckzahlAnpassung,
+  LohnbueroAbrechnung,
+  LohnbueroAnmeldung,
+  LohnbueroDriveLink,
+  MitarbeiterMemo,
+  MitarbeiterDarlehen,
 } from '../types';
 import {
   mitarbeiterListener,
@@ -19,31 +27,60 @@ import {
   teilgebieteListener,
   parameterListener,
   abrechnungsperiodenListener,
+  variablePeriodenZusaetzeListener,
+  lohnkontoBuchungenListener,
+  stueckzahlAnpassungenListener,
+  lohnbueroAbrechnungenListener,
+  lohnbueroAnmeldungenListener,
+  lohnbueroDriveLinksListener,
+  mitarbeiterMemosListener,
+  mitarbeiterDarlehenListener,
 } from '../lib/db';
 
 // ---- State -------------------------------------------------
 
+export type UserRole = 'admin' | 'abrechnung' | 'mitarbeiter' | null;
+
 interface AppState {
-  isAdminAuthenticated: boolean;
+  userRole: UserRole;
   adminName: string;
+  /** Gesetzter Mitarbeiter-ID wenn als Mitarbeiter eingeloggt */
+  mitarbeiterId: string | null;
   mitarbeiter: Mitarbeiter[];
   touren: Tour[];
   teilgebiete: Teilgebiet[];
   parameter: Parameter | null;
   abrechnungsperioden: Abrechnungsperiode[];
+  variablePeriodenZusaetze: VariablerPeriodenZusatz[];
+  lohnkontoBuchungen: LohnkontoBuchung[];
+  stueckzahlAnpassungen: StueckzahlAnpassung[];
+  lohnbueroAbrechnungen: LohnbueroAbrechnung[];
+  lohnbueroAnmeldungen: LohnbueroAnmeldung[];
+  lohnbueroDriveLinks: LohnbueroDriveLink[];
+  mitarbeiterMemos: MitarbeiterMemo[];
+  mitarbeiterDarlehen: MitarbeiterDarlehen[];
   aktivePeriodeId: string | null;
   isOnline: boolean;
   isLoading: boolean;
 }
 
 const initialState: AppState = {
-  isAdminAuthenticated: false,
+  userRole: null,
   adminName: '',
+  mitarbeiterId: null,
   mitarbeiter: [],
   touren: [],
   teilgebiete: [],
   parameter: null,
   abrechnungsperioden: [],
+  variablePeriodenZusaetze: [],
+  lohnkontoBuchungen: [],
+  stueckzahlAnpassungen: [],
+  lohnbueroAbrechnungen: [],
+  lohnbueroAnmeldungen: [],
+  lohnbueroDriveLinks: [],
+  mitarbeiterMemos: [],
+  mitarbeiterDarlehen: [],
   aktivePeriodeId: null,
   isOnline: navigator.onLine,
   isLoading: true,
@@ -52,24 +89,35 @@ const initialState: AppState = {
 // ---- Actions -----------------------------------------------
 
 type Action =
-  | { type: 'SET_ADMIN_AUTH'; payload: { authenticated: boolean; name: string } }
+  | { type: 'SET_AUTH'; payload: { role: UserRole; name: string; mitarbeiterId?: string } }
   | { type: 'SET_MITARBEITER'; payload: Mitarbeiter[] }
   | { type: 'SET_TOUREN'; payload: Tour[] }
   | { type: 'SET_TEILGEBIETE'; payload: Teilgebiet[] }
   | { type: 'SET_PARAMETER'; payload: Parameter | null }
   | { type: 'SET_ABRECHNUNGSPERIODEN'; payload: Abrechnungsperiode[] }
+  | { type: 'SET_VARIABLE_PERIODEN_ZUSAETZE'; payload: VariablerPeriodenZusatz[] }
+  | { type: 'SET_LOHNKONTO_BUCHUNGEN'; payload: LohnkontoBuchung[] }
+  | { type: 'SET_STUECKZAHL_ANPASSUNGEN'; payload: StueckzahlAnpassung[] }
+  | { type: 'SET_LOHNBUERO_ABRECHNUNGEN'; payload: LohnbueroAbrechnung[] }
+  | { type: 'SET_LOHNBUERO_ANMELDUNGEN'; payload: LohnbueroAnmeldung[] }
+  | { type: 'SET_LOHNBUERO_DRIVE_LINKS'; payload: LohnbueroDriveLink[] }
+  | { type: 'SET_MITARBEITER_MEMOS'; payload: MitarbeiterMemo[] }
+  | { type: 'SET_MITARBEITER_DARLEHEN'; payload: MitarbeiterDarlehen[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_LOADING'; payload: boolean };
 
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
-    case 'SET_ADMIN_AUTH':
+    case 'SET_AUTH':
       return {
         ...state,
-        isAdminAuthenticated: action.payload.authenticated,
+        userRole: action.payload.role,
         adminName: action.payload.name,
-      };
+        mitarbeiterId: action.payload.mitarbeiterId ?? null,
+        // Abwärtskompatibilität
+        isAdminAuthenticated: action.payload.role !== null,
+      } as AppState;
     case 'SET_MITARBEITER':
       return { ...state, mitarbeiter: action.payload };
     case 'SET_TOUREN':
@@ -80,6 +128,22 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, parameter: action.payload };
     case 'SET_ABRECHNUNGSPERIODEN':
       return { ...state, abrechnungsperioden: action.payload };
+    case 'SET_VARIABLE_PERIODEN_ZUSAETZE':
+      return { ...state, variablePeriodenZusaetze: action.payload };
+    case 'SET_LOHNKONTO_BUCHUNGEN':
+      return { ...state, lohnkontoBuchungen: action.payload };
+    case 'SET_STUECKZAHL_ANPASSUNGEN':
+      return { ...state, stueckzahlAnpassungen: action.payload };
+    case 'SET_LOHNBUERO_ABRECHNUNGEN':
+      return { ...state, lohnbueroAbrechnungen: action.payload };
+    case 'SET_LOHNBUERO_ANMELDUNGEN':
+      return { ...state, lohnbueroAnmeldungen: action.payload };
+    case 'SET_LOHNBUERO_DRIVE_LINKS':
+      return { ...state, lohnbueroDriveLinks: action.payload };
+    case 'SET_MITARBEITER_MEMOS':
+      return { ...state, mitarbeiterMemos: action.payload };
+    case 'SET_MITARBEITER_DARLEHEN':
+      return { ...state, mitarbeiterDarlehen: action.payload };
     case 'SET_AKTIVE_PERIODE':
       return { ...state, aktivePeriodeId: action.payload };
     case 'SET_ONLINE':
@@ -94,7 +158,12 @@ function reducer(state: AppState, action: Action): AppState {
 // ---- Context -----------------------------------------------
 
 interface AppContextValue extends AppState {
+  // Abwärtskompatibilität
+  isAdminAuthenticated: boolean;
+  // Neue Methoden
   loginAdmin: (name: string) => void;
+  loginAbrechnung: (name: string) => void;
+  loginMitarbeiter: (id: string, name: string) => void;
   logoutAdmin: () => void;
   setAktivePeriode: (id: string | null) => void;
 }
@@ -103,19 +172,14 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 // ---- Provider ----------------------------------------------
 
-const ADMIN_SESSION_KEY = 'adminSession';
+const SESSION_KEY = 'userSession';
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState, () => {
-    // Admin-Session aus sessionStorage wiederherstellen
-    const session = sessionStorage.getItem(ADMIN_SESSION_KEY);
+    const session = sessionStorage.getItem(SESSION_KEY);
     if (session) {
-      const { name } = JSON.parse(session);
-      return {
-        ...initialState,
-        isAdminAuthenticated: true,
-        adminName: name,
-      };
+      const parsed = JSON.parse(session) as { role: UserRole; name: string; mitarbeiterId?: string };
+      return { ...initialState, userRole: parsed.role, adminName: parsed.name, mitarbeiterId: parsed.mitarbeiterId ?? null };
     }
     return initialState;
   });
@@ -137,9 +201,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let loaded = 0;
     const checkLoaded = () => {
       loaded++;
-      if (loaded >= 4) {
-        dispatch({ type: 'SET_LOADING', payload: false });
-      }
+      if (loaded >= 4) dispatch({ type: 'SET_LOADING', payload: false });
     };
 
     const unsubMitarbeiter = mitarbeiterListener((list) => {
@@ -161,6 +223,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubPerioden = abrechnungsperiodenListener((list) => {
       dispatch({ type: 'SET_ABRECHNUNGSPERIODEN', payload: list });
     });
+    const unsubZusaetze = variablePeriodenZusaetzeListener((list) => {
+      dispatch({ type: 'SET_VARIABLE_PERIODEN_ZUSAETZE', payload: list });
+    });
+    const unsubLohnkonto = lohnkontoBuchungenListener((list) => {
+      dispatch({ type: 'SET_LOHNKONTO_BUCHUNGEN', payload: list });
+    });
+    const unsubStueckzahl = stueckzahlAnpassungenListener((list) => {
+      dispatch({ type: 'SET_STUECKZAHL_ANPASSUNGEN', payload: list });
+    });
+    const unsubLohnbueroAbr = lohnbueroAbrechnungenListener((list) => {
+      dispatch({ type: 'SET_LOHNBUERO_ABRECHNUNGEN', payload: list });
+    });
+    const unsubLohnbueroAnm = lohnbueroAnmeldungenListener((list) => {
+      dispatch({ type: 'SET_LOHNBUERO_ANMELDUNGEN', payload: list });
+    });
+    const unsubMemos = mitarbeiterMemosListener((list) => {
+      dispatch({ type: 'SET_MITARBEITER_MEMOS', payload: list });
+    });
+    const unsubDriveLinks = lohnbueroDriveLinksListener((list) => {
+      dispatch({ type: 'SET_LOHNBUERO_DRIVE_LINKS', payload: list });
+    });
+    const unsubDarlehen = mitarbeiterDarlehenListener((list) => {
+      dispatch({ type: 'SET_MITARBEITER_DARLEHEN', payload: list });
+    });
 
     return () => {
       unsubMitarbeiter();
@@ -168,26 +254,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubTeilgebiete();
       unsubParameter();
       unsubPerioden();
+      unsubZusaetze();
+      unsubLohnkonto();
+      unsubStueckzahl();
+      unsubLohnbueroAbr();
+      unsubLohnbueroAnm();
+      unsubMemos();
+      unsubDriveLinks();
+      unsubDarlehen();
     };
   }, []);
 
   const loginAdmin = useCallback((name: string) => {
-    sessionStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ name }));
-    dispatch({ type: 'SET_ADMIN_AUTH', payload: { authenticated: true, name } });
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: 'admin', name }));
+    dispatch({ type: 'SET_AUTH', payload: { role: 'admin', name } });
+  }, []);
+
+  const loginAbrechnung = useCallback((name: string) => {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: 'abrechnung', name }));
+    dispatch({ type: 'SET_AUTH', payload: { role: 'abrechnung', name } });
+  }, []);
+
+  const loginMitarbeiter = useCallback((id: string, name: string) => {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: 'mitarbeiter', name, mitarbeiterId: id }));
+    dispatch({ type: 'SET_AUTH', payload: { role: 'mitarbeiter', name, mitarbeiterId: id } });
   }, []);
 
   const logoutAdmin = useCallback(() => {
-    sessionStorage.removeItem(ADMIN_SESSION_KEY);
-    dispatch({ type: 'SET_ADMIN_AUTH', payload: { authenticated: false, name: '' } });
+    sessionStorage.removeItem(SESSION_KEY);
+    dispatch({ type: 'SET_AUTH', payload: { role: null, name: '' } });
   }, []);
 
   const setAktivePeriode = useCallback((id: string | null) => {
     dispatch({ type: 'SET_AKTIVE_PERIODE', payload: id });
   }, []);
 
+  const isAdminAuthenticated = state.userRole !== null;
+
   return (
     <AppContext.Provider
-      value={{ ...state, loginAdmin, logoutAdmin, setAktivePeriode }}
+      value={{
+        ...state,
+        isAdminAuthenticated,
+        loginAdmin,
+        loginAbrechnung,
+        loginMitarbeiter,
+        logoutAdmin,
+        setAktivePeriode,
+      }}
     >
       {children}
     </AppContext.Provider>

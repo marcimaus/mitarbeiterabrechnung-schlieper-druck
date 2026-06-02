@@ -1,4 +1,8 @@
+import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { abonniereReklamationen } from '../lib/db';
+import { urlaubsAusstehendListener } from '../lib/planung';
+import type { Reklamation, UrlaubsEintrag } from '../types';
 
 export default function HomeScreen() {
   const { mitarbeiter, teilgebiete, touren, abrechnungsperioden, isAdminAuthenticated } = useApp();
@@ -7,66 +11,257 @@ export default function HomeScreen() {
   const aktiveTouren = touren.length;
   const offenePerioden = abrechnungsperioden.filter((p) => p.status === 'offen').length;
 
+  // Teilgebiete ohne Standardausträger (aktiv, keine Auslagestellen — diese
+  // brauchen keinen Austräger).
+  const tgsOhneAustraeger = teilgebiete
+    .filter((tg) => tg.isActive && !tg.istAuslagestelle && !tg.standardAustraegerId)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+
+  // Offene Reklamationen: Datensätze, die noch nicht dem MA mitgeteilt wurden.
+  const [reklamationen, setReklamationen] = useState<Reklamation[]>([]);
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const unsub = abonniereReklamationen(setReklamationen);
+    return () => unsub();
+  }, [isAdminAuthenticated]);
+  const offeneReklamationen = reklamationen.filter((r) => !r.mitgeteilt && !r.archiviert);
+
+  // Urlaubsanträge, die durch Abrechnung erfasst und noch nicht freigegeben
+  // sind. Zeigen wir Admin & Abrechnung — Admin damit er entscheidet,
+  // Abrechnung damit sie sieht, was noch in der Warteschlange hängt.
+  const [offeneUrlaubsantraege, setOffeneUrlaubsantraege] = useState<UrlaubsEintrag[]>([]);
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const unsub = urlaubsAusstehendListener(setOffeneUrlaubsantraege);
+    return () => unsub();
+  }, [isAdminAuthenticated]);
+  const urlaubsantraegeSortiert = [...offeneUrlaubsantraege].sort(
+    (a, b) => a.jahr - b.jahr || a.kw - b.kw,
+  );
+
+  // Mitarbeiter, die noch nicht beim Lohnbüro angemeldet sind (Flag
+  // `nochNichtAngemeldet=true`). Abgemeldete und Interessenten werden
+  // ausgeblendet — beide brauchen keine Anmeldung.
+  const nichtAngemeldeteMitarbeiter = mitarbeiter
+    .filter((m) => m.nochNichtAngemeldet && !m.abgemeldet && !m.istInteressent)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold text-gray-900 mb-1">
+    <div className="p-4 md:p-6 max-w-4xl mx-auto">
+      <h1 className="text-xl md:text-2xl font-bold text-gray-900 mb-0.5">
         Mitarbeiterabrechnung
       </h1>
-      <p className="text-gray-500 mb-8 text-sm">Schlieper-Druck GmbH & Co. KG</p>
+      <p className="text-gray-500 mb-6 text-sm">Schlieper-Druck GmbH</p>
 
-      {/* Statistik-Kacheln */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatCard label="Aktive Mitarbeiter" value={aktiveMitarbeiter.length} icon="👥" color="blue" />
-        <StatCard label="Teilgebiete" value={teilgebiete.filter(t => t.isActive).length} icon="📍" color="green" />
-        <StatCard label="Touren" value={aktiveTouren} icon="🗺" color="yellow" />
-        <StatCard label="Offene Perioden" value={offenePerioden} icon="💰" color="orange" />
+      {/* Statistik-Chips — kompakt, einzeilig */}
+      <div className="flex flex-wrap gap-2 mb-5">
+        <StatChip label="Aktive Mitarbeiter" value={aktiveMitarbeiter.length} icon="👥" color="blue" />
+        <StatChip label="Teilgebiete" value={teilgebiete.filter(t => t.isActive).length} icon="📍" color="green" />
+        <StatChip label="Touren" value={aktiveTouren} icon="🗺" color="yellow" />
+        <StatChip label="Offene Perioden" value={offenePerioden} icon="💰" color="orange" />
       </div>
 
       {/* Schnellzugriff */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <h2 className="font-semibold text-gray-800 mb-4">Schnellzugriff</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <QuickLink href="/zeiterfassung" icon="⏱" title="Zeiterfassung" desc="Zeiten stempeln & erfassen" />
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-6 mb-4">
+        <h2 className="font-semibold text-gray-800 mb-3">Schnellzugriff</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <QuickLink href="/zeiterfassung" icon="⏱" title="Stempeluhr" desc="Zeiten stempeln & erfassen" />
+          <QuickLink href="/fahrten" icon="🚗" title="Fahrtkosten" desc="Fahrt erfassen" />
           {isAdminAuthenticated && (
             <>
-              <QuickLink href="/ausgaben" icon="📄" title="Ausgaben" desc="Wochenausgaben planen" />
-              <QuickLink href="/abrechnung" icon="💰" title="Abrechnung" desc="Monatsabrechnung & Export" />
               <QuickLink href="/mitarbeiter" icon="👥" title="Mitarbeiter" desc="Stammdaten verwalten" />
+              <QuickLink href="/ausgaben" icon="📄" title="Ausgaben & Beilagen" desc="Wochenausgaben planen" />
+              <QuickLink href="/planung" icon="🗒" title="Personalplanung" desc="Drucksaal · Fahrer · Springer" />
+              <QuickLink href="/einsaetze" icon="🗓" title="Einsätze" desc="Austräger zuweisen" />
+              <QuickLink href="/reklamationen" icon="📞" title="Reklamationen" desc="Leser-Reklamationen erfassen" />
+              <QuickLink href="/abrechnung" icon="💰" title="Abrechnung" desc="Monatsabrechnung & Export" />
+              <QuickLink href="/teilgebiete" icon="📍" title="Teilgebiete" desc="Gebiete & Straßenlisten" />
             </>
           )}
         </div>
       </div>
 
-      {/* Letzte Abrechnungsperioden */}
-      {abrechnungsperioden.length > 0 && (
-        <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h2 className="font-semibold text-gray-800 mb-4">Abrechnungsperioden</h2>
-          <div className="space-y-2">
-            {abrechnungsperioden.slice(0, 5).map((p) => (
-              <div
-                key={p.id}
-                className="flex items-center justify-between py-2 px-3 rounded-lg bg-gray-50"
-              >
-                <span className="text-sm font-medium text-gray-800">{p.bezeichnung}</span>
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-full ${
-                    p.status === 'abgeschlossen'
-                      ? 'bg-green-100 text-green-700'
-                      : 'bg-amber-100 text-amber-700'
-                  }`}
-                >
-                  {p.status === 'abgeschlossen' ? 'Abgeschlossen' : 'Offen'}
-                </span>
+      {/* Auswertungen: Teilgebiete ohne Standardausträger + offene Reklamationen */}
+      {isAdminAuthenticated && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Teilgebiete ohne Standardausträger */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-amber-600">⚠</span>
+              <h2 className="font-semibold text-gray-800">Teilgebiete ohne Standardausträger</h2>
+              <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium ${
+                tgsOhneAustraeger.length === 0
+                  ? 'bg-green-100 text-green-700'
+                  : 'bg-amber-100 text-amber-800'
+              }`}>
+                {tgsOhneAustraeger.length}
+              </span>
+            </div>
+            {tgsOhneAustraeger.length === 0 ? (
+              <p className="text-sm text-gray-500 italic">
+                Alle aktiven Teilgebiete haben einen Standardausträger zugeordnet. ✓
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {tgsOhneAustraeger.map((tg) => (
+                  <a
+                    key={tg.id}
+                    href="/teilgebiete"
+                    className="flex items-center justify-between py-1.5 px-2.5 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                  >
+                    <span className="text-sm font-medium text-amber-900">{tg.name}</span>
+                    {tg.plz && (
+                      <span className="text-xs text-amber-700 font-mono">{tg.plz}</span>
+                    )}
+                  </a>
+                ))}
               </div>
-            ))}
+            )}
           </div>
+
+          {/* Offene Reklamationen */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-red-600">📞</span>
+              <h2 className="font-semibold text-gray-800">Offene Reklamationen</h2>
+              <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium ${
+                offeneReklamationen.length === 0
+                  ? 'bg-green-100 text-green-700'
+                  : 'bg-red-100 text-red-700'
+              }`}>
+                {offeneReklamationen.length}
+              </span>
+            </div>
+            {offeneReklamationen.length === 0 ? (
+              <p className="text-sm text-gray-500 italic">
+                Keine offenen Reklamationen. ✓
+              </p>
+            ) : (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {offeneReklamationen.slice(0, 10).map((r) => (
+                  <a
+                    key={r.id}
+                    href="/reklamationen"
+                    className="block py-1.5 px-2.5 rounded-md bg-red-50 border border-red-200 hover:bg-red-100"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-medium text-red-900 truncate">
+                        {r.anruferName || '— ohne Name —'}
+                      </span>
+                      <span className="text-[11px] text-red-600 shrink-0 font-mono">
+                        {new Date(r.erstelltAm).toLocaleDateString('de-DE')}
+                      </span>
+                    </div>
+                    {(r.strasse || r.ort) && (
+                      <div className="text-xs text-red-700/80 truncate">
+                        {[r.strasse, r.hausnummer].filter(Boolean).join(' ')}
+                        {(r.strasse || r.hausnummer) && (r.plz || r.ort) ? ', ' : ''}
+                        {[r.plz, r.ort].filter(Boolean).join(' ')}
+                      </div>
+                    )}
+                  </a>
+                ))}
+                {offeneReklamationen.length > 10 && (
+                  <a
+                    href="/reklamationen"
+                    className="block py-1 text-center text-xs text-red-700 hover:text-red-900 font-medium"
+                  >
+                    … und {offeneReklamationen.length - 10} weitere
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Urlaubsanträge — offen, durch Abrechnung erfasst, warten auf Admin-Freigabe */}
+      {isAdminAuthenticated && urlaubsantraegeSortiert.length > 0 && (
+        <div className="mt-4 bg-white rounded-xl shadow-sm border border-amber-300 p-4 md:p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-amber-600">🏖</span>
+            <h2 className="font-semibold text-gray-800">
+              Urlaubsanträge — Freigabe ausstehend
+            </h2>
+            <span className="ml-auto text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800">
+              {urlaubsantraegeSortiert.length}
+            </span>
+          </div>
+          <div className="space-y-1.5 max-h-64 overflow-y-auto">
+            {urlaubsantraegeSortiert.slice(0, 12).map((u) => {
+              const ma = mitarbeiter.find((m) => m.id === u.mitarbeiterId);
+              return (
+                <a
+                  key={u.id}
+                  href="/planung"
+                  className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                >
+                  <span className="text-sm font-medium text-amber-900 truncate">
+                    {ma?.name ?? '?'}
+                  </span>
+                  <span className="text-xs text-amber-700 shrink-0">
+                    KW {u.kw}/{u.jahr}
+                    {u.datumVon && u.datumBis ? ` · ${u.datumVon} – ${u.datumBis}` : ''}
+                  </span>
+                  <span className="text-[10px] text-amber-600 shrink-0 font-mono">
+                    {u.erstellerName}
+                  </span>
+                </a>
+              );
+            })}
+            {urlaubsantraegeSortiert.length > 12 && (
+              <a
+                href="/planung"
+                className="block py-1 text-center text-xs text-amber-700 hover:text-amber-900 font-medium"
+              >
+                … und {urlaubsantraegeSortiert.length - 12} weitere
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Noch nicht angemeldete Mitarbeiter (unterhalb der anderen Auswertungen) */}
+      {isAdminAuthenticated && (
+        <div className="mt-4 bg-white rounded-xl shadow-sm border border-gray-200 p-4 md:p-6">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-amber-600">⏳</span>
+            <h2 className="font-semibold text-gray-800">
+              Noch nicht beim Lohnbüro angemeldet
+            </h2>
+            <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium ${
+              nichtAngemeldeteMitarbeiter.length === 0
+                ? 'bg-green-100 text-green-700'
+                : 'bg-amber-100 text-amber-800'
+            }`}>
+              {nichtAngemeldeteMitarbeiter.length}
+            </span>
+          </div>
+          {nichtAngemeldeteMitarbeiter.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">
+              Alle Mitarbeiter sind beim Lohnbüro angemeldet. ✓
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {nichtAngemeldeteMitarbeiter.map((m) => (
+                <a
+                  key={m.id}
+                  href="/mitarbeiter"
+                  className="flex items-center justify-between py-1.5 px-2.5 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                >
+                  <span className="text-sm font-medium text-amber-900 truncate">{m.name}</span>
+                  <span className="text-xs text-amber-700 font-mono shrink-0 ml-2">{m.nummer}</span>
+                </a>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function StatCard({
+function StatChip({
   label,
   value,
   icon,
@@ -84,10 +279,10 @@ function StatCard({
     orange: 'bg-orange-50 text-orange-700',
   };
   return (
-    <div className={`rounded-xl p-4 ${colors[color]}`}>
-      <div className="text-2xl mb-1">{icon}</div>
-      <div className="text-2xl font-bold">{value}</div>
-      <div className="text-xs font-medium opacity-80">{label}</div>
+    <div className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm ${colors[color]}`}>
+      <span className="text-base leading-none">{icon}</span>
+      <span className="font-bold">{value}</span>
+      <span className="text-xs font-medium opacity-80">{label}</span>
     </div>
   );
 }
@@ -106,9 +301,9 @@ function QuickLink({
   return (
     <a
       href={href}
-      className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors group"
+      className="flex items-center gap-3 p-3.5 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 active:bg-blue-100 transition-colors group"
     >
-      <span className="text-2xl">{icon}</span>
+      <span className="text-2xl shrink-0">{icon}</span>
       <div>
         <div className="text-sm font-medium text-gray-800 group-hover:text-blue-700">
           {title}

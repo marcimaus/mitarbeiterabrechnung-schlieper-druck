@@ -11,20 +11,28 @@ import { db } from './firebase';
 import type {
   Mitarbeiter,
   Teilgebiet,
+  TeilgebietSnapshot,
   Ausgabe,
   Beilage,
   Einsatz,
   Abrechnungsperiode,
   Parameter,
   Sondervereinbarung,
+  Fahrt,
+  Vorschuss,
+  VariablerPeriodenZusatz,
+  LohnkontoBuchung,
 } from '../types';
 import {
   berechneAustraegerLohn,
   ermittleStundenlohn,
+  ermittleStundenlohnZusammen,
+  berechneZusammentragZeit,
   type AustraegerLohnDetail,
 } from './berechnung';
 import { berechneNettoMinuten } from './zeiterfassung';
-import type { Arbeitszeit, ZusammentragenEinsatz, Fahrtkosten } from '../types';
+import { getISOWeek, getISOYear } from './kalender';
+import type { Arbeitszeit, ZusammentragenEinsatz } from '../types';
 
 // ---- Ergebnistypen -----------------------------------------
 
@@ -37,13 +45,32 @@ export interface AustraegerEinsatzErgebnis {
   detail: AustraegerLohnDetail;
 }
 
+export interface AusgabenBonusErgebnis {
+  id: string;
+  ausgabeId: string;
+  kw: number;
+  jahr: number;
+  minuten: number;
+  kommentar?: string;
+  /** Vergüteter Lohn = (minuten / 60) * stundenlohn */
+  lohn: number;
+}
+
 export interface ZusammentragenErgebnis {
   ausgabeId: string;
   kw: number;
+  teilgebietId?: string;
+  teilgebietName?: string;
+  /** Stückzahl des Teilgebiets (= Anzahl Exemplare). */
+  stueckzahl?: number;
   stapelBearbeitet: number;
   istVorarbeit: boolean;
   lohn: number;
   stunden?: number;
+  /** Anzahl interner Beilagen, die bei diesem Einsatz mit zusammengetragen wurden. */
+  intBeilagenAnzahl?: number;
+  /** Anzahl externer Beilagen des Teilgebiets (nur zur Info — nicht Teil des Zusammentrag-Lohns). */
+  extBeilagenAnzahl?: number;
 }
 
 export interface MitarbeiterAbrechnung {
@@ -51,20 +78,58 @@ export interface MitarbeiterAbrechnung {
   // Austräger
   austraegerEinsaetze: AustraegerEinsatzErgebnis[];
   austraegerGesamt: number;
+  // Gewichtsvergütung (in austraegerGesamt bereits enthalten — hier aufgeschlüsselt)
+  gewichtsbonusAnzeigenblatt: number;
+  gewichtsbonusBeilagen: number;
   // Zusammentragen
   zusammentragenEinsaetze: ZusammentragenErgebnis[];
   zusammentragenGesamt: number;
-  // Zeiterfassung (tatsächliche Zeiten)
+  // Zeiterfassung (tatsächliche Zeiten, nur die gelohnten)
   arbeitszeiten: Arbeitszeit[];
   zeitStunden: number;
   zeitLohn: number;
+  // Zeiten, die NICHT in den Lohn einfließen (zur Info-Anzeige)
+  arbeitszeitenNichtAbgerechnet: Arbeitszeit[];
   // Fixes Gehalt
   fixesGehalt: number;
-  // Fahrtkosten
-  fahrtkosten: Fahrtkosten[];
+  // Fahrtkosten (neue Fahrt-Erfassung)
+  fahrten: Fahrt[];
+  fahrtSatzEurProKm: number;
   fahrtkostenGesamt: number;
-  // Gesamt
+  // Vorschüsse (Abschlagszahlungen)
+  vorschuesse: Vorschuss[];
+  vorschussSumme: number;
+  // Variabler Periodenzusatz / Bonus
+  bonus: number;
+  bonusKommentar?: string;
+  bonusId?: string;
+  // Minuten-Boni je Ausgabe (Tätigkeitsbonus, z. B. „Betreuung Zusammenträger")
+  ausgabenBoni: AusgabenBonusErgebnis[];
+  ausgabenBoniMinutenGesamt: number;
+  ausgabenBoniLohnGesamt: number;
+  /** Bonus „Zeiterfassung Austragen": pauschaler Betrag je vollständig online
+   *  erfasstem Einsatz (Austragen) — Bedingungen: Arbeitszeit + Restmenge +
+   *  meldungEingereichtAm gesetzt. */
+  bonusZeiterfassungEur: number;
+  bonusZeiterfassungAnzahl: number;
+  // Lohnkonto: Buchungen DIESER Periode (für Anzeige + Wirkung auf Brutto-Lohnbüro)
+  lohnkontoBuchungenPeriode: LohnkontoBuchung[];
+  /** Summe aller "Verschiebungen" dieser Periode (>= 0) — wird vom Brutto abgezogen. */
+  lohnkontoVerschiebungPeriode: number;
+  /** Summe aller "Verrechnungen" dieser Periode (>= 0) — wird zum Brutto addiert. */
+  lohnkontoVerrechnungPeriode: number;
+  /** Saldo VOR dieser Periode (alle Buchungen vorheriger Perioden). */
+  lohnkontoSaldoVorPeriode: number;
+  /** Saldo NACH dieser Periode = vor + Verschiebung − Verrechnung. */
+  lohnkontoSaldoNachPeriode: number;
+  // Gesamt (brutto, intern berechnet — VOR Lohnkonto-Verschiebung)
   gesamt: number;
+  /**
+   * Brutto, der an das Lohnbüro übermittelt wird:
+   * = gesamt − lohnkontoVerschiebungPeriode + lohnkontoVerrechnungPeriode
+   * Dies ist auch die Basis für die Auszahlung der SV-befreiten MA.
+   */
+  bruttoLohnbuero: number;
 }
 
 // ---- Daten für eine Periode laden --------------------------
@@ -75,7 +140,8 @@ export interface PeriodeData {
   einsaetze: Einsatz[];
   arbeitszeiten: Arbeitszeit[];
   zusammentragenEinsaetze: ZusammentragenEinsatz[];
-  fahrtkosten: Fahrtkosten[];
+  fahrten: Fahrt[];
+  vorschuesse: Vorschuss[];
   sondervereinbarungen: Sondervereinbarung[];
 }
 
@@ -100,7 +166,6 @@ export async function ladePeriodeData(
   // Alle Einsätze dieser Ausgaben
   let einsaetze: Einsatz[] = [];
   if (ausgabeIds.length > 0) {
-    // Firestore 'in' maximal 30 Einträge
     for (let i = 0; i < ausgabeIds.length; i += 30) {
       const chunk = ausgabeIds.slice(i, i + 30);
       const snap = await getDocs(
@@ -151,52 +216,265 @@ export async function ladePeriodeData(
     }
   }
 
-  // Fahrtkosten des Monats
-  const fkSnap = await getDocs(
-    query(
-      collection(db, 'fahrtkosten'),
-      where('datum', '>=', new Date(periode.jahr, periode.monat - 1, 1).toISOString().slice(0, 10)),
-      where('datum', '<=', new Date(periode.jahr, periode.monat, 0).toISOString().slice(0, 10))
-    )
+  // Fahrten dieser Abrechnungsperiode
+  const fahrtenSnap = await getDocs(
+    query(collection(db, 'fahrten'), where('abrechnungsperiodeId', '==', periode.id))
   );
-  const fahrtkosten = fkSnap.docs.map(
-    (d) => ({ id: d.id, ...d.data() } as Fahrtkosten)
+  const fahrten = fahrtenSnap.docs.map(
+    (d) => ({ id: d.id, ...d.data() } as Fahrt)
   );
 
-  // Sondervereinbarungen (alle, gefiltert werden sie in der Berechnung)
+  // Vorschüsse dieser Abrechnungsperiode
+  const vorschussnap = await getDocs(
+    query(collection(db, 'vorschuesse'), where('abrechnungsperiodeId', '==', periode.id))
+  );
+  const vorschuesse = vorschussnap.docs.map(
+    (d) => ({ id: d.id, ...d.data() } as Vorschuss)
+  );
+
+  // Sondervereinbarungen (alle, gefiltert in der Berechnung)
   const svSnap = await getDocs(collection(db, 'sondervereinbarungen'));
   const sondervereinbarungen = svSnap.docs.map(
     (d) => ({ id: d.id, ...d.data() } as Sondervereinbarung)
   );
 
-  return { ausgaben, beilagen, einsaetze, arbeitszeiten, zusammentragenEinsaetze, fahrtkosten, sondervereinbarungen };
+  return { ausgaben, beilagen, einsaetze, arbeitszeiten, zusammentragenEinsaetze, fahrten, vorschuesse, sondervereinbarungen };
 }
 
 // ---- Abrechnung berechnen ----------------------------------
 
 export function berechneAbrechnung(
   mitarbeiterListe: Mitarbeiter[],
-  teilgebiete: Teilgebiet[],
+  teilgebiete: Teilgebiet[] | TeilgebietSnapshot[],
   data: PeriodeData,
-  params: Parameter
+  params: Parameter,
+  periode?: Abrechnungsperiode,
+  variablePeriodenZusaetze: VariablerPeriodenZusatz[] = [],
+  alleAbrechnungsperioden: Abrechnungsperiode[] = [],
+  alleLohnkontoBuchungen: LohnkontoBuchung[] = []
 ): MitarbeiterAbrechnung[] {
+  // Snapshot-Stufen:
+  //  - End-Snapshot (status='abgeschlossen'): paramSnapshot + periodeSnapshot
+  //    werden verwendet — die Periode ist eingefroren.
+  //  - Monatswechsel-Snapshot: fixiert nur Austragen/Zusammentragen + die
+  //    relevanten Stammdaten. Andere Werte werden weiter live berechnet.
+  const istAbgeschlossen = periode?.status === 'abgeschlossen';
+  const istMonatswechsel = !istAbgeschlossen && !!periode?.monatswechselSnapshot;
+
+  const effParams: Parameter = istAbgeschlossen && periode?.paramSnapshot
+    ? { ...params, ...periode.paramSnapshot }
+    : istMonatswechsel && periode?.monatswechselSnapshot?.paramSnapshot
+      ? { ...params, ...periode.monatswechselSnapshot.paramSnapshot }
+      : params;
+
+  const effTeilgebiete: (Teilgebiet | TeilgebietSnapshot)[] =
+    istAbgeschlossen && periode?.periodeSnapshot?.teilgebietSnapshots?.length
+      ? periode.periodeSnapshot.teilgebietSnapshots
+      : istMonatswechsel && periode?.monatswechselSnapshot?.teilgebietSnapshots?.length
+        ? periode.monatswechselSnapshot.teilgebietSnapshots
+        : teilgebiete;
+
+  // Lookup für fixierte Werte aus dem Monatswechsel-Snapshot
+  const monatswechselFixierungProMa = new Map<
+    string,
+    {
+      austraegerEinsaetze: AustraegerEinsatzErgebnis[];
+      austraegerGesamt: number;
+      gewichtsbonusAnzeigenblatt: number;
+      gewichtsbonusBeilagen: number;
+      zusammentragenEinsaetze: ZusammentragenErgebnis[];
+      zusammentragenGesamt: number;
+    }
+  >();
+  if (istMonatswechsel && periode?.monatswechselSnapshot?.fixierungProMa) {
+    for (const f of periode.monatswechselSnapshot.fixierungProMa) {
+      monatswechselFixierungProMa.set(f.mitarbeiterId, {
+        austraegerEinsaetze: f.austraegerEinsaetze as AustraegerEinsatzErgebnis[],
+        austraegerGesamt: f.austraegerGesamt,
+        gewichtsbonusAnzeigenblatt: f.gewichtsbonusAnzeigenblatt,
+        gewichtsbonusBeilagen: f.gewichtsbonusBeilagen,
+        zusammentragenEinsaetze: f.zusammentragenEinsaetze as ZusammentragenErgebnis[],
+        zusammentragenGesamt: f.zusammentragenGesamt,
+      });
+    }
+  }
+
   const ergebnisse: MitarbeiterAbrechnung[] = [];
+
+  const periodeId = periode?.id;
+
+  // IDs aller Perioden, die zeitlich VOR der aktuellen Periode liegen.
+  // Wird für die Saldo-Berechnung des Lohnkontos benötigt.
+  const periodeIdsVorAktueller = new Set<string>();
+  if (periode) {
+    for (const p of alleAbrechnungsperioden) {
+      if (p.id === periode.id) continue;
+      const isFrueher =
+        p.jahr < periode.jahr ||
+        (p.jahr === periode.jahr && p.monat < periode.monat);
+      if (isFrueher) periodeIdsVorAktueller.add(p.id);
+    }
+  }
+
+  function berechneLohnkontoFuer(maId: string) {
+    const buchungenMa = alleLohnkontoBuchungen.filter((b) => b.mitarbeiterId === maId);
+    const periode_ = periodeId
+      ? buchungenMa.filter((b) => b.abrechnungsperiodeId === periodeId)
+      : [];
+    // WICHTIG: Saldo-Akkumulation in Cent-Integer rechnen, sonst entsteht
+    // Float-Drift („79,30 + 0,02 → 79,28"). Am Ende /100 für die EUR-Form.
+    const toCent = (eur: number) => Math.round(eur * 100);
+    const verschiebungPeriodeCent = periode_
+      .filter((b) => b.art === 'verschiebung')
+      .reduce((s, b) => s + toCent(b.betragEur), 0);
+    const verrechnungPeriodeCent = periode_
+      .filter((b) => b.art === 'verrechnung')
+      .reduce((s, b) => s + toCent(b.betragEur), 0);
+    const saldoVorCent = buchungenMa
+      .filter((b) => periodeIdsVorAktueller.has(b.abrechnungsperiodeId))
+      .reduce(
+        (s, b) => s + (b.art === 'verschiebung' ? toCent(b.betragEur) : -toCent(b.betragEur)),
+        0
+      );
+    const saldoNachCent = saldoVorCent + verschiebungPeriodeCent - verrechnungPeriodeCent;
+    return {
+      lohnkontoBuchungenPeriode: periode_,
+      lohnkontoVerschiebungPeriode: verschiebungPeriodeCent / 100,
+      lohnkontoVerrechnungPeriode: verrechnungPeriodeCent / 100,
+      lohnkontoSaldoVorPeriode: saldoVorCent / 100,
+      lohnkontoSaldoNachPeriode: saldoNachCent / 100,
+    };
+  }
 
   for (const ma of mitarbeiterListe) {
     if (!ma.isActive) continue;
 
-    // --- Austräger ---
-    const austraegerEinsaetze: AustraegerEinsatzErgebnis[] = [];
+    // --- Fahrtkosten (werden IMMER berechnet, unabhängig vom Modell) ---
+    const maFahrten = data.fahrten.filter((f) => f.mitarbeiterId === ma.id);
+    const fahrtSatz = ma.fahrkostenEurProKm ?? effParams.fahrkostenEurProKm ?? 0.30;
+    const fahrtkostenGesamt = maFahrten.reduce(
+      (s, f) => s + f.streckKm * fahrtSatz, 0
+    );
 
-    if (ma.rollen.includes('austräger')) {
-      // Explizite Einsätze (Springer)
+    // --- Vorschüsse ---
+    const maVorschuesse = data.vorschuesse.filter((v) => v.mitarbeiterId === ma.id);
+    const vorschussSumme = maVorschuesse.reduce((s, v) => s + v.betragEur, 0);
+
+    // --- Variabler Periodenzusatz / Bonus ---
+    const zusatz = periodeId
+      ? variablePeriodenZusaetze.find(
+          (z) => z.mitarbeiterId === ma.id && z.abrechnungsperiodeId === periodeId
+        )
+      : undefined;
+    const bonus = zusatz?.betragEur ?? 0;
+    const bonusKommentar = zusatz?.kommentar;
+    const bonusId = zusatz?.id;
+
+    const stundenlohn = ermittleStundenlohn(ma, effParams);
+
+    // --- Ausgaben-Boni (pauschaler Tätigkeitsbonus aus Mitarbeiter-Stammdaten) ---
+    // `ausgabenBonusMinuten` am MA gilt PRO Ausgabe der Periode. Wir erzeugen
+    // pro Ausgabe einen Detail-Eintrag und summieren über alle.
+    const bonusMinutenProAusgabe = ma.ausgabenBonusMinuten ?? 0;
+    const ausgabenBoniDetails: AusgabenBonusErgebnis[] = [];
+    if (bonusMinutenProAusgabe > 0) {
+      const sortedAusgaben = [...data.ausgaben].sort((a, b) =>
+        a.jahr !== b.jahr ? a.jahr - b.jahr : a.kw - b.kw
+      );
+      for (const ausgabe of sortedAusgaben) {
+        ausgabenBoniDetails.push({
+          id: `${ma.id}-${ausgabe.id}`,
+          ausgabeId: ausgabe.id,
+          kw: ausgabe.kw,
+          jahr: ausgabe.jahr,
+          minuten: bonusMinutenProAusgabe,
+          kommentar: ma.ausgabenBonusKommentar,
+          lohn: (bonusMinutenProAusgabe / 60) * stundenlohn,
+        });
+      }
+    }
+    const ausgabenBoniMinutenGesamt = ausgabenBoniDetails.reduce((s, e) => s + e.minuten, 0);
+    const ausgabenBoniLohnGesamt = ausgabenBoniDetails.reduce((s, e) => s + e.lohn, 0);
+
+    // =======================================================
+    // FESTGEHALT-MITARBEITER — absoluter Override
+    // =======================================================
+    if (ma.hatFestgehalt) {
+      const fixesGehalt = ma.festgehaltEur ?? ma.fixesGehalt ?? 0;
+      // Festgehälter erhalten keinen Zeiterfassungs-Bonus (Austragen ist
+      // dort nicht über Stempelzeit abgerechnet).
+      const bonusZeiterfassungEur = 0;
+      const bonusZeiterfassungAnzahl = 0;
+      const gesamt = fixesGehalt + bonus + fahrtkostenGesamt + ausgabenBoniLohnGesamt + bonusZeiterfassungEur;
+      const lk = berechneLohnkontoFuer(ma.id);
+      const bruttoLohnbuero =
+        gesamt - lk.lohnkontoVerschiebungPeriode + lk.lohnkontoVerrechnungPeriode;
+      if (
+        fixesGehalt > 0 ||
+        bonus !== 0 ||
+        fahrtkostenGesamt > 0 ||
+        maVorschuesse.length > 0 ||
+        lk.lohnkontoBuchungenPeriode.length > 0 ||
+        lk.lohnkontoSaldoVorPeriode !== 0 ||
+        ausgabenBoniDetails.length > 0
+      ) {
+        // Auch bei Festgehalt: alle Arbeitszeiten informativ anzeigen
+        const festArbeitszeiten = data.arbeitszeiten.filter(
+          (a) => a.mitarbeiterId === ma.id && a.status === 'abgeschlossen'
+        );
+        ergebnisse.push({
+          mitarbeiter: ma,
+          austraegerEinsaetze: [],
+          austraegerGesamt: 0,
+          gewichtsbonusAnzeigenblatt: 0,
+          gewichtsbonusBeilagen: 0,
+          zusammentragenEinsaetze: [],
+          zusammentragenGesamt: 0,
+          arbeitszeiten: [],
+          zeitStunden: 0,
+          zeitLohn: 0,
+          arbeitszeitenNichtAbgerechnet: festArbeitszeiten,
+          fixesGehalt,
+          fahrten: maFahrten,
+          fahrtSatzEurProKm: fahrtSatz,
+          fahrtkostenGesamt,
+          vorschuesse: maVorschuesse,
+          vorschussSumme,
+          bonus,
+          bonusKommentar,
+          bonusId,
+          ausgabenBoni: ausgabenBoniDetails,
+          ausgabenBoniMinutenGesamt,
+          ausgabenBoniLohnGesamt,
+          bonusZeiterfassungEur,
+          bonusZeiterfassungAnzahl,
+          ...lk,
+          gesamt,
+          bruttoLohnbuero,
+        });
+      }
+      continue;
+    }
+
+    // =======================================================
+    // VARIABLE ABRECHNUNG (ohne Festgehalt)
+    // Alle Berechnungen hängen NICHT von den Rollen ab!
+    // =======================================================
+
+    // --- Austragen: rechnerisch (Teilgebiete + Parameter) ---
+    // Bei aktivem Monatswechsel-Snapshot werden die fixierten Werte
+    // anschließend übernommen (siehe weiter unten).
+    let austraegerEinsaetze: AustraegerEinsatzErgebnis[] = [];
+
+    if (!effParams.austragenNachIstZeit) {
+      // Explizite Springer-Einsätze
       const springerEinsaetze = data.einsaetze.filter(
         (e) => e.mitarbeiterId === ma.id && e.typ === 'springer'
       );
 
       for (const einsatz of springerEinsaetze) {
         const ausgabe = data.ausgaben.find((a) => a.id === einsatz.ausgabeId);
-        const tg = teilgebiete.find((t) => t.id === einsatz.teilgebietId);
+        const tg = effTeilgebiete.find((t) => t.id === einsatz.teilgebietId);
         if (!ausgabe || !tg) continue;
 
         const beilagenFuerAusgabe = data.beilagen.filter(
@@ -207,7 +485,7 @@ export function berechneAbrechnung(
         );
 
         const detail = berechneAustraegerLohn(
-          ma, tg, ausgabe, beilagenFuerAusgabe, einsatz, sv, params
+          ma, tg as Teilgebiet, ausgabe, beilagenFuerAusgabe, einsatz, sv, effParams
         );
         austraegerEinsaetze.push({
           kw: einsatz.kw,
@@ -219,20 +497,19 @@ export function berechneAbrechnung(
         });
       }
 
-      // Standardausträger-Einsätze (Teilgebiete wo dieser MA Standardausträger ist)
-      const meineGebiete = teilgebiete.filter(
-        (tg) => tg.standardAustraegerId === ma.id && tg.isActive
+      // Standard-Austräger: Teilgebiete wo dieser MA Standardausträger ist
+      const meineGebiete = effTeilgebiete.filter(
+        (tg) => (tg as Teilgebiet).standardAustraegerId === ma.id &&
+                (tg as Teilgebiet).isActive !== false
       );
 
       for (const tg of meineGebiete) {
         for (const ausgabe of data.ausgaben) {
-          // Prüfe ob in dieser Ausgabe ein anderer Einsatz hinterlegt ist
           const expliziterEinsatz = data.einsaetze.find(
             (e) => e.ausgabeId === ausgabe.id && e.teilgebietId === tg.id
           );
 
           if (expliziterEinsatz) {
-            // Ausfall, Springer oder ungeklärt → dieser MA hat nicht ausgetragen
             if (
               expliziterEinsatz.typ === 'ausfall' ||
               expliziterEinsatz.typ === 'ungeklärt' ||
@@ -242,7 +519,6 @@ export function berechneAbrechnung(
             }
           }
 
-          // Standard-Einsatz: MA hat ausgetragen
           const fakeEinsatz: Einsatz = {
             id: '',
             ausgabeId: ausgabe.id,
@@ -263,7 +539,7 @@ export function berechneAbrechnung(
           );
 
           const detail = berechneAustraegerLohn(
-            ma, tg, ausgabe, beilagenFuerAusgabe, fakeEinsatz, sv, params
+            ma, tg as Teilgebiet, ausgabe, beilagenFuerAusgabe, fakeEinsatz, sv, effParams
           );
           austraegerEinsaetze.push({
             kw: ausgabe.kw,
@@ -277,107 +553,334 @@ export function berechneAbrechnung(
       }
     }
 
-    const austraegerGesamt = austraegerEinsaetze.reduce(
+    let austraegerGesamt = austraegerEinsaetze.reduce(
       (s, e) => s + e.detail.gesamt, 0
     );
-
-    // --- Zusammentragen ---
-    const maZusammen = data.zusammentragenEinsaetze.filter(
-      (z) => z.mitarbeiterId === ma.id
+    let gewichtsbonusAnzeigenblatt = austraegerEinsaetze.reduce(
+      (s, e) => s + (e.detail.gewichtsbonusAnzeigenblatt ?? 0), 0
     );
-    const zusammentragenEinsaetze: ZusammentragenErgebnis[] = [];
-    const stundenlohn = ermittleStundenlohn(ma, params);
+    let gewichtsbonusBeilagen = austraegerEinsaetze.reduce(
+      (s, e) => s + (e.detail.gewichtsbonusBeilagen ?? 0), 0
+    );
 
-    for (const z of maZusammen) {
-      const ausgabe = data.ausgaben.find((a) => a.id === z.ausgabeId);
-      if (!ausgabe) continue;
+    // --- Zusammentragen: rechnerisch (Stapel × 0.25h × Stundenlohn) ---
+    let zusammentragenEinsaetze: ZusammentragenErgebnis[] = [];
 
-      if (z.istVorarbeit && z.vorarbeitStart && z.vorarbeitEnde) {
-        // Vorarbeit: tatsächliche Zeit × Stundenlohn
-        const minuten = (z.vorarbeitEnde - z.vorarbeitStart) / 60_000;
-        const stunden = minuten / 60;
-        const lohn = stunden * stundenlohn;
-        zusammentragenEinsaetze.push({
-          ausgabeId: z.ausgabeId,
-          kw: ausgabe.kw,
-          stapelBearbeitet: z.stapelBearbeitet,
-          istVorarbeit: true,
-          lohn,
-          stunden,
-        });
-      } else {
-        // Normales Zusammentragen: Stapel × Pauschale (aus Parameter)
-        // Vereinfachung: Stapel × 0.25h × Stundenlohn
-        const lohn = z.stapelBearbeitet * 0.25 * stundenlohn;
-        zusammentragenEinsaetze.push({
-          ausgabeId: z.ausgabeId,
-          kw: ausgabe.kw,
-          stapelBearbeitet: z.stapelBearbeitet,
-          istVorarbeit: false,
-          lohn,
-        });
+    if (!effParams.zusammentragenNachIstZeit) {
+      const maZusammen = data.zusammentragenEinsaetze.filter(
+        (z) => z.mitarbeiterId === ma.id
+      );
+
+      for (const z of maZusammen) {
+        const ausgabe = data.ausgaben.find((a) => a.id === z.ausgabeId);
+        if (!ausgabe) continue;
+
+        if (z.istVorarbeit && !ausgabe.vorarbeitFreigegeben) {
+          continue;
+        }
+
+        if (z.istVorarbeit && z.vorarbeitMinuten != null && z.vorarbeitMinuten > 0) {
+          const tgV = effTeilgebiete.find((t) => t.id === z.teilgebietId) as
+            | Teilgebiet
+            | undefined;
+          const stunden = z.vorarbeitMinuten / 60;
+          const lohn = stunden * ermittleStundenlohnZusammen(ma, effParams);
+          zusammentragenEinsaetze.push({
+            ausgabeId: z.ausgabeId,
+            kw: ausgabe.kw,
+            teilgebietId: z.teilgebietId,
+            teilgebietName: tgV?.name,
+            stueckzahl: tgV?.stueckzahl,
+            stapelBearbeitet: z.stapelBearbeitet,
+            istVorarbeit: true,
+            lohn,
+            stunden,
+          });
+        } else if (!z.istVorarbeit) {
+          const tg = effTeilgebiete.find((t) => t.id === z.teilgebietId) as
+            | Teilgebiet
+            | undefined;
+          if (!tg) continue;
+
+          // Interne Beilagen dieser Ausgabe, die dieses Teilgebiet betreffen
+          const intBeilagen = data.beilagen.filter(
+            (b) =>
+              b.ausgabeId === z.ausgabeId &&
+              b.kennzeichen === 'int' &&
+              b.teilgebietIds.includes(z.teilgebietId)
+          ).length;
+          // Externe Beilagen (nur zur Anzeige, nicht Teil des Zusammentragen-Lohns)
+          const extBeilagen = data.beilagen.filter(
+            (b) =>
+              b.ausgabeId === z.ausgabeId &&
+              b.kennzeichen === 'ext' &&
+              b.teilgebietIds.includes(z.teilgebietId)
+          ).length;
+
+          // Anzahl Stapel aus der Ausgabe (manuell gepflegtes Feld, NICHT neu berechnen)
+          const stapelAnzeige = ausgabe.stapelAnzahl || 0;
+          const stunden = berechneZusammentragZeit(
+            tg.stueckzahl,
+            stapelAnzeige,
+            intBeilagen,
+            effParams
+          );
+          const lohnZt = ermittleStundenlohnZusammen(ma, effParams);
+          const lohn = stunden * lohnZt;
+
+          zusammentragenEinsaetze.push({
+            ausgabeId: z.ausgabeId,
+            kw: ausgabe.kw,
+            teilgebietId: z.teilgebietId,
+            teilgebietName: tg.name,
+            stueckzahl: tg.stueckzahl,
+            stapelBearbeitet: stapelAnzeige,
+            istVorarbeit: false,
+            lohn,
+            stunden,
+            intBeilagenAnzahl: intBeilagen,
+            extBeilagenAnzahl: extBeilagen,
+          });
+        }
       }
     }
-    const zusammentragenGesamt = zusammentragenEinsaetze.reduce(
+    let zusammentragenGesamt = zusammentragenEinsaetze.reduce(
       (s, z) => s + z.lohn, 0
     );
 
-    // --- Zeiterfassung ---
-    const maArbeitszeiten = data.arbeitszeiten.filter(
-      (a) =>
-        a.mitarbeiterId === ma.id &&
-        a.status === 'abgeschlossen' &&
-        !ma.rollen.includes('austräger') // Austräger werden rechnerisch abgerechnet
+    // --- Monatswechsel-Snapshot: Austragen + Zusammentragen fixieren ---
+    // Stammdaten/Parameter wirken hier nicht mehr; die zum Zeitpunkt des
+    // Monatswechsels berechneten Werte werden 1:1 übernommen.
+    const fixierung = monatswechselFixierungProMa.get(ma.id);
+    if (fixierung) {
+      austraegerEinsaetze = fixierung.austraegerEinsaetze;
+      austraegerGesamt = fixierung.austraegerGesamt;
+      gewichtsbonusAnzeigenblatt = fixierung.gewichtsbonusAnzeigenblatt;
+      gewichtsbonusBeilagen = fixierung.gewichtsbonusBeilagen;
+      zusammentragenEinsaetze = fixierung.zusammentragenEinsaetze;
+      zusammentragenGesamt = fixierung.zusammentragenGesamt;
+    }
+
+    // --- Zeiterfassung: Ist-Zeiten nach Typ filtern ---
+    // austragen   → nur wenn austragenNachIstZeit === true
+    // zusammentragen → nur wenn zusammentragenNachIstZeit === true
+    // vorarbeit   → nur wenn Ausgabe dieser Zeit vorarbeitFreigegeben === true
+    //               (Zuordnung: Datum der Arbeitszeit fällt in KW einer freigegebenen Ausgabe)
+    // sonstige    → IMMER
+    const maArbeitszeitenAll = data.arbeitszeiten.filter(
+      (a) => a.mitarbeiterId === ma.id && a.status === 'abgeschlossen' && !a.nichtBeruecksichtigen
     );
+
+    // Vorarbeit wird nur dann abgerechnet, wenn die konkrete zugeordnete Ausgabe
+    // das Kennzeichen "Vorarbeit erlaubt" gesetzt hat.
+    const ausgabenFreigegebenMap = new Map<string, boolean>(
+      data.ausgaben.map((a) => [a.id, !!a.vorarbeitFreigegeben])
+    );
+
+    const maArbeitszeiten = maArbeitszeitenAll.filter((a) => {
+      switch (a.typ) {
+        case 'austragen':
+          return effParams.austragenNachIstZeit === true;
+        case 'zusammentragen':
+          return effParams.zusammentragenNachIstZeit === true;
+        case 'vorarbeit': {
+          // Vorarbeit wird abgerechnet, wenn:
+          //  (1) die direkt zugeordnete Ausgabe vorarbeitFreigegeben=true
+          //      hat — wird beim nächsten Berechnen aufgegriffen, auch wenn
+          //      das Kennzeichen NACH dem Einstempeln gesetzt wurde, oder
+          //  (2) keine ausgabeId an der Arbeitszeit gespeichert ist (z. B.
+          //      weil die Ausgabe der KW zur Stempelzeit noch nicht
+          //      existierte) UND eine Ausgabe der gleichen KW/Jahr-Kombi
+          //      mit vorarbeitFreigegeben=true existiert.
+          if (a.ausgabeId) {
+            return ausgabenFreigegebenMap.get(a.ausgabeId) === true;
+          }
+          const d = new Date(a.startTime);
+          const kw = getISOWeek(d);
+          const jahr = getISOYear(d);
+          return data.ausgaben.some(
+            (x) => x.jahr === jahr && x.kw === kw && x.vorarbeitFreigegeben === true
+          );
+        }
+        case 'sonstige':
+          return true;
+        default:
+          return false;
+      }
+    });
+    const maArbeitszeitenNichtAbgerechnet = maArbeitszeitenAll.filter(
+      (a) => !maArbeitszeiten.includes(a)
+    );
+
     const zeitMinuten = maArbeitszeiten.reduce(
       (s, a) => s + berechneNettoMinuten(a), 0
     );
     const zeitStunden = zeitMinuten / 60;
-    const zeitLohn = zeitStunden * stundenlohn;
+    // Stundenlohn je Arbeitszeit-Typ:
+    //  - vorarbeit / zusammentragen → Zusammentragen-Tarif
+    //  - austragen / sonstige      → Austragen-Tarif (= „normaler" Stundenlohn)
+    const stundenlohnZusammen = ermittleStundenlohnZusammen(ma, effParams);
+    const zeitLohn = maArbeitszeiten.reduce((s, a) => {
+      const stdH = berechneNettoMinuten(a) / 60;
+      const lohnsatz =
+        a.typ === 'vorarbeit' || a.typ === 'zusammentragen'
+          ? stundenlohnZusammen
+          : stundenlohn;
+      return s + stdH * lohnsatz;
+    }, 0);
 
-    // --- Fixes Gehalt ---
-    const fixesGehalt =
-      ma.abrechnungstyp === 'fix' || ma.abrechnungstyp === 'beides'
-        ? (ma.fixesGehalt ?? 0)
-        : 0;
-
-    // --- Fahrtkosten ---
-    const maFahrtkosten = data.fahrtkosten.filter(
-      (f) => f.mitarbeiterId === ma.id
-    );
-    const fahrtkostenGesamt = maFahrtkosten.reduce(
-      (s, f) => s + f.betragEur, 0
-    );
+    // --- Bonus Zeiterfassung Austragen ---
+    // Pauschaler Bonus pro vollständig online erfasstem Austragen-Einsatz.
+    // Bedingungen: arbeitszeit + restmenge + meldungEingereichtAm gesetzt;
+    // einsatz.mitarbeiterId === ma.id (Standard oder Springer); nur Austräger
+    // (Rolle 'austräger') sind anspruchsberechtigt.
+    const bonusZeiterfBetrag = effParams.bonusZeiterfassungEur ?? 0;
+    const bonusZeiterfassungAnzahl = (() => {
+      if (bonusZeiterfBetrag <= 0) return 0;
+      if (!(ma.rollen ?? []).includes('austräger')) return 0;
+      // Einsätze in dieser Periode, bei denen der MA der effektive Austräger
+      // war UND die Selbst-Meldung vollständig vorliegt. Pro (ausgabe, tg)
+      // gibt es maximal einen Einsatz-Doc — Pflichtfeld-Bedingung garantiert
+      // also höchstens 1 Bonus pro (Ausgabe, Teilgebiet).
+      let n = 0;
+      for (const e of data.einsaetze) {
+        if (e.mitarbeiterId !== ma.id) continue;
+        if (!e.arbeitszeit) continue;
+        if (e.restmenge === undefined || e.restmenge === null) continue;
+        if (!e.meldungEingereichtAm) continue;
+        n++;
+      }
+      return n;
+    })();
+    const bonusZeiterfassungEur = bonusZeiterfassungAnzahl * bonusZeiterfBetrag;
 
     // --- Gesamt ---
     const gesamt =
       austraegerGesamt +
       zusammentragenGesamt +
       zeitLohn +
-      fixesGehalt +
-      fahrtkostenGesamt;
+      fahrtkostenGesamt +
+      bonus +
+      ausgabenBoniLohnGesamt +
+      bonusZeiterfassungEur;
 
-    // Nur aufnehmen wenn irgendwas zu abrechnen ist
-    if (gesamt > 0 || austraegerEinsaetze.length > 0 || maArbeitszeiten.length > 0) {
+    const lk = berechneLohnkontoFuer(ma.id);
+    const bruttoLohnbuero =
+      gesamt - lk.lohnkontoVerschiebungPeriode + lk.lohnkontoVerrechnungPeriode;
+
+    if (
+      gesamt !== 0 ||
+      austraegerEinsaetze.length > 0 ||
+      zusammentragenEinsaetze.length > 0 ||
+      maArbeitszeiten.length > 0 ||
+      maArbeitszeitenNichtAbgerechnet.length > 0 ||
+      maVorschuesse.length > 0 ||
+      bonus !== 0 ||
+      lk.lohnkontoBuchungenPeriode.length > 0 ||
+      lk.lohnkontoSaldoVorPeriode !== 0 ||
+      ausgabenBoniDetails.length > 0
+    ) {
       ergebnisse.push({
         mitarbeiter: ma,
         austraegerEinsaetze,
         austraegerGesamt,
+        gewichtsbonusAnzeigenblatt,
+        gewichtsbonusBeilagen,
         zusammentragenEinsaetze,
         zusammentragenGesamt,
         arbeitszeiten: maArbeitszeiten,
         zeitStunden,
         zeitLohn,
-        fixesGehalt,
-        fahrtkosten: maFahrtkosten,
+        arbeitszeitenNichtAbgerechnet: maArbeitszeitenNichtAbgerechnet,
+        fixesGehalt: 0,
+        fahrten: maFahrten,
+        fahrtSatzEurProKm: fahrtSatz,
         fahrtkostenGesamt,
+        vorschuesse: maVorschuesse,
+        vorschussSumme,
+        bonus,
+        bonusKommentar,
+        bonusId,
+        ausgabenBoni: ausgabenBoniDetails,
+        ausgabenBoniMinutenGesamt,
+        ausgabenBoniLohnGesamt,
+        bonusZeiterfassungEur,
+        bonusZeiterfassungAnzahl,
+        ...lk,
         gesamt,
+        bruttoLohnbuero,
       });
     }
   }
 
-  return ergebnisse.sort((a, b) =>
-    a.mitarbeiter.name.localeCompare(b.mitarbeiter.name)
+  // Sortierung in vier Stufen:
+  //  1) Festgehalt (sortiert nach MA-Nummer)
+  //  2) Stundenabrechnung — alle MA mit Zeit-Lohn aber KEIN Austragen/Zusammentragen
+  //     (also "Büro/Sonstige" — sortiert nach MA-Nummer)
+  //  3) MA mit Saldo auf Lohnkonto, die nicht in 1/2 sind (sortiert nach MA-Nummer)
+  //  4) Austräger & Zusammenträger nach Betragshöhe absteigend (Brutto-Lohnbüro)
+  function gruppe(e: MitarbeiterAbrechnung): number {
+    if (e.mitarbeiter.hatFestgehalt) return 1;
+    const austragenZusammen = e.austraegerGesamt + e.zusammentragenGesamt;
+    const hatStundenarbeit = e.zeitLohn > 0 && austragenZusammen === 0;
+    if (hatStundenarbeit) return 2;
+    if (e.lohnkontoSaldoNachPeriode !== 0 && austragenZusammen === 0) return 3;
+    return 4;
+  }
+  return ergebnisse.sort((a, b) => {
+    const ga = gruppe(a);
+    const gb = gruppe(b);
+    if (ga !== gb) return ga - gb;
+    if (ga === 4) {
+      // Austräger/Zusammenträger: nach Brutto absteigend
+      return b.bruttoLohnbuero - a.bruttoLohnbuero;
+    }
+    // Sonst nach Mitarbeiter-Nummer
+    return (a.mitarbeiter.nummer || '').localeCompare(
+      b.mitarbeiter.nummer || '',
+      'de',
+      { numeric: true }
+    );
+  });
+}
+
+// ---- Helper: Periodenstatus für einen Zeitraum prüfen --------
+//
+// Liefert die ERSTE abgeschlossene Periode, die einen beliebigen Tag im
+// Zeitraum [startMs, endMs] berührt, sonst null. Wird verwendet, um den
+// Mitarbeiter zu warnen, wenn er Arbeitszeiten in einem bereits gesperrten
+// Monat erfasst — die Speicherung bleibt erlaubt, fließt aber nicht mehr in
+// die schon gerechnete Abrechnung ein.
+
+export function findAbgeschlossenePeriodeFuerZeitraum(
+  perioden: Abrechnungsperiode[],
+  startMs: number,
+  endMs: number
+): Abrechnungsperiode | null {
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  if (endMs < startMs) return null;
+  const abgeschlossene = perioden.filter((p) => p.status === 'abgeschlossen');
+  if (abgeschlossene.length === 0) return null;
+
+  const ONE_DAY = 24 * 60 * 60 * 1000;
+  // Schritt für Schritt jeden Kalendertag prüfen — KWs können beim
+  // Jahreswechsel über mehrere Tage hinweg unterschiedlich ausfallen.
+  for (let t = startMs; t <= endMs; t += ONE_DAY) {
+    const d = new Date(t);
+    const jahr = getISOYear(d);
+    const kw = getISOWeek(d);
+    const found = abgeschlossene.find(
+      (p) => p.jahr === jahr && p.kalenderwochen.includes(kw)
+    );
+    if (found) return found;
+  }
+  // Falls die Schleife den End-Zeitpunkt nicht traf:
+  const dEnd = new Date(endMs);
+  return (
+    abgeschlossene.find(
+      (p) =>
+        p.jahr === getISOYear(dEnd) && p.kalenderwochen.includes(getISOWeek(dEnd))
+    ) ?? null
   );
 }
 

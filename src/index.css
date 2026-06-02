@@ -4,6 +4,18 @@
   box-sizing: border-box;
 }
 
+/* ── Druck-Optimierung für Lieferscheine ───────────────────────── */
+@media print {
+  /* Navigation und Steuerelemente ausblenden */
+  nav, header, .print\:hidden { display: none !important; }
+  /* Hintergrund-Farben drucken */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  /* Seitenränder */
+  @page { margin: 0; size: A4; }
+  body { background: white !important; }
+  main { padding: 0 !important; overflow: visible !important; }
+}
+
 body {
   margin: 0;
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
