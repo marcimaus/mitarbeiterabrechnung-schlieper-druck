@@ -120,6 +120,30 @@ export default function NfcLandingScreen() {
     }
   }
 
+  /** Wechselt zwischen Zusammentragen und Vorarbeit ohne Ausstempeln — analog
+   *  zum „🔄 Wechseln"-Button im ZeiterfassungScreen-Aktionsdialog. */
+  async function handleTypWechsel() {
+    if (!session) return;
+    const neuerTyp: ArbeitszeitsTyp =
+      session.typ === 'zusammentragen' ? 'vorarbeit' : 'zusammentragen';
+    setBusy(true);
+    setMeldung('');
+    try {
+      // Offene Pause erst sauber schließen
+      if (session.status === 'pause') {
+        await pauseBeenden(session);
+      }
+      await ausstempelnMitPausenabschluss(session);
+      const neueSession = await einstempeln(mitarbeiterId, neuerTyp, 'nfc');
+      setSession(neueSession);
+      setMeldung(`✓ Gewechselt zu ${TYP_LABELS[neuerTyp]}`);
+    } catch (e: any) {
+      setMeldung('Fehler: ' + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handlePause() {
     if (!session) return;
     setBusy(true);
@@ -255,6 +279,22 @@ export default function NfcLandingScreen() {
               >
                 {isPause ? '▶ Pause beenden' : '⏸ Pause starten'}
               </button>
+
+              {/* Tätigkeitswechsel — nur für Zusammenträger zwischen Zusammentragen ↔ Vorarbeit */}
+              {ma.rollen.includes('zusammenträger') &&
+                (session.typ === 'zusammentragen' || session.typ === 'vorarbeit') && (
+                  <button
+                    onClick={handleTypWechsel}
+                    disabled={busy}
+                    className="w-full py-3.5 bg-purple-100 text-purple-800 rounded-xl font-semibold text-base hover:bg-purple-200 active:bg-purple-300 disabled:opacity-50 transition-colors"
+                  >
+                    🔄 Wechseln zu{' '}
+                    {session.typ === 'zusammentragen'
+                      ? TYP_LABELS['vorarbeit']
+                      : TYP_LABELS['zusammentragen']}
+                  </button>
+                )}
+
               <button
                 onClick={handleAusstempeln}
                 disabled={busy}
