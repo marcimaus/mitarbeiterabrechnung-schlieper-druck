@@ -15,7 +15,7 @@ import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loes
 import { MONATSNAMEN, donnerstagDerKW, kwLabel } from '../lib/kalender';
 import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
-import { istEinsatzbereit } from '../utils';
+import { istEinsatzbereit, effektiverStandardAustraegerId } from '../utils';
 import type { Arbeitszeit, Fahrt, ArbeitszeitsTyp, AuditEintrag, Rolle, Ausgabe } from '../types';
 import { TYP_LABELS, ROLLEN_LABELS } from '../types';
 
@@ -190,7 +190,7 @@ function ZeitübersichtInhalt() {
             // Effektiver Austräger ermitteln
             let effektivId: string | null = null;
             if (!e || e.typ === 'standard') {
-              effektivId = tg.standardAustraegerId;
+              effektivId = effektiverStandardAustraegerId(tg, a.jahr, a.kw, abrechnungsperioden);
             } else if (e.typ === 'springer') {
               effektivId = e.mitarbeiterId ?? null;
             } else {

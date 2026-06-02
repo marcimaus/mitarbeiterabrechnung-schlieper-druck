@@ -21,6 +21,7 @@ import {
   formatDonnerstag,
 } from '../lib/kalender';
 import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, Einsatz } from '../types';
+import { effektiverStandardAustraegerId } from '../utils';
 
 const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
   { value: 'A4', label: 'DIN A4' },
@@ -782,7 +783,7 @@ function AusgabeForm({
 // ============================================================
 
 function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
-  const { teilgebiete, mitarbeiter, touren } = useApp();
+  const { teilgebiete, mitarbeiter, touren, abrechnungsperioden } = useApp();
   const [einsaetze, setEinsaetze] = useState<Einsatz[]>([]);
   const [loading, setLoading] = useState(true);
   // Welche Gruppen sind aufgeklappt? Standardmäßig alle zu.
@@ -853,6 +854,11 @@ function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
     const tg = aktiveTeilgebiete.find((t) => t.id === tgId)!;
     const einsatz = einsaetze.find((e) => e.teilgebietId === tgId);
     const typ = einsatz?.typ ?? 'standard';
+    // Standardausträger periodengerecht auflösen (Snapshot vor Live), damit
+    // ein späterer Standard-Wechsel diese vergangene Ausgabe nicht „kippt".
+    const standardId = effektiverStandardAustraegerId(
+      tg, ausgabe.jahr, ausgabe.kw, abrechnungsperioden,
+    );
 
     const zeileFarbe =
       typ === 'ausfall' ? 'bg-red-50' :
@@ -874,7 +880,7 @@ function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
           {einsatz?.springerZuschlagProzent != null &&
             <span className="text-blue-400 ml-1">+{einsatz.springerZuschlagProzent}%</span>}
         </span>
-      ) : <span className="text-gray-400 italic text-xs">{getMaName(tg.standardAustraegerId)}</span>;
+      ) : <span className="text-gray-400 italic text-xs">{getMaName(standardId)}</span>;
 
     return (
       <tr key={tg.id} className={`border-b border-gray-100 last:border-0 ${zeileFarbe}`}>
@@ -882,7 +888,7 @@ function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
           <div className="font-medium text-gray-900 text-xs">{tg.name}</div>
           <div className="text-gray-400 text-xs">{tg.plz} · {tg.stueckzahl.toLocaleString('de-DE')} Stk</div>
         </td>
-        <td className="px-3 py-2 text-xs text-gray-600">{getMaName(tg.standardAustraegerId)}</td>
+        <td className="px-3 py-2 text-xs text-gray-600">{getMaName(standardId)}</td>
         <td className="px-3 py-2">{statusBadge}</td>
         <td className="px-3 py-2">{austraeger}</td>
       </tr>

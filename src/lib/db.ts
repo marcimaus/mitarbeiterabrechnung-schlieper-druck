@@ -527,6 +527,13 @@ export async function ladeEinsaetze(ausgabeId?: string): Promise<Einsatz[]> {
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz));
 }
 
+/** Alle Einsätze eines Teilgebiets (über alle Ausgaben/KWs hinweg). */
+export async function ladeEinsaetzeFuerTeilgebiet(teilgebietId: string): Promise<Einsatz[]> {
+  const q = query(collection(db, 'einsaetze'), where('teilgebietId', '==', teilgebietId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz));
+}
+
 export async function setzeEinsatz(
   data: Omit<Einsatz, 'id' | 'erstelltAm' | 'aktualisiertAm'>
 ): Promise<string> {

@@ -1,5 +1,7 @@
 // Allgemeine Helfer-Funktionen
 
+import type { Abrechnungsperiode } from './types';
+
 export function nameMitFestgehaltSymbol(m: { name: string; hatFestgehalt?: boolean }): string {
   return m.hatFestgehalt ? `🔒 ${m.name}` : m.name;
 }
@@ -53,4 +55,44 @@ export function bestaetigeMonatswechselEinmalProSession(): boolean {
     }
   }
   return ok;
+}
+
+/**
+ * Liefert den für eine konkrete Ausgabe (jahr/kw) GÜLTIGEN Standardausträger
+ * eines Teilgebiets — also den historisch korrekten, nicht den aktuell live
+ * gesetzten.
+ *
+ * Hintergrund: `tg.standardAustraegerId` ist ein einzelner, veränderlicher
+ * Zeiger ohne Zeitbezug. Ändert sich der Standardausträger (z. B. beim
+ * Monatswechsel), würden alle vergangenen Ausgaben rückwirkend „kippen", weil
+ * sie den Standard live aus diesem Feld auflösen. Deshalb wird hier — analog
+ * zur Abrechnungslogik (`effTeilgebiete` in lib/abrechnungslogik.ts) — der für
+ * die Periode eingefrorene Snapshot bevorzugt:
+ *
+ *   periodeSnapshot (abgeschlossen) → monatswechselSnapshot (fixiert) → live.
+ *
+ * Für noch offene, nicht fixierte Perioden (z. B. der neue laufende Monat)
+ * gibt es keinen Snapshot → es gilt korrekt der aktuelle Standardausträger.
+ */
+export function effektiverStandardAustraegerId(
+  tg: { id: string; standardAustraegerId: string | null },
+  jahr: number,
+  kw: number,
+  perioden: Abrechnungsperiode[],
+): string | null {
+  const periode = perioden.find(
+    (p) => p.jahr === jahr && p.kalenderwochen.includes(kw),
+  );
+  const snaps =
+    periode?.periodeSnapshot?.teilgebietSnapshots?.length
+      ? periode.periodeSnapshot.teilgebietSnapshots
+      : periode?.monatswechselSnapshot?.teilgebietSnapshots?.length
+        ? periode.monatswechselSnapshot.teilgebietSnapshots
+        : null;
+  if (snaps) {
+    const snap = snaps.find((s) => s.id === tg.id);
+    // TG kann im Snapshot fehlen (z. B. neu angelegt) → live-Fallback.
+    if (snap) return snap.standardAustraegerId;
+  }
+  return tg.standardAustraegerId;
 }

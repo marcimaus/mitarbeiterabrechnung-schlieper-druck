@@ -12,6 +12,7 @@ import { getCurrentKW } from '../lib/kalender';
 import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage } from '../types';
 import { kwLabel, MONATSNAMEN } from '../lib/kalender';
 import { berechneGewichtAnzeigenblattKg, berechneGewichtBeilagenKg, berechneAustraegezeit, berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
+import { effektiverStandardAustraegerId } from '../utils';
 
 // Hilfsfunktion: Ausgaben der letzten 2 Jahre laden (aus AppContext)
 // Teilgebiete + Mitarbeiter kommen aus AppContext
@@ -258,6 +259,14 @@ function EinsaetzeInhalt() {
     setLieferscheinPeriode({ periode, kw: selectedAusgabe.kw });
   }
 
+  // Standardausträger periodengerecht (Snapshot vor Live) für die gewählte
+  // Ausgabe auflösen — ein späterer Standard-Wechsel darf vergangene Ausgaben
+  // nicht rückwirkend „kippen". Ohne gewählte Ausgabe gilt der Live-Wert.
+  const standardFuerAusgabe = (tg: { id: string; standardAustraegerId: string | null }) =>
+    selectedAusgabe
+      ? effektiverStandardAustraegerId(tg, selectedAusgabe.jahr, selectedAusgabe.kw, abrechnungsperioden)
+      : tg.standardAustraegerId;
+
   // ---- Filter auf Teilgebiete anwenden ----
   const gefilterte = aktiveTeilgebiete.filter((tg) => {
     // Namens-Suche (Teilgebiet-Name, PLZ ODER Name des effektiven Austrägers).
@@ -268,7 +277,7 @@ function EinsaetzeInhalt() {
       const effId =
         e?.typ === 'springer'
           ? (e.mitarbeiterId ?? null)
-          : tg.standardAustraegerId;
+          : standardFuerAusgabe(tg);
       const ma = effId ? mitarbeiter.find((m) => m.id === effId) : null;
       const austraegerName = ma ? `${ma.name} ${ma.nummer}`.toLowerCase() : '';
       if (
@@ -295,7 +304,7 @@ function EinsaetzeInhalt() {
       const e = einsaetze[tg.id];
       let effektivId: string | null = null;
       if (!e || e.typ === 'standard') {
-        effektivId = tg.standardAustraegerId;
+        effektivId = standardFuerAusgabe(tg);
       } else if (e.typ === 'springer') {
         effektivId = e.mitarbeiterId ?? null;
       } else {
@@ -305,7 +314,7 @@ function EinsaetzeInhalt() {
     }
     // Status-Filter
     if (filterStatus) {
-      const status = berechneStatus(tg, einsaetze[tg.id]);
+      const status = berechneStatus({ standardAustraegerId: standardFuerAusgabe(tg) }, einsaetze[tg.id]);
       if (status !== filterStatus) return false;
     }
     return true;
@@ -314,7 +323,7 @@ function EinsaetzeInhalt() {
   // Statistiken (über alle aktiven Teilgebiete, nicht über gefilterte)
   const stats = aktiveTeilgebiete.reduce(
     (acc, tg) => {
-      const status = berechneStatus(tg, einsaetze[tg.id]);
+      const status = berechneStatus({ standardAustraegerId: standardFuerAusgabe(tg) }, einsaetze[tg.id]);
       if (status === 'standard') acc.standard++;
       else if (status === 'springer') acc.springer++;
       else if (status === 'unbesetzt') acc.unbesetzt++;
@@ -572,7 +581,7 @@ function EinsaetzeInhalt() {
             <tbody className="divide-y divide-gray-100">
               {gefilterte.map((tg) => {
                 const einsatz = einsaetze[tg.id];
-                const standardMA = getMitarbeiter(tg.standardAustraegerId);
+                const standardMA = getMitarbeiter(standardFuerAusgabe(tg));
                 const tour = getTour(tg.tourId);
                 const springerMA = einsatz?.typ === 'springer'
                   ? getMitarbeiter(einsatz.mitarbeiterId)
@@ -618,7 +627,7 @@ function EinsaetzeInhalt() {
 
                     {/* Status-Badge */}
                     <td className="px-4 py-3">
-                      <EinsatzBadge einsatz={einsatz} teilgebiet={tg} />
+                      <EinsatzBadge einsatz={einsatz} teilgebiet={{ standardAustraegerId: standardFuerAusgabe(tg) }} />
                     </td>
 
                     {/* Aktueller Austräger */}
@@ -1017,6 +1026,7 @@ function EinsaetzeInhalt() {
           mitarbeiter={mitarbeiter}
           touren={touren}
           parameter={parameter}
+          abrechnungsperioden={abrechnungsperioden}
           onClose={() => setUebersichtOffen(false)}
         />
       )}

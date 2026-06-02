@@ -5,6 +5,7 @@
 
 import { useMemo } from 'react';
 import type {
+  Abrechnungsperiode,
   Ausgabe,
   Beilage,
   Einsatz,
@@ -17,6 +18,7 @@ import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
 } from '../lib/berechnung';
+import { effektiverStandardAustraegerId } from '../utils';
 
 interface Props {
   ausgabe: Ausgabe;
@@ -26,6 +28,8 @@ interface Props {
   mitarbeiter: Mitarbeiter[];
   touren: Tour[];
   parameter: Parameter;
+  /** Für periodengerechte Auflösung des Standardausträgers (Snapshot vor Live). */
+  abrechnungsperioden?: Abrechnungsperiode[];
   onClose: () => void;
 }
 
@@ -62,6 +66,7 @@ export default function UebersichtDruck({
   mitarbeiter,
   touren,
   parameter,
+  abrechnungsperioden,
   onClose,
 }: Props) {
   const tourMap = useMemo(() => new Map(touren.map((t) => [t.id, t])), [touren]);
@@ -94,7 +99,9 @@ export default function UebersichtDruck({
       } else if (e?.typ === 'ausfall' || e?.typ === 'ungeklärt') {
         empfId = null;
       } else {
-        empfId = tg.standardAustraegerId;
+        empfId = abrechnungsperioden
+          ? effektiverStandardAustraegerId(tg, ausgabe.jahr, ausgabe.kw, abrechnungsperioden)
+          : tg.standardAustraegerId;
       }
       const empf = empfId ? (maMap.get(empfId) ?? null) : null;
       const gAnz = berechneGewichtAnzeigenblattKg(tg, ausgabe);
@@ -109,7 +116,7 @@ export default function UebersichtDruck({
         gewichtKg: gAnz + gBei,
       };
     });
-  }, [teilgebiete, beilagen, ausgabe, einsatzByTg, tourMap, maMap]);
+  }, [teilgebiete, beilagen, ausgabe, einsatzByTg, tourMap, maMap, abrechnungsperioden]);
 
   return (
     <>

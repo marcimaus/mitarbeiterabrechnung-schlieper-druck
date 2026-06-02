@@ -25,6 +25,8 @@ import {
   entferneAusAbmeldungenSnapshot,
   ladeFahrten,
   ladeAusgaben,
+  ladeEinsaetzeFuerTeilgebiet,
+  loescheEinsatz,
 } from '../lib/db';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
 import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet } from '../types';
@@ -33,6 +35,43 @@ import {
   loescheAustraegerwechselPlan,
 } from '../lib/planung';
 import { ROLLEN_LABELS, MEMO_KATEGORIE_LABELS } from '../types';
+
+/**
+ * Entscheidet, ob ein Standardausträger-Wechselplan beim Monatswechsel der
+ * Periode P zur Übernahme angeboten wird. Der Wechsel ist relevant, wenn er an
+ * der Grenze P → P+1 wirksam wird:
+ *   - bisheriger Austräger trägt seine letzte Ausgabe in P aus, ODER
+ *   - neuer Austräger startet in P, ODER
+ *   - neuer Austräger startet zu Beginn von P+1 (deckt zuvor unbesetzte TGs ab,
+ *     deren „ab Ausgabe" erst im Folgemonat liegt).
+ */
+function istRelevanterWechselplan(
+  p: StandardAustraegerWechselPlan,
+  periode: Abrechnungsperiode,
+  perioden: Abrechnungsperiode[],
+): boolean {
+  const periodKw = new Set(periode.kalenderwochen);
+  const naechste = perioden
+    .filter((q) =>
+      q.jahr > periode.jahr ||
+      (q.jahr === periode.jahr && q.monat > periode.monat),
+    )
+    .sort((a, b) => (a.jahr !== b.jahr ? a.jahr - b.jahr : a.monat - b.monat))[0];
+  const letzteInPeriode =
+    p.letzteAusgabeJahr === periode.jahr &&
+    p.letzteAusgabeKw != null &&
+    periodKw.has(p.letzteAusgabeKw);
+  const abInPeriode =
+    p.abAusgabeJahr === periode.jahr &&
+    p.abAusgabeKw != null &&
+    periodKw.has(p.abAusgabeKw);
+  const abInNaechster =
+    naechste != null &&
+    p.abAusgabeJahr === naechste.jahr &&
+    p.abAusgabeKw != null &&
+    naechste.kalenderwochen.includes(p.abAusgabeKw);
+  return letzteInPeriode || abInPeriode || abInNaechster;
+}
 
 export default function AbrechnungScreen() {
   return (
@@ -336,19 +375,9 @@ function AbrechnungInhalt() {
       // unbesetzte TGs ohne letzteAusgabe) Wechselpläne, deren
       // abAusgabe in dieser Periode liegt. Damit erfasst der Dialog
       // beide Varianten der vereinheitlichten Wechsel-Sektion.
-      const periodKw = new Set(selectedPeriode.kalenderwochen);
-      const relevanteWechselplaene = wechselplaene.filter((p) => {
-        const letzteInPeriode =
-          p.letzteAusgabeJahr === selectedPeriode.jahr &&
-          p.letzteAusgabeKw != null &&
-          periodKw.has(p.letzteAusgabeKw);
-        const abInPeriodeOhneLetzte =
-          (p.letzteAusgabeJahr == null || p.letzteAusgabeKw == null) &&
-          p.abAusgabeJahr === selectedPeriode.jahr &&
-          p.abAusgabeKw != null &&
-          periodKw.has(p.abAusgabeKw);
-        return letzteInPeriode || abInPeriodeOhneLetzte;
-      });
+      const relevanteWechselplaene = wechselplaene.filter((p) =>
+        istRelevanterWechselplan(p, selectedPeriode, abrechnungsperioden),
+      );
       if (relevanteWechselplaene.length > 0) {
         setZeigeWechselplanDialog(true);
       }
@@ -1332,21 +1361,12 @@ function AbrechnungInhalt() {
 
       {zeigeWechselplanDialog && selectedPeriode && (
         <WechselplanUebernahmeDialog
-          wechselplaene={wechselplaene.filter((p) => {
-            const periodKw = new Set(selectedPeriode.kalenderwochen);
-            const letzteInPeriode =
-              p.letzteAusgabeJahr === selectedPeriode.jahr &&
-              p.letzteAusgabeKw != null &&
-              periodKw.has(p.letzteAusgabeKw);
-            const abInPeriodeOhneLetzte =
-              (p.letzteAusgabeJahr == null || p.letzteAusgabeKw == null) &&
-              p.abAusgabeJahr === selectedPeriode.jahr &&
-              p.abAusgabeKw != null &&
-              periodKw.has(p.abAusgabeKw);
-            return letzteInPeriode || abInPeriodeOhneLetzte;
-          })}
+          wechselplaene={wechselplaene.filter((p) =>
+            istRelevanterWechselplan(p, selectedPeriode, abrechnungsperioden),
+          )}
           teilgebiete={teilgebiete}
           mitarbeiter={mitarbeiter}
+          abrechnungsperioden={abrechnungsperioden}
           onClose={() => setZeigeWechselplanDialog(false)}
         />
       )}
@@ -1375,11 +1395,13 @@ function WechselplanUebernahmeDialog({
   wechselplaene,
   teilgebiete,
   mitarbeiter,
+  abrechnungsperioden,
   onClose,
 }: {
   wechselplaene: StandardAustraegerWechselPlan[];
   teilgebiete: Teilgebiet[];
   mitarbeiter: Mitarbeiter[];
+  abrechnungsperioden: Abrechnungsperiode[];
   onClose: () => void;
 }) {
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
@@ -1403,6 +1425,30 @@ function WechselplanUebernahmeDialog({
     setBusyId(p.id);
     try {
       await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: p.neuerAustraegerId });
+      // Behelfs-Springer-Einsätze (autoVomWechselplan) für den neuen Austräger
+      // entfernen: Mit der Übernahme ist er offizieller Standardausträger und
+      // wird ab jetzt als Standard (nicht als Springer mit Zuschlag) geführt.
+      // Nur in NICHT eingefrorenen Perioden löschen — abgeschlossene/fixierte
+      // Monate bleiben unangetastet.
+      const istEingefroren = (jahr: number, kw: number) => {
+        const per = abrechnungsperioden.find(
+          (q) => q.jahr === jahr && q.kalenderwochen.includes(kw),
+        );
+        return !!(
+          per?.periodeSnapshot?.teilgebietSnapshots?.length ||
+          per?.monatswechselSnapshot?.teilgebietSnapshots?.length
+        );
+      };
+      const tgEinsaetze = await ladeEinsaetzeFuerTeilgebiet(tg.id);
+      for (const e of tgEinsaetze) {
+        if (
+          e.autoVomWechselplan === true &&
+          e.mitarbeiterId === p.neuerAustraegerId &&
+          !istEingefroren(e.jahr, e.kw)
+        ) {
+          await loescheEinsatz(e.id);
+        }
+      }
       await loescheAustraegerwechselPlan(p.teilgebietId);
     } catch (e: any) {
       alert('Fehler beim Übernehmen: ' + (e.message ?? e));

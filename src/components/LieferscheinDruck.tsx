@@ -26,6 +26,7 @@ import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
 } from '../lib/berechnung';
+import { effektiverStandardAustraegerId } from '../utils';
 
 // ---- Typen --------------------------------------------------
 
@@ -174,8 +175,14 @@ export default function LieferscheinDruck({
 
       for (const tg of teilgebiete) {
         if (!tg.isActive) continue;
-        const standardMA = tg.standardAustraegerId
-          ? (mitarbeiterMap.get(tg.standardAustraegerId) ?? null)
+        // Standardausträger periodengerecht (Snapshot vor Live) auflösen — bei
+        // Nachdrucken vergangener Perioden zählt der damalige Austräger, nicht
+        // ein zwischenzeitlich gewechselter Standard.
+        const standardId = effektiverStandardAustraegerId(
+          tg, periode.jahr, sortedKWs[0] ?? periode.kalenderwochen[0], [periode],
+        );
+        const standardMA = standardId
+          ? (mitarbeiterMap.get(standardId) ?? null)
           : null;
 
         // Zeilen pro KW mit Empfänger ermitteln — leere KWs (keine Ausgabe
