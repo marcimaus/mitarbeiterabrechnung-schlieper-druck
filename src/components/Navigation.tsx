@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import PinAendernModal from './PinAendernModal';
 
 interface NavItem {
   to: string;
@@ -52,6 +53,7 @@ export default function Navigation() {
   const { userRole, isAdminAuthenticated, logoutAdmin, adminName, mitarbeiter, mitarbeiterId } = useApp();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [pinModalOpen, setPinModalOpen] = useState(false);
 
   // Eingeloggter Mitarbeiter — wird für das Fahrtkosten-Item gebraucht
   // (nur sichtbar wenn fahrtkostenerstattung am MA gesetzt ist).
@@ -96,8 +98,19 @@ export default function Navigation() {
     </div>
   );
 
+  // Eingeloggter Mitarbeiter darf seinen eigenen PIN selbst ändern.
+  const canChangePin = userRole === 'mitarbeiter' && !!loggedInMa?.pinHash;
+
   const logoutSection = (
-    <div className="p-3 border-t border-gray-200 shrink-0">
+    <div className="p-3 border-t border-gray-200 shrink-0 space-y-1">
+      {canChangePin && (
+        <button
+          onClick={() => { setPinModalOpen(true); setMobileOpen(false); }}
+          className="w-full text-xs text-gray-600 hover:text-blue-600 text-left px-2 py-1.5 rounded hover:bg-blue-50 transition-colors"
+        >
+          🔑 PIN ändern
+        </button>
+      )}
       {isAdminAuthenticated ? (
         <button
           onClick={() => { logoutAdmin(); navigate('/'); setMobileOpen(false); }}
@@ -205,6 +218,8 @@ export default function Navigation() {
           </nav>
         </div>
       )}
+
+      <PinAendernModal isOpen={pinModalOpen} onClose={() => setPinModalOpen(false)} />
     </>
   );
 }
