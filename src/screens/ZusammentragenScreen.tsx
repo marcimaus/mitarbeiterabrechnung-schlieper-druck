@@ -13,7 +13,7 @@ import {
   loescheArbeitszeit,
   aktualisiereAusgabe,
 } from '../lib/db';
-import type { Ausgabe, Beilage, ZusammentragenEinsatz, Arbeitszeit } from '../types';
+import type { Ausgabe, Beilage, ZusammentragenEinsatz, Arbeitszeit, Mitarbeiter } from '../types';
 import { kwLabel, getCurrentKW } from '../lib/kalender';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 import { pruefeZeitUeberlappung, formatiereUeberlappungsFehler } from '../lib/zeiterfassung';
@@ -22,14 +22,36 @@ import { istEinsatzbereit } from '../utils';
 
 export default function ZusammentragenScreen() {
   return (
-    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
-      <ZusammentragenInhalt />
+    <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>
+      <ZusammentragenWeiche />
     </AdminPinGate>
   );
 }
 
+/**
+ * Verzweigt nach Rolle: Admin/Abrechnung sehen die volle Verwaltungsmaske,
+ * eingeloggte Zusammenträger ihre eigene mobile Selbsterfassung.
+ */
+function ZusammentragenWeiche() {
+  const { userRole, mitarbeiterId, mitarbeiter } = useApp();
+  if (userRole === 'mitarbeiter') {
+    const me = mitarbeiter.find((m) => m.id === mitarbeiterId);
+    if (!me || !me.rollen.includes('zusammenträger')) {
+      return (
+        <div className="p-6 max-w-md mx-auto">
+          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+            Kein Zugriff — diese Maske ist nur für Zusammenträger.
+          </div>
+        </div>
+      );
+    }
+    return <ZusammentragenSelbsterfassung me={me} />;
+  }
+  return <ZusammentragenInhalt />;
+}
+
 function ZusammentragenInhalt() {
-  const { teilgebiete, mitarbeiter, touren, abrechnungsperioden, parameter } = useApp();
+  const { teilgebiete, mitarbeiter, touren, abrechnungsperioden, parameter, userRole, adminName } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [selectedAusgabeId, setSelectedAusgabeId] = useState('');
   const [alleEinsaetze, setAlleEinsaetze] = useState<ZusammentragenEinsatz[]>([]);
@@ -135,6 +157,23 @@ function ZusammentragenInhalt() {
   const zusammentraeger = mitarbeiter.filter(
     (m) => istEinsatzbereit(m) && m.rollen.includes('zusammenträger')
   );
+
+  // ---- „Erfassung geprüft"-Kennzeichen (Dokumentation) ---
+  async function handleGeprueftToggle(geprueft: boolean) {
+    if (!selectedAusgabe) return;
+    const patch: Partial<Ausgabe> = geprueft
+      ? {
+          erfassungZusammentragenGeprueft: true,
+          erfassungZusammentragenGeprueftAm: Date.now(),
+          erfassungZusammentragenGeprueftVon:
+            userRole === 'abrechnung' ? 'Abrechnung' : adminName || 'Admin',
+        }
+      : { erfassungZusammentragenGeprueft: false };
+    await aktualisiereAusgabe(selectedAusgabe.id, patch);
+    setAusgaben((prev) =>
+      prev.map((a) => (a.id === selectedAusgabe.id ? { ...a, ...patch } : a))
+    );
+  }
 
   // ---- Vorarbeit-Toggle (an/aus) ---
   async function handleVorarbeitToggle(aktiv: boolean) {
@@ -292,6 +331,42 @@ function ZusammentragenInhalt() {
             </div>
           )}
         </div>
+
+        {/* „Erfassung geprüft"-Kennzeichen (nur Admin/Abrechnung, Dokumentation) */}
+        {selectedAusgabe && (
+          <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selectedAusgabe.erfassungZusammentragenGeprueft === true}
+                onChange={(e) => handleGeprueftToggle(e.target.checked)}
+                className="w-4 h-4 accent-green-600"
+              />
+              <span className="text-sm font-medium text-gray-700">
+                Erfassung Zusammenträger geprüft
+              </span>
+            </label>
+            {selectedAusgabe.erfassungZusammentragenGeprueft &&
+              selectedAusgabe.erfassungZusammentragenGeprueftAm && (
+                <span className="text-xs text-green-700">
+                  ✓ geprüft am{' '}
+                  {new Date(selectedAusgabe.erfassungZusammentragenGeprueftAm).toLocaleString(
+                    'de-DE',
+                    { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }
+                  )}
+                  {selectedAusgabe.erfassungZusammentragenGeprueftVon
+                    ? ` (${selectedAusgabe.erfassungZusammentragenGeprueftVon})`
+                    : ''}
+                </span>
+              )}
+            {!selectedAusgabe.erfassungZusammentragenGeprueft &&
+              normalEinsaetze.some((e) => e.selbsterfasst) && (
+                <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-800 text-xs font-medium px-2 py-0.5 rounded-full">
+                  ⚠ Selbsterfassung Zusammenträger noch nicht geprüft
+                </span>
+              )}
+          </div>
+        )}
       </div>
 
       {loading && <div className="text-center py-8 text-gray-400">Lade Daten...</div>}
@@ -558,6 +633,14 @@ function ZusammentragenInhalt() {
                             ))}
                           </select>
                           {isSaving && <span className="text-xs text-gray-400 animate-pulse">...</span>}
+                          {e?.selbsterfasst && (
+                            <span
+                              className="inline-flex items-center gap-1 bg-purple-100 text-purple-800 text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0"
+                              title="Vom Zusammenträger selbst erfasst"
+                            >
+                              selbst erfasst
+                            </span>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -611,6 +694,282 @@ function ZusammentragenInhalt() {
             </table>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+//  Selbsterfassung durch Zusammenträger (mobile Kartenliste)
+// ============================================================
+
+function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
+  const { teilgebiete, touren, abrechnungsperioden } = useApp();
+  const [ausgabe, setAusgabe] = useState<Ausgabe | null>(null);
+  const [einsaetze, setEinsaetze] = useState<ZusammentragenEinsatz[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [meldung, setMeldung] = useState('');
+
+  // Aktuelle Ausgabe laden (feste Vorbelegung — keine Auswahl)
+  useEffect(() => {
+    ladeAusgaben().then((list) => {
+      const sorted = [...list].sort((a, b) =>
+        b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
+      );
+      const heute = getCurrentKW();
+      const aktuell =
+        sorted.find((a) => a.jahr === heute.jahr && a.kw === heute.kw) ?? sorted[0] ?? null;
+      setAusgabe(aktuell);
+      if (!aktuell) setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!ausgabe) return;
+    setLoading(true);
+    ladeZusammentragenEinsaetze(ausgabe.id).then((list) => {
+      setEinsaetze(list);
+      setLoading(false);
+    });
+  }, [ausgabe]);
+
+  const zugehoerigerPeriode = ausgabe
+    ? abrechnungsperioden.find(
+        (p) => p.jahr === ausgabe.jahr && p.kalenderwochen.includes(ausgabe.kw)
+      )
+    : undefined;
+  const istGesperrt =
+    zugehoerigerPeriode?.status === 'abgeschlossen' ||
+    !!zugehoerigerPeriode?.monatswechselSnapshot;
+
+  // Map: teilgebietId → normaler Einsatz
+  const normalEinsaetze = einsaetze.filter((e) => !e.istVorarbeit);
+  const tgMap = Object.fromEntries(normalEinsaetze.map((e) => [e.teilgebietId, e]));
+
+  // Sichtbare TG: aktiv + (frei ODER mir zugeordnet). Fremd belegte ausblenden.
+  const sichtbareTeilgebiete = teilgebiete
+    .filter((tg) => tg.isActive)
+    .filter((tg) => {
+      const e = tgMap[tg.id];
+      return !e || e.mitarbeiterId === me.id;
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+
+  const meineGespeicherten = sichtbareTeilgebiete.filter(
+    (tg) => tgMap[tg.id]?.mitarbeiterId === me.id
+  ).length;
+
+  function toggleDraft(tgId: string) {
+    setMeldung('');
+    setDraft((prev) => {
+      const n = new Set(prev);
+      if (n.has(tgId)) n.delete(tgId);
+      else n.add(tgId);
+      return n;
+    });
+  }
+
+  async function handleSpeichern() {
+    if (!ausgabe || draft.size === 0 || istGesperrt) return;
+    setSaving(true);
+    setMeldung('');
+    try {
+      // Race-Schutz: frische Einsätze laden, nur weiterhin freie/eigene TG schreiben.
+      const frisch = await ladeZusammentragenEinsaetze(ausgabe.id);
+      const frischMap = Object.fromEntries(
+        frisch.filter((e) => !e.istVorarbeit).map((e) => [e.teilgebietId, e])
+      );
+      let geschrieben = 0;
+      let kollision = 0;
+      for (const tgId of draft) {
+        const e = frischMap[tgId];
+        if (e && e.mitarbeiterId !== me.id) {
+          kollision++;
+          continue;
+        }
+        await setzeZusammentragenEinsatz({
+          ausgabeId: ausgabe.id,
+          teilgebietId: tgId,
+          mitarbeiterId: me.id,
+          stapelBearbeitet: ausgabe.stapelAnzahl,
+          istVorarbeit: false,
+          selbsterfasst: true,
+        });
+        geschrieben++;
+      }
+      if (geschrieben > 0) {
+        // „Erfassung geprüft" zurücksetzen → Hinweis auf Startseite erscheint erneut.
+        const patch = {
+          erfassungZusammentragenGeprueft: false,
+          selbsterfassungZusammentragenAm: Date.now(),
+        };
+        await aktualisiereAusgabe(ausgabe.id, patch);
+        setAusgabe((prev) => (prev ? { ...prev, ...patch } : prev));
+      }
+      const list = await ladeZusammentragenEinsaetze(ausgabe.id);
+      setEinsaetze(list);
+      setDraft(new Set());
+      setMeldung(
+        kollision > 0
+          ? `✓ ${geschrieben} gespeichert — ${kollision} bereits von anderen erfasst und übersprungen.`
+          : `✓ ${geschrieben} Teilgebiet${geschrieben === 1 ? '' : 'e'} gespeichert.`
+      );
+    } catch (e) {
+      setMeldung('Fehler beim Speichern: ' + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading && !ausgabe) {
+    return <div className="p-6 text-center text-gray-400">Lade Daten…</div>;
+  }
+
+  if (!ausgabe) {
+    return (
+      <div className="p-6 max-w-md mx-auto">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+          Es ist noch keine Ausgabe angelegt. Bitte später erneut versuchen.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 max-w-md mx-auto space-y-4">
+      <div>
+        <h1 className="text-xl font-bold text-gray-900">Zusammentragen erfassen</h1>
+        <p className="text-sm text-gray-500">{me.name}</p>
+      </div>
+
+      {/* Feste Ausgabe / KW */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex items-center justify-between">
+        <div>
+          <div className="text-xs text-gray-400">Aktuelle Ausgabe</div>
+          <div className="font-semibold text-gray-900">{kwLabel(ausgabe.kw, ausgabe.jahr)}</div>
+        </div>
+        <span className="text-xs text-gray-500">{meineGespeicherten} erfasst</span>
+      </div>
+
+      {/* Vorarbeit-Status (nur Anzeige, nicht editierbar) */}
+      <div className="flex items-center gap-2 text-sm">
+        <span
+          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
+            ausgabe.vorarbeitFreigegeben
+              ? 'bg-amber-100 text-amber-800'
+              : 'bg-gray-100 text-gray-500'
+          }`}
+        >
+          <input
+            type="checkbox"
+            checked={ausgabe.vorarbeitFreigegeben === true}
+            disabled
+            className="w-3.5 h-3.5 accent-amber-600"
+          />
+          Vorarbeit {ausgabe.vorarbeitFreigegeben ? 'erlaubt' : 'nicht erlaubt'}
+        </span>
+      </div>
+
+      {istGesperrt && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
+          🔒 Diese Ausgabe ist abgeschlossen — keine Erfassung mehr möglich.
+        </div>
+      )}
+
+      {meldung && (
+        <div
+          className={`text-sm font-medium py-2 px-3 rounded-lg ${
+            meldung.startsWith('✓') ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+          }`}
+        >
+          {meldung}
+        </div>
+      )}
+
+      {/* Teilgebiet-Karten */}
+      {loading ? (
+        <div className="text-center py-8 text-gray-400">Lade Teilgebiete…</div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-gray-500">
+            Tippe die Teilgebiete an, die du zusammengetragen hast, und speichere.
+            Gespeicherte Teilgebiete sind danach gesperrt.
+          </p>
+          {sichtbareTeilgebiete.length === 0 && (
+            <div className="text-center py-6 text-sm text-gray-400">
+              Keine freien Teilgebiete verfügbar.
+            </div>
+          )}
+          {sichtbareTeilgebiete.map((tg) => {
+            const mein = tgMap[tg.id]?.mitarbeiterId === me.id;
+            const tour = touren.find((t) => t.id === tg.tourId);
+            const checked = mein || draft.has(tg.id);
+            const disabled = mein || istGesperrt;
+            return (
+              <button
+                key={tg.id}
+                type="button"
+                disabled={disabled}
+                onClick={() => !disabled && toggleDraft(tg.id)}
+                className={`w-full flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors ${
+                  mein
+                    ? 'bg-green-50 border-green-300'
+                    : draft.has(tg.id)
+                    ? 'bg-blue-50 border-blue-300'
+                    : 'bg-white border-gray-200 hover:border-blue-300 active:bg-blue-50'
+                } ${disabled && !mein ? 'opacity-60' : ''}`}
+              >
+                <span
+                  className={`w-6 h-6 shrink-0 rounded-md border flex items-center justify-center text-sm ${
+                    checked
+                      ? mein
+                        ? 'bg-green-600 border-green-600 text-white'
+                        : 'bg-blue-600 border-blue-600 text-white'
+                      : 'border-gray-300'
+                  }`}
+                >
+                  {checked ? '✓' : ''}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-gray-900">{tg.name}</div>
+                  <div className="text-xs text-gray-400">
+                    {tg.plz} · {tg.stueckzahl} Stk
+                  </div>
+                </div>
+                {tour && (
+                  <span
+                    className="text-xs font-medium px-2 py-0.5 rounded-full text-white shrink-0"
+                    style={{ backgroundColor: tour.farbe }}
+                  >
+                    {tour.name}
+                  </span>
+                )}
+                {mein && (
+                  <span className="text-[10px] font-semibold text-green-700 shrink-0">
+                    bestätigt
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Speichern */}
+      {!istGesperrt && (
+        <button
+          onClick={handleSpeichern}
+          disabled={saving || draft.size === 0}
+          className="w-full py-3.5 bg-blue-600 text-white rounded-xl font-semibold text-base hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 transition-colors"
+        >
+          {saving
+            ? 'Speichern…'
+            : draft.size > 0
+            ? `💾 ${draft.size} Teilgebiet${draft.size === 1 ? '' : 'e'} speichern`
+            : '💾 Speichern'}
+        </button>
       )}
     </div>
   );

@@ -27,7 +27,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/urlaub', label: 'Urlaub', icon: '🏖', roles: ['admin', 'abrechnung'] },
   { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
   { to: '/verteilplan', label: 'Verteilplan', icon: '📋', roles: ['admin', 'abrechnung'] },
-  { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung'] },
+  { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   { to: '/reklamationen', label: 'Reklamationen', icon: '📞', roles: ['admin', 'abrechnung'] },
   // Abrechnung & Parameter: nur Admin. Lieferscheine: ausgeblendet, Druck
   // erfolgt aus dem Einsätze-Screen heraus.
@@ -69,6 +69,11 @@ export default function Navigation() {
     // Kennzeichen am MA gesetzt ist. Admin/Abrechnung sehen es immer.
     if (item.to === '/fahrten' && userRole === 'mitarbeiter') {
       return loggedInMa?.fahrtkostenerstattung === true;
+    }
+    // Spezialfall: Zusammentragen-Selbsterfassung für Mitarbeiter nur, wenn der
+    // MA die Rolle „Zusammenträger" hat. Admin/Abrechnung sehen es immer.
+    if (item.to === '/zusammentragen' && userRole === 'mitarbeiter') {
+      return loggedInMa?.rollen.includes('zusammenträger') === true;
     }
     return true;
   });

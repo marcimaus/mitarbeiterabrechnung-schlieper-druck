@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { abonniereReklamationen } from '../lib/db';
+import { abonniereReklamationen, ausgabenListener } from '../lib/db';
 import { urlaubsAusstehendListener } from '../lib/planung';
-import type { Reklamation, UrlaubsEintrag } from '../types';
+import { kwLabel } from '../lib/kalender';
+import type { Reklamation, UrlaubsEintrag, Ausgabe } from '../types';
 
 export default function HomeScreen() {
   const { mitarbeiter, teilgebiete, touren, abrechnungsperioden, isAdminAuthenticated } = useApp();
@@ -38,6 +39,17 @@ export default function HomeScreen() {
   const urlaubsantraegeSortiert = [...offeneUrlaubsantraege].sort(
     (a, b) => a.jahr - b.jahr || a.kw - b.kw,
   );
+
+  // Ausgaben mit Zusammenträger-Selbsterfassung, die noch nicht geprüft wurden.
+  const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const unsub = ausgabenListener(setAusgaben);
+    return () => unsub();
+  }, [isAdminAuthenticated]);
+  const ungepruefteSelbsterfassung = ausgaben
+    .filter((a) => a.selbsterfassungZusammentragenAm && !a.erfassungZusammentragenGeprueft)
+    .sort((a, b) => (b.jahr - a.jahr) || (b.kw - a.kw));
 
   // Mitarbeiter, die noch nicht beim Lohnbüro angemeldet sind (Flag
   // `nochNichtAngemeldet=true`). Abgemeldete und Interessenten werden
@@ -175,49 +187,106 @@ export default function HomeScreen() {
         </div>
       )}
 
-      {/* Urlaubsanträge — offen, durch Abrechnung erfasst, warten auf Admin-Freigabe */}
-      {isAdminAuthenticated && urlaubsantraegeSortiert.length > 0 && (
-        <div className="mt-4 bg-white rounded-xl shadow-sm border border-amber-300 p-4 md:p-6">
+      {/* Urlaubsanträge — offen, warten auf Admin-Freigabe */}
+      {isAdminAuthenticated && (
+        <div className={`mt-4 bg-white rounded-xl shadow-sm p-4 md:p-6 border ${
+          urlaubsantraegeSortiert.length > 0 ? 'border-amber-300' : 'border-gray-200'
+        }`}>
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-amber-600">🏖</span>
+            <span className={urlaubsantraegeSortiert.length > 0 ? 'text-amber-600' : 'text-gray-400'}>🏖</span>
             <h2 className="font-semibold text-gray-800">
-              Urlaubsanträge — Freigabe ausstehend
+              Urlaub — Freigabe ausstehend
             </h2>
-            <span className="ml-auto text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800">
+            <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium ${
+              urlaubsantraegeSortiert.length === 0
+                ? 'bg-green-100 text-green-700'
+                : 'bg-amber-100 text-amber-800'
+            }`}>
               {urlaubsantraegeSortiert.length}
             </span>
           </div>
-          <div className="space-y-1.5 max-h-64 overflow-y-auto">
-            {urlaubsantraegeSortiert.slice(0, 12).map((u) => {
-              const ma = mitarbeiter.find((m) => m.id === u.mitarbeiterId);
-              return (
+          {urlaubsantraegeSortiert.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">
+              Keine Urlaubsanträge warten auf Freigabe. ✓
+            </p>
+          ) : (
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {urlaubsantraegeSortiert.slice(0, 12).map((u) => {
+                const ma = mitarbeiter.find((m) => m.id === u.mitarbeiterId);
+                return (
+                  <a
+                    key={u.id}
+                    href="/planung"
+                    className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
+                  >
+                    <span className="text-sm font-medium text-amber-900 truncate">
+                      {ma?.name ?? '?'}
+                    </span>
+                    <span className="text-xs text-amber-700 shrink-0">
+                      KW {u.kw}/{u.jahr}
+                      {u.datumVon && u.datumBis ? ` · ${u.datumVon} – ${u.datumBis}` : ''}
+                    </span>
+                    <span className="text-[10px] text-amber-600 shrink-0 font-mono">
+                      {u.erstellerName}
+                    </span>
+                  </a>
+                );
+              })}
+              {urlaubsantraegeSortiert.length > 12 && (
                 <a
-                  key={u.id}
                   href="/planung"
+                  className="block py-1 text-center text-xs text-amber-700 hover:text-amber-900 font-medium"
+                >
+                  … und {urlaubsantraegeSortiert.length - 12} weitere
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Selbsterfassung Zusammenträger — Prüfung ausstehend */}
+      {isAdminAuthenticated && (
+        <div className={`mt-4 bg-white rounded-xl shadow-sm p-4 md:p-6 border ${
+          ungepruefteSelbsterfassung.length > 0 ? 'border-amber-300' : 'border-gray-200'
+        }`}>
+          <div className="flex items-center gap-2 mb-3">
+            <span className={ungepruefteSelbsterfassung.length > 0 ? 'text-amber-600' : 'text-gray-400'}>📦</span>
+            <h2 className="font-semibold text-gray-800">
+              Selbsterfassung Zusammenträger — Prüfung ausstehend
+            </h2>
+            <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium ${
+              ungepruefteSelbsterfassung.length === 0
+                ? 'bg-green-100 text-green-700'
+                : 'bg-amber-100 text-amber-800'
+            }`}>
+              {ungepruefteSelbsterfassung.length}
+            </span>
+          </div>
+          {ungepruefteSelbsterfassung.length === 0 ? (
+            <p className="text-sm text-gray-500 italic">
+              Keine offene Selbsterfassung zu prüfen. ✓
+            </p>
+          ) : (
+            <div className="space-y-1.5 max-h-64 overflow-y-auto">
+              {ungepruefteSelbsterfassung.map((a) => (
+                <a
+                  key={a.id}
+                  href="/zusammentragen"
                   className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-amber-50 border border-amber-200 hover:bg-amber-100"
                 >
-                  <span className="text-sm font-medium text-amber-900 truncate">
-                    {ma?.name ?? '?'}
+                  <span className="text-sm font-medium text-amber-900">
+                    Bitte Selbsterfassung Zusammenträger in {kwLabel(a.kw, a.jahr)} prüfen
                   </span>
-                  <span className="text-xs text-amber-700 shrink-0">
-                    KW {u.kw}/{u.jahr}
-                    {u.datumVon && u.datumBis ? ` · ${u.datumVon} – ${u.datumBis}` : ''}
-                  </span>
-                  <span className="text-[10px] text-amber-600 shrink-0 font-mono">
-                    {u.erstellerName}
-                  </span>
+                  {a.selbsterfassungZusammentragenAm && (
+                    <span className="text-[11px] text-amber-600 shrink-0 font-mono">
+                      {new Date(a.selbsterfassungZusammentragenAm).toLocaleDateString('de-DE')}
+                    </span>
+                  )}
                 </a>
-              );
-            })}
-            {urlaubsantraegeSortiert.length > 12 && (
-              <a
-                href="/planung"
-                className="block py-1 text-center text-xs text-amber-700 hover:text-amber-900 font-medium"
-              >
-                … und {urlaubsantraegeSortiert.length - 12} weitere
-              </a>
-            )}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -32,6 +32,30 @@ export interface TeilgebietBonus {
   betragEur: number;      // Bonus je verteilter Ausgabe als Standardausträger
 }
 
+// ---- Abweichende Lieferadresse -----------------------------
+//
+// Manche Mitarbeiter werden nicht an ihrer Wohnadresse beliefert, sondern an
+// einer abweichenden Adresse (z. B. Ablageort). Felder: Adresse + Telefon +
+// Memo (Grund/Hinweis). Erscheint auf dem Lieferschein.
+
+export interface Lieferadresse {
+  strasse: string;
+  plz: string;
+  ort: string;
+  telefon?: string;
+  memo?: string;
+}
+
+/**
+ * Abweichende Lieferadresse für ein konkretes Teilgebiet. Hat bei Lieferung in
+ * dieses Teilgebiet Vorrang vor der allgemeinen abweichenden Lieferadresse.
+ * Anwendungsfall: Springer werden je Teilgebiet an unterschiedlichen
+ * Ablageorten beliefert.
+ */
+export interface TeilgebietLieferadresse extends Lieferadresse {
+  teilgebietId: string;
+}
+
 export interface Mitarbeiter {
   id: string;
   nummer: string;         // 5-stellig, beginnt mit 9
@@ -187,6 +211,12 @@ export interface Mitarbeiter {
   anmeldungUnvollstaendigMemo?: string;
   /** Datum der Datenübermittlung an das Lohnbüro (ISO YYYY-MM-DD). */
   anmeldungUebermittlungDatum?: string;
+  /**
+   * Freitext-Memo mit anmelderelevanten Daten, die zusammen mit dem
+   * Mitarbeiter in die Anmeldemaske des Lohnbüros einzutragen sind
+   * (z. B. Steuer-ID, Krankenkasse, SV-Nummer). Statusunabhängig.
+   */
+  anmeldungMemo?: string;
   /** MA wurde beim Lohnbüro abgemeldet. */
   abgemeldet?: boolean;
   /**
@@ -206,6 +236,20 @@ export interface Mitarbeiter {
   letzteAbrechnungsperiodeId?: string;
   teilgebietFreigaben?: string[];      // IDs der Teilgebiete, die dieser MA austragen darf
   teilgebietBoni?: TeilgebietBonus[];  // Bonus je Teilgebiet und Ausgabe
+  // ---- Abweichende Lieferadresse ----------------------------
+  /**
+   * Wenn true, wird der MA nicht an seiner Wohnadresse beliefert, sondern an
+   * der unter `abweichendeLieferadresse` hinterlegten Adresse. Steuert auch die
+   * Sichtbarkeit der Felder in der Stammdaten-Maske.
+   */
+  abweichendeLieferadresseAktiv?: boolean;
+  /** Allgemeine abweichende Lieferadresse (gilt teilgebietübergreifend). */
+  abweichendeLieferadresse?: Lieferadresse;
+  /**
+   * Abweichende Lieferadressen je Teilgebiet. Eine passende Adresse hat bei
+   * Lieferung in das jeweilige Teilgebiet Vorrang vor `abweichendeLieferadresse`.
+   */
+  lieferadressenJeTeilgebiet?: TeilgebietLieferadresse[];
   // ---- Interessent (Bewerber / Lead) ------------------------
   /**
    * Kennzeichen „Interessent": Person ist als potenzieller MA erfasst, aber
@@ -392,6 +436,22 @@ export interface Ausgabe {
   status: AusgabeStatus;
   /** Wenn true, darf selbsterfasste Vorarbeit für diese Ausgabe in Lohnberechnung einfließen. */
   vorarbeitFreigegeben?: boolean;
+  // ---- Selbsterfassung Zusammentragen (durch Zusammenträger) ----
+  /**
+   * Dokumentations-Kennzeichen „Erfassung geprüft": nur Admin/Abrechnung sehen
+   * und setzen es. Vorläufig ohne weitere Funktion — dient nur dem Nachweis,
+   * dass die Selbsterfassungen der Zusammenträger geprüft wurden. Wird beim
+   * Speichern neuer Selbsterfassungen automatisch zurückgesetzt.
+   */
+  erfassungZusammentragenGeprueft?: boolean;
+  erfassungZusammentragenGeprueftAm?: number;
+  erfassungZusammentragenGeprueftVon?: string;
+  /**
+   * Zeitstempel der letzten Selbsterfassung eines Zusammenträgers für diese
+   * Ausgabe. Steuert (zusammen mit `erfassungZusammentragenGeprueft`) den
+   * Hinweis auf der Startseite.
+   */
+  selbsterfassungZusammentragenAm?: number;
   erstelltAm: number;
   aktualisiertAm: number;
 }
@@ -649,6 +709,12 @@ export interface ZusammentragenEinsatz {
   stapelBearbeitet: number;    // Anzahl Stapel (= ausgabe.stapelAnzahl)
   istVorarbeit: boolean;
   vorarbeitMinuten?: number;   // manuelle Eingabe bei Vorarbeit
+  /**
+   * Eintrag wurde vom Zusammenträger selbst erfasst (nicht vom Admin/Abrechnung
+   * zugewiesen). Steuert die Sperre in der MA-Ansicht, ein Badge in der
+   * Admin-Ansicht sowie den „prüfen"-Hinweis auf der Startseite.
+   */
+  selbsterfasst?: boolean;
   erstelltAm: number;
   aktualisiertAm: number;
 }
