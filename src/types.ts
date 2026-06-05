@@ -447,6 +447,14 @@ export interface Ausgabe {
   erfassungZusammentragenGeprueftAm?: number;
   erfassungZusammentragenGeprueftVon?: string;
   /**
+   * Kennzeichen „Erfassung erledigt": nur Admin/Abrechnung setzen es. Sobald
+   * gesetzt, ist die Selbsterfassung der Zusammenträger für diese Ausgabe
+   * beendet — sie können keine weiteren Teilgebiete mehr erfassen.
+   */
+  erfassungZusammentragenErledigt?: boolean;
+  erfassungZusammentragenErledigtAm?: number;
+  erfassungZusammentragenErledigtVon?: string;
+  /**
    * Zeitstempel der letzten Selbsterfassung eines Zusammenträgers für diese
    * Ausgabe. Steuert (zusammen mit `erfassungZusammentragenGeprueft`) den
    * Hinweis auf der Startseite.

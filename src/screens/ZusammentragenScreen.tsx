@@ -175,6 +175,23 @@ function ZusammentragenInhalt() {
     );
   }
 
+  // ---- „Erfassung erledigt"-Kennzeichen (Selbsterfassung beenden) ---
+  async function handleErledigtToggle(erledigt: boolean) {
+    if (!selectedAusgabe) return;
+    const patch: Partial<Ausgabe> = erledigt
+      ? {
+          erfassungZusammentragenErledigt: true,
+          erfassungZusammentragenErledigtAm: Date.now(),
+          erfassungZusammentragenErledigtVon:
+            userRole === 'abrechnung' ? 'Abrechnung' : adminName || 'Admin',
+        }
+      : { erfassungZusammentragenErledigt: false };
+    await aktualisiereAusgabe(selectedAusgabe.id, patch);
+    setAusgaben((prev) =>
+      prev.map((a) => (a.id === selectedAusgabe.id ? { ...a, ...patch } : a))
+    );
+  }
+
   // ---- Vorarbeit-Toggle (an/aus) ---
   async function handleVorarbeitToggle(aktiv: boolean) {
     if (!selectedAusgabe) return;
@@ -332,9 +349,33 @@ function ZusammentragenInhalt() {
           )}
         </div>
 
-        {/* „Erfassung geprüft"-Kennzeichen (nur Admin/Abrechnung, Dokumentation) */}
+        {/* Kennzeichen (nur Admin/Abrechnung): Selbsterfassung beenden + geprüft */}
         {selectedAusgabe && (
           <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={selectedAusgabe.erfassungZusammentragenErledigt === true}
+                onChange={(e) => handleErledigtToggle(e.target.checked)}
+                className="w-4 h-4 accent-red-600"
+              />
+              <span className="text-sm font-medium text-gray-700">
+                Erfassung erledigt
+              </span>
+            </label>
+            {selectedAusgabe.erfassungZusammentragenErledigt ? (
+              <span className="inline-flex items-center gap-1 bg-red-100 text-red-800 text-xs font-medium px-2 py-0.5 rounded-full">
+                🔒 Selbsterfassung Zusammenträger beendet
+                {selectedAusgabe.erfassungZusammentragenErledigtVon
+                  ? ` (${selectedAusgabe.erfassungZusammentragenErledigtVon})`
+                  : ''}
+              </span>
+            ) : (
+              <span className="text-xs text-gray-400">
+                Solange offen, können Zusammenträger selbst erfassen.
+              </span>
+            )}
+            <span className="basis-full h-0" />
             <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
@@ -711,6 +752,9 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
   const [draft, setDraft] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [meldung, setMeldung] = useState('');
+  // ---- Filter: Teilgebiet-Name und Tour ----
+  const [suche, setSuche] = useState('');
+  const [filterTourId, setFilterTourId] = useState('');
 
   // Aktuelle Ausgabe laden (feste Vorbelegung — keine Auswahl)
   useEffect(() => {
@@ -743,6 +787,10 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
   const istGesperrt =
     zugehoerigerPeriode?.status === 'abgeschlossen' ||
     !!zugehoerigerPeriode?.monatswechselSnapshot;
+  // „Erfassung erledigt" von Admin/Abrechnung → Selbsterfassung beendet.
+  const istBeendet = ausgabe?.erfassungZusammentragenErledigt === true;
+  // Gesamtsperre für die Erfassung (Periode abgeschlossen ODER manuell beendet).
+  const erfassungGesperrt = istGesperrt || istBeendet;
 
   // Map: teilgebietId → normaler Einsatz
   const normalEinsaetze = einsaetze.filter((e) => !e.istVorarbeit);
@@ -761,6 +809,25 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
     (tg) => tgMap[tg.id]?.mitarbeiterId === me.id
   ).length;
 
+  // Touren, die unter den sichtbaren Teilgebieten überhaupt vorkommen
+  const sichtbareTourIds = new Set(sichtbareTeilgebiete.map((tg) => tg.tourId));
+  const verfuegbareTouren = touren.filter((t) => sichtbareTourIds.has(t.id));
+
+  // Filterung nach Tour + Name/PLZ/Tour-Name
+  const sucheNorm = suche.trim().toLowerCase();
+  const gefilterteTeilgebiete = sichtbareTeilgebiete.filter((tg) => {
+    if (filterTourId && tg.tourId !== filterTourId) return false;
+    if (sucheNorm) {
+      const tour = touren.find((t) => t.id === tg.tourId);
+      const treffer =
+        tg.name.toLowerCase().includes(sucheNorm) ||
+        tg.plz.toLowerCase().includes(sucheNorm) ||
+        (tour?.name.toLowerCase().includes(sucheNorm) ?? false);
+      if (!treffer) return false;
+    }
+    return true;
+  });
+
   function toggleDraft(tgId: string) {
     setMeldung('');
     setDraft((prev) => {
@@ -772,7 +839,7 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
   }
 
   async function handleSpeichern() {
-    if (!ausgabe || draft.size === 0 || istGesperrt) return;
+    if (!ausgabe || draft.size === 0 || erfassungGesperrt) return;
     setSaving(true);
     setMeldung('');
     try {
@@ -878,6 +945,13 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
         </div>
       )}
 
+      {!istGesperrt && istBeendet && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-800">
+          🔒 Die Erfassung für diese Ausgabe wurde beendet — es sind keine
+          weiteren Eintragungen mehr möglich.
+        </div>
+      )}
+
       {meldung && (
         <div
           className={`text-sm font-medium py-2 px-3 rounded-lg ${
@@ -897,16 +971,58 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
             Tippe die Teilgebiete an, die du zusammengetragen hast, und speichere.
             Gespeicherte Teilgebiete sind danach gesperrt.
           </p>
+
+          {/* Filter: Teilgebiet-Name und Tour */}
+          <div className="flex flex-col gap-2">
+            <input
+              type="text"
+              inputMode="search"
+              placeholder="Teilgebiet, PLZ oder Tour suchen…"
+              value={suche}
+              onChange={(e) => setSuche(e.target.value)}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="flex items-center gap-2">
+              <select
+                value={filterTourId}
+                onChange={(e) => setFilterTourId(e.target.value)}
+                className="flex-1 border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— alle Touren —</option>
+                {verfuegbareTouren.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+              {(suche || filterTourId) && (
+                <button
+                  type="button"
+                  onClick={() => { setSuche(''); setFilterTourId(''); }}
+                  className="text-xs text-gray-500 hover:text-gray-700 underline shrink-0 px-1"
+                >
+                  zurücksetzen
+                </button>
+              )}
+            </div>
+            <span className="text-[11px] text-gray-400">
+              {gefilterteTeilgebiete.length} von {sichtbareTeilgebiete.length} Teilgebieten
+            </span>
+          </div>
+
           {sichtbareTeilgebiete.length === 0 && (
             <div className="text-center py-6 text-sm text-gray-400">
               Keine freien Teilgebiete verfügbar.
             </div>
           )}
-          {sichtbareTeilgebiete.map((tg) => {
+          {sichtbareTeilgebiete.length > 0 && gefilterteTeilgebiete.length === 0 && (
+            <div className="text-center py-6 text-sm text-gray-400">
+              Keine Teilgebiete entsprechen dem Filter.
+            </div>
+          )}
+          {gefilterteTeilgebiete.map((tg) => {
             const mein = tgMap[tg.id]?.mitarbeiterId === me.id;
             const tour = touren.find((t) => t.id === tg.tourId);
             const checked = mein || draft.has(tg.id);
-            const disabled = mein || istGesperrt;
+            const disabled = mein || erfassungGesperrt;
             return (
               <button
                 key={tg.id}
@@ -958,7 +1074,7 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
       )}
 
       {/* Speichern */}
-      {!istGesperrt && (
+      {!erfassungGesperrt && (
         <button
           onClick={handleSpeichern}
           disabled={saving || draft.size === 0}
