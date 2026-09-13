@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Fragment, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -9,9 +9,8 @@ import {
   aktualisiereMitarbeiter,
   setzeStueckzahlAnpassung,
   loescheStueckzahlAnpassung,
-  ladeAusgaben,
-  ladeEinsaetze,
   einsaetzeJahrListener,
+  umgesetzteAnpassungenListener,
 } from '../lib/db';
 import {
   austraegerwechselPlanListener,
@@ -25,6 +24,7 @@ import type {
   StueckzahlAnpassung,
   StandardAustraegerWechselPlan,
   Einsatz,
+  UmgesetzteAnpassung,
 } from '../types';
 import { Link } from 'react-router-dom';
 
@@ -93,7 +93,7 @@ function TeilgebieteInhalt() {
   const { teilgebiete, touren, mitarbeiter, abrechnungsperioden, parameter, userRole, stueckzahlAnpassungen, adminName } = useApp();
   // Abrechnung-Rolle: nur lesender Zugriff (keine Bearbeitung).
   const isAdmin = userRole === 'admin';
-  const [hauptview, setHauptview] = useState<'liste' | 'anpassung'>('liste');
+  const [hauptview, setHauptview] = useState<'liste' | 'anpassung' | 'historie' | 'umgesetzt'>('liste');
 
   // Geplante dauerhafte Wechsel + zukünftige Springer — werden gebraucht, um
   // im TG-Form das Standardausträger-Select zu sperren, solange in der
@@ -132,7 +132,6 @@ function TeilgebieteInhalt() {
   const [filterAustraegerSuche, setFilterAustraegerSuche] = useState('');
   const [filterAustraegerNurMitTG, setFilterAustraegerNurMitTG] = useState(false);
   const [nurAktive, setNurAktive] = useState(true);
-  const [historiePeriodeId, setHistoriePeriodeId] = useState('');
 
   const gefiltert = teilgebiete.filter((tg) => {
     if (nurAktive && !tg.isActive) return false;
@@ -256,17 +255,49 @@ function TeilgebieteInhalt() {
             </span>
           )}
         </button>
+        <button
+          type="button"
+          onClick={() => setHauptview('historie')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            hauptview === 'historie'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Historische Werte
+        </button>
+        <button
+          type="button"
+          onClick={() => setHauptview('umgesetzt')}
+          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            hauptview === 'umgesetzt'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Umgesetzte Wechselpläne &amp; Mengenanpassungen
+        </button>
       </div>
 
       {hauptview === 'anpassung' && (
         <TeilgebietsanpassungReiter
           teilgebiete={teilgebiete}
-          mitarbeiter={mitarbeiter}
           stueckzahlAnpassungen={stueckzahlAnpassungen}
           adminName={adminName}
           isAdmin={isAdmin}
         />
       )}
+
+      {hauptview === 'historie' && (
+        <HistorischeWerteReiter
+          teilgebiete={teilgebiete}
+          touren={touren}
+          mitarbeiter={mitarbeiter}
+          abrechnungsperioden={abrechnungsperioden}
+        />
+      )}
+
+      {hauptview === 'umgesetzt' && <UmgesetzteAnpassungenReiter />}
 
       {hauptview === 'liste' && (
       <>
@@ -456,151 +487,205 @@ function TeilgebieteInhalt() {
         />
       </Modal>
 
-      {/* ---- Historische Werte ---- */}
-      <div className="mt-10">
-        <h2 className="text-lg font-bold text-gray-800 mb-3">
-          Historische Werte zur Abrechnungsperiode
-        </h2>
+      </>
+      )}
+    </div>
+  );
+}
 
-        <div className="flex items-center gap-3 mb-4">
-          <select
-            value={historiePeriodeId}
-            onChange={(e) => setHistoriePeriodeId(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">— Periode auswählen —</option>
-            {[...abrechnungsperioden]
-              .filter((p) => p.periodeSnapshot?.teilgebietSnapshots?.length)
-              .sort((a, b) => (b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat))
-              .map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.bezeichnung} ✓
-                </option>
-              ))}
-          </select>
-          {historiePeriodeId && (
-            <span className="text-xs text-gray-400">Werte zum Zeitpunkt des Periodenabschlusses</span>
-          )}
-        </div>
+// ---- Reiter: Historische Werte (Periode ↔ Teilgebiet) ----------------------
+//
+// Vereint die beiden bisher untereinander angezeigten Tabellen in einem Reiter
+// mit Umschaltung der Selektionsachse: „nach Periode" zeigt alle TG-Snapshots
+// einer Abrechnungsperiode, „nach Teilgebiet" den Verlauf eines TG über alle
+// Perioden. Beide lesen aus `periodeSnapshot.teilgebietSnapshots`.
 
-        {historiePeriodeId &&
-          (() => {
-            const periode = abrechnungsperioden.find((p) => p.id === historiePeriodeId);
-            const snapshots = periode?.periodeSnapshot?.teilgebietSnapshots ?? [];
-            if (snapshots.length === 0) {
-              return (
-                <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-400 text-sm">
-                  Kein Snapshot für diese Periode vorhanden.
-                </div>
-              );
-            }
-            return (
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 text-xs text-blue-700 font-medium">
-                  📸 Snapshot: {periode!.bezeichnung}
-                  {periode!.gesperrtAm && (
-                    <span className="ml-2 font-normal text-blue-500">
-                      — abgeschlossen am{' '}
-                      {new Date(periode!.gesperrtAm).toLocaleDateString('de-DE')}
-                    </span>
-                  )}
-                </div>
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b border-gray-200">
-                    <tr>
-                      <th className="text-left px-4 py-3 font-medium text-gray-600">Name</th>
-                      <th className="text-left px-4 py-3 font-medium text-gray-600">PLZ</th>
-                      <th className="text-right px-4 py-3 font-medium text-gray-600">Stück</th>
-                      <th className="text-right px-4 py-3 font-medium text-gray-600">Wegstrecke</th>
-                      <th className="text-left px-4 py-3 font-medium text-gray-600">Tour</th>
-                      <th className="text-left px-4 py-3 font-medium text-gray-600">
-                        Standardausträger (historisch)
-                      </th>
-                      <th className="text-left px-4 py-3 font-medium text-gray-600">Heute</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {[...snapshots]
-                      .sort((a, b) => a.name.localeCompare(b.name))
-                      .map((snap) => {
-                        const historMA = mitarbeiter.find((m) => m.id === snap.standardAustraegerId);
-                        const historMAName = snap.standardAustraegerId
-                          ? (historMA?.name ?? `[gelöscht: ${snap.standardAustraegerId.slice(0, 6)}…]`)
-                          : '—';
-                        const tourSnap = touren.find((t) => t.id === snap.tourId);
-                        const aktuellTG = teilgebiete.find((tg) => tg.id === snap.id);
-                        const aktuellMA = mitarbeiter.find(
-                          (m) => m.id === aktuellTG?.standardAustraegerId
-                        );
-                        const hatGeaendert =
-                          aktuellTG && aktuellTG.standardAustraegerId !== snap.standardAustraegerId;
+function HistorischeWerteReiter({
+  teilgebiete,
+  touren,
+  mitarbeiter,
+  abrechnungsperioden,
+}: {
+  teilgebiete: import('../types').Teilgebiet[];
+  touren: import('../types').Tour[];
+  mitarbeiter: Mitarbeiter[];
+  abrechnungsperioden: import('../types').Abrechnungsperiode[];
+}) {
+  const [modus, setModus] = useState<'periode' | 'teilgebiet'>('periode');
+  const [historiePeriodeId, setHistoriePeriodeId] = useState('');
 
-                        return (
-                          <tr
-                            key={snap.id}
-                            className={hatGeaendert ? 'bg-amber-50' : 'hover:bg-gray-50'}
-                          >
-                            <td className="px-4 py-2.5 font-medium text-gray-900">{snap.name}</td>
-                            <td className="px-4 py-2.5 text-gray-500">{snap.plz}</td>
-                            <td className="px-4 py-2.5 text-right text-gray-600">
-                              {snap.stueckzahl.toLocaleString('de-DE')}
-                            </td>
-                            <td className="px-4 py-2.5 text-right text-gray-600">
-                              {snap.wegstreckeM >= 1000
-                                ? `${(snap.wegstreckeM / 1000).toFixed(1)} km`
-                                : `${snap.wegstreckeM} m`}
-                            </td>
-                            <td className="px-4 py-2.5">
-                              {tourSnap ? (
-                                <span
-                                  className="text-xs px-2 py-0.5 rounded-full text-white font-medium"
-                                  style={{ backgroundColor: tourSnap.farbe }}
-                                >
-                                  {tourSnap.name}
-                                </span>
-                              ) : (
-                                <span className="text-gray-400 text-xs">—</span>
-                              )}
-                            </td>
-                            <td className="px-4 py-2.5 text-gray-700">{historMAName}</td>
-                            <td className="px-4 py-2.5 text-xs">
-                              {hatGeaendert ? (
-                                <span className="text-amber-700 font-medium">
-                                  ⚠ {aktuellMA?.name ?? '—'}
-                                </span>
-                              ) : aktuellTG ? (
-                                <span className="text-green-600">✓ unverändert</span>
-                              ) : (
-                                <span className="text-gray-400">nicht mehr vorhanden</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-                <div className="bg-gray-50 border-t border-gray-200 px-4 py-2 text-xs text-gray-500 flex gap-4">
-                  <span>{snapshots.length} Teilgebiete im Snapshot</span>
-                  <span className="text-amber-600">
-                    {
-                      snapshots.filter((s) => {
-                        const tg = teilgebiete.find((t) => t.id === s.id);
-                        return tg && tg.standardAustraegerId !== s.standardAustraegerId;
-                      }).length
-                    }{' '}
-                    mit geändertem Austräger seit Abschluss
-                  </span>
-                </div>
-              </div>
-            );
-          })()}
+  return (
+    <div className="space-y-5">
+      <div className="text-sm text-gray-600">
+        Historische Stamm-/Stückzahlwerte aus den beim Periodenabschluss
+        gespeicherten Snapshots. Umschalten, ob nach Abrechnungsperiode oder
+        nach Teilgebiet selektiert wird.
       </div>
 
-      <TeilgebietVerlauf
-        teilgebiete={teilgebiete}
-        abrechnungsperioden={abrechnungsperioden}
-      />
-      </>
+      {/* Umschaltung der Selektionsachse */}
+      <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5 text-sm">
+        <button
+          type="button"
+          onClick={() => setModus('periode')}
+          className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
+            modus === 'periode' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          nach Periode
+        </button>
+        <button
+          type="button"
+          onClick={() => setModus('teilgebiet')}
+          className={`px-3 py-1.5 rounded-md font-medium transition-colors ${
+            modus === 'teilgebiet' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          nach Teilgebiet
+        </button>
+      </div>
+
+      {modus === 'periode' && (
+        <div>
+          <div className="flex items-center gap-3 mb-4">
+            <select
+              value={historiePeriodeId}
+              onChange={(e) => setHistoriePeriodeId(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">— Periode auswählen —</option>
+              {[...abrechnungsperioden]
+                .filter((p) => p.periodeSnapshot?.teilgebietSnapshots?.length)
+                .sort((a, b) => (b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat))
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.bezeichnung} ✓
+                  </option>
+                ))}
+            </select>
+            {historiePeriodeId && (
+              <span className="text-xs text-gray-400">Werte zum Zeitpunkt des Periodenabschlusses</span>
+            )}
+          </div>
+
+          {historiePeriodeId &&
+            (() => {
+              const periode = abrechnungsperioden.find((p) => p.id === historiePeriodeId);
+              const snapshots = periode?.periodeSnapshot?.teilgebietSnapshots ?? [];
+              if (snapshots.length === 0) {
+                return (
+                  <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-400 text-sm">
+                    Kein Snapshot für diese Periode vorhanden.
+                  </div>
+                );
+              }
+              return (
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                  <div className="bg-blue-50 border-b border-blue-100 px-4 py-2 text-xs text-blue-700 font-medium">
+                    📸 Snapshot: {periode!.bezeichnung}
+                    {periode!.gesperrtAm && (
+                      <span className="ml-2 font-normal text-blue-500">
+                        — abgeschlossen am{' '}
+                        {new Date(periode!.gesperrtAm).toLocaleDateString('de-DE')}
+                      </span>
+                    )}
+                  </div>
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                      <tr>
+                        <th className="text-left px-4 py-3 font-medium text-gray-600">Name</th>
+                        <th className="text-left px-4 py-3 font-medium text-gray-600">PLZ</th>
+                        <th className="text-right px-4 py-3 font-medium text-gray-600">Stück</th>
+                        <th className="text-right px-4 py-3 font-medium text-gray-600">Wegstrecke</th>
+                        <th className="text-left px-4 py-3 font-medium text-gray-600">Tour</th>
+                        <th className="text-left px-4 py-3 font-medium text-gray-600">
+                          Standardausträger (historisch)
+                        </th>
+                        <th className="text-left px-4 py-3 font-medium text-gray-600">Heute</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {[...snapshots]
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map((snap) => {
+                          const historMA = mitarbeiter.find((m) => m.id === snap.standardAustraegerId);
+                          const historMAName = snap.standardAustraegerId
+                            ? (historMA?.name ?? `[gelöscht: ${snap.standardAustraegerId.slice(0, 6)}…]`)
+                            : '—';
+                          const tourSnap = touren.find((t) => t.id === snap.tourId);
+                          const aktuellTG = teilgebiete.find((tg) => tg.id === snap.id);
+                          const aktuellMA = mitarbeiter.find(
+                            (m) => m.id === aktuellTG?.standardAustraegerId
+                          );
+                          const hatGeaendert =
+                            aktuellTG && aktuellTG.standardAustraegerId !== snap.standardAustraegerId;
+
+                          return (
+                            <tr
+                              key={snap.id}
+                              className={hatGeaendert ? 'bg-amber-50' : 'hover:bg-gray-50'}
+                            >
+                              <td className="px-4 py-2.5 font-medium text-gray-900">{snap.name}</td>
+                              <td className="px-4 py-2.5 text-gray-500">{snap.plz}</td>
+                              <td className="px-4 py-2.5 text-right text-gray-600">
+                                {snap.stueckzahl.toLocaleString('de-DE')}
+                              </td>
+                              <td className="px-4 py-2.5 text-right text-gray-600">
+                                {snap.wegstreckeM >= 1000
+                                  ? `${(snap.wegstreckeM / 1000).toFixed(1)} km`
+                                  : `${snap.wegstreckeM} m`}
+                              </td>
+                              <td className="px-4 py-2.5">
+                                {tourSnap ? (
+                                  <span
+                                    className="text-xs px-2 py-0.5 rounded-full text-white font-medium"
+                                    style={{ backgroundColor: tourSnap.farbe }}
+                                  >
+                                    {tourSnap.name}
+                                  </span>
+                                ) : (
+                                  <span className="text-gray-400 text-xs">—</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-gray-700">{historMAName}</td>
+                              <td className="px-4 py-2.5 text-xs">
+                                {hatGeaendert ? (
+                                  <span className="text-amber-700 font-medium">
+                                    ⚠ {aktuellMA?.name ?? '—'}
+                                  </span>
+                                ) : aktuellTG ? (
+                                  <span className="text-green-600">✓ unverändert</span>
+                                ) : (
+                                  <span className="text-gray-400">nicht mehr vorhanden</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                  <div className="bg-gray-50 border-t border-gray-200 px-4 py-2 text-xs text-gray-500 flex gap-4">
+                    <span>{snapshots.length} Teilgebiete im Snapshot</span>
+                    <span className="text-amber-600">
+                      {
+                        snapshots.filter((s) => {
+                          const tg = teilgebiete.find((t) => t.id === s.id);
+                          return tg && tg.standardAustraegerId !== s.standardAustraegerId;
+                        }).length
+                      }{' '}
+                      mit geändertem Austräger seit Abschluss
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+        </div>
+      )}
+
+      {modus === 'teilgebiet' && (
+        <TeilgebietVerlauf
+          teilgebiete={teilgebiete}
+          abrechnungsperioden={abrechnungsperioden}
+        />
       )}
     </div>
   );
@@ -1998,13 +2083,11 @@ function KartenLinkBox({
 
 function TeilgebietsanpassungReiter({
   teilgebiete,
-  mitarbeiter,
   stueckzahlAnpassungen,
   adminName,
   isAdmin,
 }: {
   teilgebiete: Teilgebiet[];
-  mitarbeiter: Mitarbeiter[];
   stueckzahlAnpassungen: StueckzahlAnpassung[];
   adminName: string;
   isAdmin: boolean;
@@ -2019,7 +2102,6 @@ function TeilgebietsanpassungReiter({
     .filter((t) => t.isActive && !t.istAuslagestelle)
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
-  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
 
   const aktuellesTg = tgId ? tgMap.get(tgId) : undefined;
 
@@ -2218,395 +2300,214 @@ function TeilgebietsanpassungReiter({
           </table>
         </div>
       )}
-
-      {/* Restmengen-Auswertung */}
-      <RestmengenAuswertung
-        teilgebiete={teilgebiete}
-        maMap={maMap}
-      />
     </div>
   );
 }
 
 // =====================================================================
-// Restmengen-Auswertung pro Teilgebiet
+// Reiter: Umgesetzte Wechselpläne & Mengenanpassungen
 // =====================================================================
+//
+// Zeigt das Protokoll der beim Monatswechsel umgesetzten Standardausträger-
+// Wechsel und Stückzahl-Anpassungen (Collection `umgesetzteAnpassungen`).
+// Filter nach Teilgebiet und Monat (= Periode der Umsetzung).
 
-interface RestmengeAggregat {
-  teilgebietId: string;
-  meldungen: {
-    einsatzId: string;
-    ausgabeId: string;
-    kw: number;
-    jahr: number;
-    mitarbeiterId: string | null;
-    restmenge: number;
-    fehlmenge: number;
-    kommentar?: string;
-    eingereichtAm?: number;
-  }[];
-  summeRest: number;
-  summeFehl: number;
-  letzteMeldungAm: number;
-}
-
-function RestmengenAuswertung({
-  teilgebiete,
-  maMap,
-}: {
-  teilgebiete: Teilgebiet[];
-  maMap: Map<string, Mitarbeiter>;
-}) {
+function UmgesetzteAnpassungenReiter() {
+  const [records, setRecords] = useState<UmgesetzteAnpassung[]>([]);
   const [loading, setLoading] = useState(true);
-  const [aggregate, setAggregate] = useState<RestmengeAggregat[]>([]);
-  const [expandedTg, setExpandedTg] = useState<string | null>(null);
-  const [anzahlAusgaben, setAnzahlAusgaben] = useState(12);
   const [filterTgId, setFilterTgId] = useState('');
-  const [filterMaId, setFilterMaId] = useState('');
-
-  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
-
-  // Optionen für die Filter-Dropdowns: nur TGs/MAs, die im aktuellen
-  // Zeitraum tatsächlich Meldungen haben (sonst lange Auswahllisten).
-  const tgOptions = useMemo(() => {
-    const ids = new Set(aggregate.map((a) => a.teilgebietId));
-    return [...ids]
-      .map((id) => ({ id, tg: tgMap.get(id) }))
-      .filter((o) => o.tg)
-      .sort((a, b) => (a.tg!.name).localeCompare(b.tg!.name, 'de', { numeric: true }));
-  }, [aggregate, tgMap]);
-
-  const maOptions = useMemo(() => {
-    const ids = new Set<string>();
-    for (const a of aggregate) {
-      for (const m of a.meldungen) if (m.mitarbeiterId) ids.add(m.mitarbeiterId);
-    }
-    return [...ids]
-      .map((id) => ({ id, ma: maMap.get(id) }))
-      .filter((o) => o.ma)
-      .sort((a, b) => (a.ma!.name).localeCompare(b.ma!.name, 'de'));
-  }, [aggregate, maMap]);
-
-  // Gefilterte Aggregate: TG- und MA-Filter werden auf der Meldungs-Ebene
-  // angewendet, Summen/Ø werden neu berechnet, damit die Anzeige zur
-  // Filterauswahl passt.
-  const filteredAggregate = useMemo(() => {
-    const out: RestmengeAggregat[] = [];
-    for (const agg of aggregate) {
-      if (filterTgId && agg.teilgebietId !== filterTgId) continue;
-      const meldungen = filterMaId
-        ? agg.meldungen.filter((m) => m.mitarbeiterId === filterMaId)
-        : agg.meldungen;
-      if (meldungen.length === 0) continue;
-      let summeRest = 0;
-      let summeFehl = 0;
-      let letzteMeldungAm = 0;
-      for (const m of meldungen) {
-        summeRest += m.restmenge;
-        summeFehl += m.fehlmenge;
-        if ((m.eingereichtAm ?? 0) > letzteMeldungAm) letzteMeldungAm = m.eingereichtAm ?? 0;
-      }
-      out.push({
-        teilgebietId: agg.teilgebietId,
-        meldungen,
-        summeRest,
-        summeFehl,
-        letzteMeldungAm,
-      });
-    }
-    return out.sort((a, b) => {
-      const avgFehlA = a.meldungen.length > 0 ? a.summeFehl / a.meldungen.length : 0;
-      const avgFehlB = b.meldungen.length > 0 ? b.summeFehl / b.meldungen.length : 0;
-      if (avgFehlA !== avgFehlB) return avgFehlB - avgFehlA;
-      const avgRestA = a.meldungen.length > 0 ? a.summeRest / a.meldungen.length : 0;
-      const avgRestB = b.meldungen.length > 0 ? b.summeRest / b.meldungen.length : 0;
-      return avgRestB - avgRestA;
-    });
-  }, [aggregate, filterTgId, filterMaId]);
+  const [filterMonat, setFilterMonat] = useState(''); // `${jahr}-${monat}` oder ''
+  const [filterArt, setFilterArt] = useState<'' | 'wechsel' | 'menge'>('');
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        const allAusgaben = await ladeAusgaben();
-        const sorted = [...allAusgaben].sort((a, b) =>
-          b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw
-        );
-        const window = sorted.slice(0, anzahlAusgaben);
-        const einsatzListen = await Promise.all(
-          window.map((a) => ladeEinsaetze(a.id))
-        );
-        if (cancelled) return;
-        const byTg = new Map<string, RestmengeAggregat>();
-        for (let i = 0; i < window.length; i++) {
-          const a = window[i];
-          for (const e of einsatzListen[i]) {
-            const rest = e.restmenge ?? 0;
-            const fehl = e.fehlmenge ?? 0;
-            const komm = e.meldungKommentar;
-            // Aufnehmen, sobald irgendetwas davon vorliegt.
-            if (rest <= 0 && fehl <= 0 && !komm) continue;
-            let agg = byTg.get(e.teilgebietId);
-            if (!agg) {
-              agg = {
-                teilgebietId: e.teilgebietId,
-                meldungen: [],
-                summeRest: 0,
-                summeFehl: 0,
-                letzteMeldungAm: 0,
-              };
-              byTg.set(e.teilgebietId, agg);
-            }
-            agg.meldungen.push({
-              einsatzId: e.id,
-              ausgabeId: a.id,
-              kw: a.kw,
-              jahr: a.jahr,
-              mitarbeiterId: e.mitarbeiterId,
-              restmenge: rest,
-              fehlmenge: fehl,
-              kommentar: komm,
-              eingereichtAm: e.meldungEingereichtAm,
-            });
-            agg.summeRest += rest;
-            agg.summeFehl += fehl;
-            if ((e.meldungEingereichtAm ?? 0) > agg.letzteMeldungAm) {
-              agg.letzteMeldungAm = e.meldungEingereichtAm ?? 0;
-            }
-          }
-        }
-        // Sortierung: nach Durchschnitt absteigend. Fehlmengen-Gruppen zuerst
-        // (Ø Fehlmenge je Meldung), danach Restmengen-Gruppen (Ø Restmenge
-        // je Meldung).
-        const list = [...byTg.values()].sort((a, b) => {
-          const avgFehlA = a.meldungen.length > 0 ? a.summeFehl / a.meldungen.length : 0;
-          const avgFehlB = b.meldungen.length > 0 ? b.summeFehl / b.meldungen.length : 0;
-          if (avgFehlA !== avgFehlB) return avgFehlB - avgFehlA;
-          const avgRestA = a.meldungen.length > 0 ? a.summeRest / a.meldungen.length : 0;
-          const avgRestB = b.meldungen.length > 0 ? b.summeRest / b.meldungen.length : 0;
-          return avgRestB - avgRestA;
-        });
-        setAggregate(list);
-      } catch (err) {
-        console.error('Fehler beim Laden Restmengen:', err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [anzahlAusgaben]);
+    const unsub = umgesetzteAnpassungenListener((list) => {
+      setRecords(list);
+      setLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // Filter-Optionen aus den vorhandenen Datensätzen ableiten.
+  const tgOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of records) if (!map.has(r.teilgebietId)) map.set(r.teilgebietId, r.teilgebietName);
+    return [...map.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  }, [records]);
+
+  const monatOptions = useMemo(() => {
+    const map = new Map<string, { key: string; jahr: number; monat: number; label: string }>();
+    for (const r of records) {
+      const key = `${r.umsetzungJahr}-${r.umsetzungMonat}`;
+      if (!map.has(key)) map.set(key, { key, jahr: r.umsetzungJahr, monat: r.umsetzungMonat, label: r.periodeBezeichnung });
+    }
+    return [...map.values()].sort((a, b) => (b.jahr !== a.jahr ? b.jahr - a.jahr : b.monat - a.monat));
+  }, [records]);
+
+  const gefiltert = useMemo(() => {
+    return records
+      .filter((r) => !filterTgId || r.teilgebietId === filterTgId)
+      .filter((r) => !filterMonat || `${r.umsetzungJahr}-${r.umsetzungMonat}` === filterMonat)
+      .filter((r) => !filterArt || r.art === filterArt)
+      .sort((a, b) => {
+        if (b.umsetzungJahr !== a.umsetzungJahr) return b.umsetzungJahr - a.umsetzungJahr;
+        if (b.umsetzungMonat !== a.umsetzungMonat) return b.umsetzungMonat - a.umsetzungMonat;
+        const tn = a.teilgebietName.localeCompare(b.teilgebietName, 'de', { numeric: true });
+        if (tn !== 0) return tn;
+        return b.umgesetztAm - a.umgesetztAm;
+      });
+  }, [records, filterTgId, filterMonat, filterArt]);
+
+  const fmtAusgabe = (kw?: number, jahr?: number) =>
+    kw != null && jahr != null ? `KW ${kw}/${jahr}` : '—';
 
   return (
-    <div className="mt-8">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <h3 className="text-sm font-semibold text-gray-800">
-            Rest- &amp; Fehlmengen je Teilgebiet (von Austrägern gemeldet)
-          </h3>
-          <p className="text-xs text-gray-500 mt-0.5">
-            Restmenge = nicht ausgetragene Stücke (Überschuss). Fehlmenge = zu
-            wenig erhalten (z. B. weil neue Häuser dazukamen). Gemeldet via
-            Selbstmeldung (QR-Code) oder Lieferschein. Werte sind Ø je Meldung;
-            sortiert nach Ø Fehlmenge, dann Ø Restmenge — Hover zeigt Summe + Anzahl.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 flex-wrap justify-end">
-          <label className="text-xs text-gray-600 flex items-center gap-2">
-            Zeitraum:
-            <select
-              value={anzahlAusgaben}
-              onChange={(e) => setAnzahlAusgaben(parseInt(e.target.value, 10))}
-              className="border border-gray-300 rounded px-2 py-1 text-xs"
-            >
-              <option value={4}>letzte 4 Ausgaben</option>
-              <option value={8}>letzte 8 Ausgaben</option>
-              <option value={12}>letzte 12 Ausgaben</option>
-              <option value={26}>letzte 26 Ausgaben</option>
-              <option value={52}>letzte 52 Ausgaben</option>
-            </select>
-          </label>
-          <label className="text-xs text-gray-600 flex items-center gap-2">
-            Teilgebiet:
-            <select
-              value={filterTgId}
-              onChange={(e) => setFilterTgId(e.target.value)}
-              className="border border-gray-300 rounded px-2 py-1 text-xs max-w-[14rem]"
-            >
-              <option value="">alle ({tgOptions.length})</option>
-              {tgOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.tg!.name}{o.tg!.plz ? ` (${o.tg!.plz})` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="text-xs text-gray-600 flex items-center gap-2">
-            Mitarbeiter:
-            <select
-              value={filterMaId}
-              onChange={(e) => setFilterMaId(e.target.value)}
-              className="border border-gray-300 rounded px-2 py-1 text-xs max-w-[16rem]"
-            >
-              <option value="">alle ({maOptions.length})</option>
-              {maOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.ma!.name} ({o.ma!.nummer})
-                </option>
-              ))}
-            </select>
-          </label>
-          {(filterTgId || filterMaId) && (
-            <button
-              type="button"
-              onClick={() => { setFilterTgId(''); setFilterMaId(''); }}
-              className="text-xs text-gray-500 hover:text-gray-800 underline"
-              title="Filter zurücksetzen"
-            >
-              Filter zurücksetzen
-            </button>
-          )}
-        </div>
+    <div className="space-y-5">
+      <div className="text-sm text-gray-600">
+        Protokoll der beim Monatswechsel umgesetzten Standardausträger-Wechsel und
+        Stückzahl-Anpassungen. Festgehalten mit den jeweils hinterlegten Werten und dem
+        Monat der Umsetzung.
+      </div>
+
+      {/* Filter */}
+      <div className="flex flex-wrap items-center gap-3">
+        <select
+          value={filterTgId}
+          onChange={(e) => setFilterTgId(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Alle Teilgebiete</option>
+          {tgOptions.map((o) => (
+            <option key={o.id} value={o.id}>{o.name}</option>
+          ))}
+        </select>
+        <select
+          value={filterMonat}
+          onChange={(e) => setFilterMonat(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Alle Monate</option>
+          {monatOptions.map((o) => (
+            <option key={o.key} value={o.key}>{o.label}</option>
+          ))}
+        </select>
+        <select
+          value={filterArt}
+          onChange={(e) => setFilterArt(e.target.value as typeof filterArt)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Alle Arten</option>
+          <option value="wechsel">Nur Standardausträger-Wechsel</option>
+          <option value="menge">Nur Mengenanpassungen</option>
+        </select>
+        {(filterTgId || filterMonat || filterArt) && (
+          <button
+            type="button"
+            onClick={() => { setFilterTgId(''); setFilterMonat(''); setFilterArt(''); }}
+            className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+          >
+            ✕ Filter zurücksetzen
+          </button>
+        )}
+        <span className="text-xs text-gray-400 ml-auto self-center">
+          {gefiltert.length} {gefiltert.length === 1 ? 'Eintrag' : 'Einträge'}
+        </span>
       </div>
 
       {loading ? (
-        <div className="rounded-lg border border-gray-200 bg-white py-8 text-center text-sm text-gray-400">
-          Lade Restmengen…
+        <div className="rounded-lg border border-gray-200 bg-white py-10 text-center text-sm text-gray-400">
+          Lade umgesetzte Anpassungen…
         </div>
-      ) : filteredAggregate.length === 0 ? (
-        <div className="rounded-lg border border-gray-200 bg-white py-8 text-center text-sm text-gray-500">
-          {aggregate.length === 0
-            ? 'Keine Meldungen im gewählten Zeitraum.'
-            : 'Keine Meldungen passen zu den aktiven Filtern.'}
+      ) : gefiltert.length === 0 ? (
+        <div className="rounded-lg border border-gray-200 bg-white py-10 text-center text-sm text-gray-500">
+          {records.length === 0
+            ? 'Noch keine umgesetzten Wechselpläne oder Mengenanpassungen protokolliert.'
+            : 'Keine Einträge passen zu den aktiven Filtern.'}
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
               <tr>
+                <th className="px-3 py-2 text-left font-medium">Monat</th>
                 <th className="px-3 py-2 text-left font-medium">Teilgebiet</th>
-                <th className="px-3 py-2 text-right font-medium" title="Durchschnittliche Fehlmenge je Meldung (zu wenig erhalten)">Ø Fehlmenge</th>
-                <th className="px-3 py-2 text-right font-medium" title="Durchschnittliche Restmenge je Meldung">Ø Restmenge</th>
-                <th className="px-3 py-2 text-right font-medium" title="Anzahl Meldungen mit Rest oder Fehlmenge">Meldungen</th>
-                <th className="px-3 py-2 text-right font-medium">Stückzahl TG</th>
-                <th className="px-3 py-2 text-right font-medium" title="Ø Restmenge in % der TG-Stückzahl">Rest %</th>
-                <th className="px-3 py-2 text-right font-medium">Zuletzt</th>
+                <th className="px-3 py-2 text-left font-medium">Art</th>
+                <th className="px-3 py-2 text-left font-medium">Details</th>
+                <th className="px-3 py-2 text-right font-medium">Umgesetzt</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filteredAggregate.map((agg) => {
-                const tg = tgMap.get(agg.teilgebietId);
-                const tgStk = tg?.stueckzahl ?? 0;
-                const anzMeldungen = agg.meldungen.length;
-                const avgRest = anzMeldungen > 0 ? agg.summeRest / anzMeldungen : 0;
-                const avgFehl = anzMeldungen > 0 ? agg.summeFehl / anzMeldungen : 0;
-                const prozent = tgStk > 0 && avgRest > 0 ? (avgRest / tgStk) * 100 : 0;
-                const open = expandedTg === agg.teilgebietId;
-                const hatFehl = agg.summeFehl > 0;
-                const fmtAvg = (v: number) =>
-                  v >= 10 ? Math.round(v).toLocaleString('de-DE')
-                    : v.toLocaleString('de-DE', { maximumFractionDigits: 1 });
-                return (
-                  <Fragment key={agg.teilgebietId}>
-                    <tr
-                      className={`cursor-pointer ${hatFehl ? 'bg-red-50/60 hover:bg-red-100/60' : 'hover:bg-gray-50'}`}
-                      onClick={() => setExpandedTg(open ? null : agg.teilgebietId)}
-                    >
-                      <td className="px-3 py-2 font-medium text-gray-900">
-                        <span className="inline-block w-3 text-gray-400">{open ? '▾' : '▸'}</span>{' '}
-                        {hatFehl && <span className="mr-1 text-red-600" title="Fehlmenge-Meldung">⚠</span>}
-                        {tg?.name ?? '— gelöscht —'}
-                        {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+              {gefiltert.map((r) => (
+                <tr key={r.id} className="hover:bg-gray-50 align-top">
+                  <td className="px-3 py-2 text-gray-700 whitespace-nowrap">{r.periodeBezeichnung}</td>
+                  <td className="px-3 py-2 font-medium text-gray-900">
+                    {r.teilgebietName}
+                    {r.teilgebietPlz && <span className="ml-1 text-xs text-gray-400">({r.teilgebietPlz})</span>}
+                  </td>
+                  {r.art === 'wechsel' ? (
+                    <>
+                      <td className="px-3 py-2">
+                        <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">
+                          Wechsel
+                        </span>
                       </td>
-                      <td
-                        className={`px-3 py-2 text-right font-mono text-xs ${hatFehl ? 'font-bold text-red-700' : 'text-gray-300'}`}
-                        title={hatFehl ? `Σ ${agg.summeFehl} aus ${anzMeldungen} Meldungen` : undefined}
-                      >
-                        {hatFehl ? fmtAvg(avgFehl) : '—'}
+                      <td className="px-3 py-2 text-gray-700 text-xs">
+                        <div>
+                          {r.bisherigerAustraegerName ?? <span className="italic text-gray-400">unbesetzt</span>}
+                          {' → '}
+                          {r.neuerAustraegerName ?? <span className="italic text-amber-700">unbesetzt</span>}
+                        </div>
+                        <div className="text-[11px] text-gray-500 mt-0.5">
+                          letzte Ausgabe {fmtAusgabe(r.letzteAusgabeKw, r.letzteAusgabeJahr)}
+                          {' · '}ab {fmtAusgabe(r.abAusgabeKw, r.abAusgabeJahr)}
+                        </div>
+                        {r.kommentar && (
+                          <div className="text-[11px] text-gray-500 mt-0.5">💬 {r.kommentar}</div>
+                        )}
+                        {r.externerLink && (
+                          <a
+                            href={r.externerLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] text-blue-600 hover:text-blue-800 underline mt-0.5 inline-block"
+                          >
+                            🔗 Externer Link
+                          </a>
+                        )}
                       </td>
-                      <td
-                        className={`px-3 py-2 text-right font-mono text-xs ${agg.summeRest > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}
-                        title={agg.summeRest > 0 ? `Σ ${agg.summeRest} aus ${anzMeldungen} Meldungen` : undefined}
-                      >
-                        {agg.summeRest > 0 ? fmtAvg(avgRest) : '—'}
+                    </>
+                  ) : (
+                    <>
+                      <td className="px-3 py-2">
+                        <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-medium">
+                          Menge
+                        </span>
                       </td>
-                      <td className="px-3 py-2 text-right text-xs text-gray-600">{anzMeldungen}</td>
-                      <td className="px-3 py-2 text-right font-mono text-xs text-gray-500">
-                        {tgStk.toLocaleString('de-DE')}
+                      <td className="px-3 py-2 text-gray-700 text-xs">
+                        <div className="font-mono">
+                          {r.alteStueckzahl.toLocaleString('de-DE')} → {r.neueStueckzahl.toLocaleString('de-DE')} Stück
+                          {(() => {
+                            const d = r.neueStueckzahl - r.alteStueckzahl;
+                            return (
+                              <span className={`ml-1.5 ${d > 0 ? 'text-amber-700' : d < 0 ? 'text-green-700' : 'text-gray-400'}`}>
+                                ({d > 0 ? '+' : ''}{d.toLocaleString('de-DE').replace(/^-/, '−')})
+                              </span>
+                            );
+                          })()}
+                        </div>
+                        {r.bemerkung && (
+                          <div className="text-[11px] text-gray-500 mt-0.5">💬 {r.bemerkung}</div>
+                        )}
                       </td>
-                      <td className={`px-3 py-2 text-right font-mono text-xs ${
-                        prozent >= 5 ? 'text-red-700 font-semibold'
-                          : prozent >= 2 ? 'text-amber-700'
-                          : 'text-gray-500'
-                      }`}>
-                        {avgRest > 0 ? `${prozent.toFixed(1).replace('.', ',')} %` : '—'}
-                      </td>
-                      <td className="px-3 py-2 text-right text-xs text-gray-500">
-                        {agg.letzteMeldungAm
-                          ? new Date(agg.letzteMeldungAm).toLocaleDateString('de-DE')
-                          : '—'}
-                      </td>
-                    </tr>
-                    {open && (
-                      <tr className="bg-gray-50/50">
-                        <td colSpan={7} className="px-3 py-3">
-                          <table className="w-full text-xs">
-                            <thead className="text-gray-500">
-                              <tr>
-                                <th className="text-left py-1 font-medium">KW/Jahr</th>
-                                <th className="text-left py-1 font-medium">Austräger</th>
-                                <th className="text-right py-1 font-medium">Fehlmenge</th>
-                                <th className="text-right py-1 font-medium">Restmenge</th>
-                                <th className="text-left py-1 font-medium px-2">Kommentar</th>
-                                <th className="text-right py-1 font-medium">Gemeldet am</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {[...agg.meldungen]
-                                .sort((a, b) => {
-                                  // Fehlmenge-Meldungen oben
-                                  const af = a.fehlmenge > 0 ? 1 : 0;
-                                  const bf = b.fehlmenge > 0 ? 1 : 0;
-                                  if (af !== bf) return bf - af;
-                                  return b.jahr !== a.jahr ? b.jahr - a.jahr : b.kw - a.kw;
-                                })
-                                .map((m) => {
-                                  const ma = m.mitarbeiterId ? maMap.get(m.mitarbeiterId) : undefined;
-                                  return (
-                                    <tr key={m.einsatzId} className="border-t border-gray-200 align-top">
-                                      <td className="py-1 font-mono whitespace-nowrap">KW {m.kw}/{m.jahr}</td>
-                                      <td className="py-1">
-                                        {ma ? `${ma.name} (${ma.nummer})` : <span className="text-gray-400">—</span>}
-                                      </td>
-                                      <td className={`py-1 text-right font-mono ${m.fehlmenge > 0 ? 'font-bold text-red-700' : 'text-gray-300'}`}>
-                                        {m.fehlmenge > 0 ? m.fehlmenge.toLocaleString('de-DE') : '—'}
-                                      </td>
-                                      <td className={`py-1 text-right font-mono ${m.restmenge > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}>
-                                        {m.restmenge > 0 ? m.restmenge.toLocaleString('de-DE') : '—'}
-                                      </td>
-                                      <td className="py-1 px-2 text-gray-700">
-                                        {m.kommentar
-                                          ? <span className="italic">„{m.kommentar}"</span>
-                                          : <span className="text-gray-300">—</span>}
-                                      </td>
-                                      <td className="py-1 text-right text-gray-500 whitespace-nowrap">
-                                        {m.eingereichtAm
-                                          ? new Date(m.eingereichtAm).toLocaleDateString('de-DE')
-                                          : '—'}
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                            </tbody>
-                          </table>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                );
-              })}
+                    </>
+                  )}
+                  <td className="px-3 py-2 text-right text-xs text-gray-500 whitespace-nowrap">
+                    {new Date(r.umgesetztAm).toLocaleDateString('de-DE')}
+                    {r.umgesetztVon && <><br /><span className="text-gray-400">{r.umgesetztVon}</span></>}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

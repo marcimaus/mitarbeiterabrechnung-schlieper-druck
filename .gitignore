@@ -28,6 +28,9 @@ dist-ssr
 firebase-debug.log
 firestore-debug.log
 
+# Persistenter Emulator-Stand (lokale Test-Sandbox)
+.emulator-data/
+
 # Umgebungsvariablen (NIEMALS einchecken!)
 .env
 .env.local

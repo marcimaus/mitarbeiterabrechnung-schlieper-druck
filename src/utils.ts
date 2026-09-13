@@ -1,6 +1,6 @@
 // Allgemeine Helfer-Funktionen
 
-import type { Abrechnungsperiode } from './types';
+import type { Abrechnungsperiode, Lieferadresse, Mitarbeiter } from './types';
 
 export function nameMitFestgehaltSymbol(m: { name: string; hatFestgehalt?: boolean }): string {
   return m.hatFestgehalt ? `🔒 ${m.name}` : m.name;
@@ -95,4 +95,57 @@ export function effektiverStandardAustraegerId(
     if (snap) return snap.standardAustraegerId;
   }
   return tg.standardAustraegerId;
+}
+
+/** Quelle der für eine Lieferung maßgeblichen Adresse. */
+export type LieferadresseQuelle = 'teilgebiet' | 'abweichend' | 'wohnadresse';
+
+export interface EffektiveLieferadresse {
+  quelle: LieferadresseQuelle;
+  adresse: Lieferadresse;
+}
+
+/** Eine Lieferadresse gilt als befüllt, wenn Straße oder Ort gesetzt sind. */
+function hatAdresse(a: Lieferadresse | undefined | null): a is Lieferadresse {
+  return !!a && (!!a.strasse?.trim() || !!a.ort?.trim());
+}
+
+/**
+ * Ermittelt die für eine Lieferung an einen Mitarbeiter in ein konkretes
+ * Teilgebiet maßgebliche Adresse. Reihenfolge (Vorrang absteigend):
+ *   1. abweichende Lieferadresse je Teilgebiet (für genau dieses TG)
+ *   2. allgemeine abweichende Lieferadresse (nur wenn aktiviert)
+ *   3. Wohnadresse des Mitarbeiters (Standard)
+ *
+ * `quelle` erlaubt der UI, eine abweichende Adresse hervorzuheben.
+ */
+export function effektiveLieferadresse(
+  ma: Pick<
+    Mitarbeiter,
+    | 'adresse'
+    | 'telefon'
+    | 'abweichendeLieferadresseAktiv'
+    | 'abweichendeLieferadresse'
+    | 'lieferadressenJeTeilgebiet'
+  >,
+  teilgebietId: string,
+): EffektiveLieferadresse {
+  const proTg = ma.lieferadressenJeTeilgebiet?.find(
+    (l) => l.teilgebietId === teilgebietId,
+  );
+  if (hatAdresse(proTg)) {
+    return { quelle: 'teilgebiet', adresse: proTg };
+  }
+  if (ma.abweichendeLieferadresseAktiv && hatAdresse(ma.abweichendeLieferadresse)) {
+    return { quelle: 'abweichend', adresse: ma.abweichendeLieferadresse };
+  }
+  return {
+    quelle: 'wohnadresse',
+    adresse: {
+      strasse: ma.adresse.strasse,
+      plz: ma.adresse.plz,
+      ort: ma.adresse.ort,
+      telefon: ma.telefon,
+    },
+  };
 }

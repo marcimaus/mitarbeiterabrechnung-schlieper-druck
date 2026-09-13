@@ -15,7 +15,7 @@
 // "Speichern"-Knopf. Bei Drucksaal/Fahrer ein Dropdown, das nichts
 // blockiert. Bei Ausfällen ein Modal mit den Detail-Feldern.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -51,6 +51,7 @@ import {
 } from '../lib/planung';
 import { getISOWeek, getISOYear } from '../lib/kalender';
 import { ferienInKw, feiertageInKw } from '../lib/ferien';
+import FerienlisterZusammentraeger from '../components/FerienlisterZusammentraeger';
 
 /**
  * Werktagsverteilung pro ISO-Woche für einen Datumsbereich.
@@ -232,6 +233,12 @@ const LABEL_COL_PX = 220;
 // vertikalen Scrollen sichtbar.
 const KW_HEADER_HEIGHT_PX = 50;
 const SECTION_STICKY_TOP_PX = KW_HEADER_HEIGHT_PX;
+
+// Set der KWs, die jeweils die LETZTE KW ihres Monats (Abrechnungsperiode)
+// sind. Über Context an alle Zeilen-Komponenten (TaetigkeitRow, ZusammenZeile)
+// verteilt, damit eine durchgehende, kräftige vertikale Trennlinie zwischen
+// den Monaten über ALLE Zeilen hinweg entsteht — nicht nur in der Kopfzeile.
+const MonatsGrenzeContext = createContext<Set<number>>(new Set());
 
 export default function PlanungScreen() {
   return (
@@ -450,6 +457,31 @@ function PlanungContent() {
     for (const a of ausgaben) if (a.jahr === jahr) m.set(a.kw, a);
     return m;
   }, [ausgaben, jahr]);
+
+  // KWs, die jeweils die letzte KW ihres Monats sind → dort rechts eine
+  // kräftige vertikale Trennlinie über alle Zeilen (siehe MonatsGrenzeContext).
+  const monatsGrenzeKws = useMemo(() => {
+    const s = new Set<number>();
+    for (const kw of kws) {
+      const p = periodeNachKw.get(kw);
+      if (!p) continue;
+      const next = periodeNachKw.get(kw + 1);
+      if (!next || next.id !== p.id) s.add(kw);
+    }
+    return s;
+  }, [kws, periodeNachKw]);
+
+  // Erste KW des laufenden Monats (= Abrechnungsperiode, die die heutige
+  // KW enthält). Für den „Aktueller Monat"-Button (Scroll-Ziel).
+  const ersteKwAktuellerMonat = useMemo(() => {
+    for (const p of abrechnungsperioden) {
+      if (p.jahr !== currentKW.jahr) continue;
+      if (p.kalenderwochen.includes(currentKW.kw)) {
+        return Math.min(...p.kalenderwochen);
+      }
+    }
+    return currentKW.kw;
+  }, [abrechnungsperioden, currentKW.jahr, currentKW.kw]);
 
   // ---- Stammdaten-Subsets ----
   const drucksaalMa = useMemo(
@@ -709,6 +741,9 @@ function PlanungContent() {
   // ---- Wechselplan-Modal-State ----
   const [wechselModal, setWechselModal] = useState<{ teilgebietId: string } | null>(null);
 
+  // ---- Ferienliste-Druckansicht ----
+  const [showFerienliste, setShowFerienliste] = useState(false);
+
   // ---- Klappzustand der Sektionen ----
   // Drucksaal/Fahrer/Zusammenträger sind standardmäßig eingeklappt — diese
   // werden seltener bearbeitet als Urlaub und Ausfälle.
@@ -781,6 +816,27 @@ function PlanungContent() {
           >
             📅 Aktuelle KW
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              // Wie „Aktuelle KW", aber Scroll-Ziel ist die erste KW des
+              // laufenden Monats → alle Ausgaben des Monats werden sichtbar.
+              if (jahr !== currentKW.jahr) {
+                didScrollRef.current = null;
+                setJahr(currentKW.jahr);
+              } else {
+                const el = scrollRef.current;
+                if (el) {
+                  const idx = kws.indexOf(ersteKwAktuellerMonat);
+                  if (idx >= 0) el.scrollLeft = idx * KW_COL_PX;
+                }
+              }
+            }}
+            className="text-xs border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 rounded-lg px-2.5 py-1 font-medium"
+            title="Alle Ausgaben des aktuellen Monats anzeigen"
+          >
+            🗓 Aktueller Monat
+          </button>
           <label className="text-sm text-gray-600">Jahr:</label>
           <select
             value={jahr}
@@ -820,6 +876,7 @@ function PlanungContent() {
         className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-auto"
         style={{ maxHeight: 'calc(100vh - 180px)' }}
       >
+        <MonatsGrenzeContext.Provider value={monatsGrenzeKws}>
         <div style={{ minWidth: LABEL_COL_PX + kws.length * KW_COL_PX }}>
           <KwHeader
             kws={kws}
@@ -838,6 +895,16 @@ function PlanungContent() {
             }
             sublabel="Niedersachsen"
             kws={kws}
+            labelExtra={
+              <button
+                type="button"
+                onClick={() => setShowFerienliste(true)}
+                className="text-[10px] border border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-800 rounded px-1.5 py-0.5 font-medium whitespace-nowrap"
+                title="Ferienliste für Zusammenträger drucken (An-/Abmeldung)"
+              >
+                📋 Ferienliste
+              </button>
+            }
             renderCell={(kw) => <FerienFeiertagZelle jahr={jahr} kw={kw} />}
           />
 
@@ -1339,6 +1406,36 @@ function PlanungContent() {
                 const tg = teilgebietById.get(plan.teilgebietId);
                 if (!tg) return null;
                 const istVirtuell = plan.id.startsWith('virtual-');
+                // Sublabel: Nachfolger + die KWs des geplanten Wechsels
+                // (letzte Ausgabe des bisherigen / ab Ausgabe des neuen).
+                const wechselName = plan.neuerAustraegerId
+                  ? `→ ${mitarbeiterById.get(plan.neuerAustraegerId)?.name ?? '?'}`
+                  : istVirtuell
+                  ? 'kein Standardausträger'
+                  : 'kein Nachfolger';
+                const kwInfoTeile: string[] = [];
+                if (plan.letzteAusgabeKw != null) {
+                  kwInfoTeile.push(
+                    `letzte KW${plan.letzteAusgabeKw}${
+                      plan.letzteAusgabeJahr && plan.letzteAusgabeJahr !== jahr
+                        ? `/${plan.letzteAusgabeJahr}`
+                        : ''
+                    }`,
+                  );
+                }
+                if (plan.abAusgabeKw != null) {
+                  kwInfoTeile.push(
+                    `ab KW${plan.abAusgabeKw}${
+                      plan.abAusgabeJahr && plan.abAusgabeJahr !== jahr
+                        ? `/${plan.abAusgabeJahr}`
+                        : ''
+                    }`,
+                  );
+                }
+                const wechselSublabel =
+                  kwInfoTeile.length > 0
+                    ? `${wechselName} · ${kwInfoTeile.join(', ')}`
+                    : wechselName;
                 return (
                   <TaetigkeitRow
                     key={plan.id}
@@ -1352,24 +1449,28 @@ function PlanungContent() {
                         tg.name
                       )
                     }
-                    sublabel={
-                      plan.neuerAustraegerId
-                        ? `→ ${mitarbeiterById.get(plan.neuerAustraegerId)?.name ?? '?'}`
-                        : istVirtuell
-                        ? 'kein Standardausträger'
-                        : 'kein Nachfolger'
+                    sublabel={wechselSublabel}
+                    sublabelNode={
+                      !plan.neuerAustraegerId ? (
+                        <>
+                          <span className="text-red-600 font-medium">{wechselName}</span>
+                          {kwInfoTeile.length > 0 && (
+                            <span className="text-gray-500"> · {kwInfoTeile.join(', ')}</span>
+                          )}
+                        </>
+                      ) : undefined
                     }
                     kws={kws}
                     labelExtra={
                       darfWechselplanPflegen ? (
-                        <span className="flex items-center gap-0.5">
+                        <span className="flex items-center gap-1">
                           <button
                             type="button"
                             onClick={() => setWechselModal({ teilgebietId: plan.teilgebietId })}
-                            className="text-[11px] text-gray-300 hover:text-blue-600 leading-none px-1"
+                            className="text-xs text-blue-700 bg-blue-100 hover:bg-blue-200 border border-blue-300 rounded px-1.5 py-0.5 leading-none font-medium"
                             title="Wechselplan bearbeiten"
                           >✎</button>
-                          {!istVirtuell && (
+                          {!istVirtuell && istAdmin && (
                             <button
                               type="button"
                               onClick={async () => {
@@ -1433,7 +1534,6 @@ function PlanungContent() {
                         kw={kw}
                         einsatz={ausfallIdx.get(`${kw}-${plan.teilgebietId}`)}
                         mitarbeiterById={mitarbeiterById}
-                        onClickPlan={() => setWechselModal({ teilgebietId: plan.teilgebietId })}
                         onClickAusfall={() => setAusfallModal({ kw, teilgebietId: plan.teilgebietId })}
                       />
                     )}
@@ -1443,7 +1543,18 @@ function PlanungContent() {
           {/* Doppelpfad „dauerhaft unbesetzte TGs" entfernt — siehe
               effektivePlaene oben. */}
         </div>
+        </MonatsGrenzeContext.Provider>
       </div>
+
+      {/* ---- Ferienliste Zusammenträger (Druckansicht) ---- */}
+      {showFerienliste && (
+        <FerienlisterZusammentraeger
+          jahr={jahr}
+          zusammenFest={zusammenFest}
+          zusammenAbruf={zusammenAbruf}
+          onClose={() => setShowFerienliste(false)}
+        />
+      )}
 
       {/* ---- Wechselplan-Modal ---- */}
       {wechselModal && (
@@ -1458,6 +1569,7 @@ function PlanungContent() {
           maxKwImJahr={kws[kws.length - 1]}
           jahr={jahr}
           abrechnungsperioden={abrechnungsperioden}
+          istAdmin={istAdmin}
           onClose={() => setWechselModal(null)}
         />
       )}
@@ -1661,6 +1773,7 @@ function SectionHeader({
 function TaetigkeitRow({
   label,
   sublabel,
+  sublabelNode,
   labelColor,
   labelExtra,
   kws,
@@ -1668,11 +1781,16 @@ function TaetigkeitRow({
 }: {
   label: React.ReactNode;
   sublabel?: string;
+  /** Optional gerenderte Unterzeile — überschreibt die Text-Darstellung von
+   *  `sublabel` (z. B. um nur einen Teil rot zu färben). `sublabel` dient
+   *  dann nur noch als title-Tooltip. */
+  sublabelNode?: React.ReactNode;
   labelColor?: string;
   labelExtra?: React.ReactNode;
   kws: number[];
   renderCell: (kw: number) => React.ReactNode;
 }) {
+  const monatsGrenzeKws = useContext(MonatsGrenzeContext);
   return (
     <div className="flex border-b border-gray-100 hover:bg-gray-50/30">
       <div
@@ -1687,8 +1805,8 @@ function TaetigkeitRow({
         )}
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-gray-800 truncate">{label}</div>
-          {sublabel && (
-            <div className="text-[10px] text-gray-500 truncate" title={sublabel}>{sublabel}</div>
+          {(sublabelNode || sublabel) && (
+            <div className="text-[10px] truncate text-gray-500" title={sublabel}>{sublabelNode ?? sublabel}</div>
           )}
         </div>
         {labelExtra && <div className="shrink-0">{labelExtra}</div>}
@@ -1696,7 +1814,11 @@ function TaetigkeitRow({
       {kws.map((kw) => (
         <div
           key={kw}
-          className="border-r border-gray-100 p-0.5"
+          className={`p-0.5 ${
+            monatsGrenzeKws.has(kw)
+              ? 'border-r-2 border-r-gray-400'
+              : 'border-r border-gray-100'
+          }`}
           style={{ width: KW_COL_PX, minWidth: KW_COL_PX }}
         >
           {renderCell(kw)}
@@ -1881,6 +2003,7 @@ function ZusammenZeile({
   onVerschieben: (richtung: -1 | 1) => void;
   onToggleAbruf: () => void;
 }) {
+  const monatsGrenzeKws = useContext(MonatsGrenzeContext);
   return (
     <div className={`flex border-b border-gray-100 ${hintergrund}`}>
       <div
@@ -1929,7 +2052,11 @@ function ZusammenZeile({
         return (
           <div
             key={kw}
-            className="border-r border-gray-100 p-0.5"
+            className={`p-0.5 ${
+              monatsGrenzeKws.has(kw)
+                ? 'border-r-2 border-r-gray-400'
+                : 'border-r border-gray-100'
+            }`}
             style={{ width: KW_COL_PX, minWidth: KW_COL_PX }}
           >
             <ZusammenCell
@@ -2625,10 +2752,13 @@ function AusfallChip({
     aktuellerStandard &&
     eintrag.standardAustraegerSnapshot !== aktuellerStandard;
 
+  const istAbgekoppelt = eintrag.vonGruppeAbgekoppelt === true;
   const bg = hatSpringer
     ? 'bg-green-100 border-green-300 text-green-800'
     : 'bg-red-100 border-red-300 text-red-800';
-  const icon = hatSpringer ? '🟢' : '🔴';
+  // 🔌 = aus Dauer-Springer-Gruppe abgekoppelt (Springer fällt in dieser KW
+  // aus), 🟢 = besetzt, 🔴 = unbesetzt/Ausfall.
+  const icon = istAbgekoppelt ? '🔌' : hatSpringer ? '🟢' : '🔴';
 
   const tgName = tg?.name ?? '?';
   const tgKurz = kuerzeTgName(tgName);
@@ -2646,6 +2776,7 @@ function AusfallChip({
         `Ausfall in KW ${eintrag.kw}${eintrag.ausfallBisKw ? ` bis KW ${eintrag.ausfallBisKw}` : ''}\n` +
         `Standard: ${eintrag.standardAustraegerSnapshot ? mitarbeiterById.get(eintrag.standardAustraegerSnapshot)?.name ?? '?' : '—'}\n` +
         (springerName ? `Springer: ${mitarbeiterById.get(eintrag.mitarbeiterId!)?.name ?? '?'}\n` : '') +
+        (istAbgekoppelt ? 'Aus Dauer-Springer-Gruppe abgekoppelt (Springer-Ausfall in dieser KW)\n' : '') +
         (eintrag.kommentar ? `Kommentar: ${eintrag.kommentar}` : '')
       }
     >
@@ -2735,6 +2866,10 @@ function AusfallModal({
   const [bisKw, setBisKw] = useState<number | null>(initialBisKw);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Kommentar für die Abkopplung einer einzelnen KW aus einer Mehrwochen-
+  // Gruppe (z. B. „Springer X krank"). Wird in der Abkopplungs-Aktion
+  // verwendet — ist unabhängig vom Gruppen-Kommentar `kommentar`.
+  const [abkopplungKommentar, setAbkopplungKommentar] = useState('');
 
   const standardChanged =
     standardSnapshot &&
@@ -2765,6 +2900,12 @@ function AusfallModal({
     if (existing.autoVomWechselplan === true) {
       return [existing];
     }
+    // Abgekoppelte Einzeleintragungen (z. B. Dauerspringer in dieser KW
+    // erkrankt) sind nicht mehr Teil ihrer Ursprungsgruppe — sie werden
+    // als Single-Cell behandelt.
+    if (existing.vonGruppeAbgekoppelt === true) {
+      return [existing];
+    }
     // Single-Cell-Ausfälle (kein ausfallBisKw) sind voneinander unabhängig —
     // auch wenn dasselbe TG in mehreren KWs jeweils einzeln erfasst ist.
     // Ohne diese Guard würden ALLE Single-Cell-Ausfälle desselben TG über
@@ -2781,7 +2922,12 @@ function AusfallModal({
         (e.ausfallBisKw ?? null) === (existing.ausfallBisKw ?? null) &&
         // Auto-Springer-Einsätze (L) niemals als Geschwister
         // einsammeln — sie werden vom WechselModal separat verwaltet.
-        e.autoVomWechselplan !== true,
+        e.autoVomWechselplan !== true &&
+        // Abgekoppelte Einzeleintragungen sind nicht mehr Gruppen-Mitglied,
+        // auch wenn sie ein altes ausfallBisKw von der Ursprungsgruppe
+        // tragen sollten (Belt & Suspenders — beim Abkoppeln wird das Feld
+        // ohnehin auf undefined gesetzt).
+        e.vonGruppeAbgekoppelt !== true,
     );
   }
 
@@ -2824,6 +2970,36 @@ function AusfallModal({
         return;
       }
     }
+    // Schutz für abgekoppelte Einzeleintragungen: KWs im neuen Bereich, die
+    // eine separate, von einer früheren Gruppe abgekoppelte Eintragung
+    // tragen, dürfen vom Gruppen-Save NICHT überschrieben werden. Der User
+    // bekommt eine Warnung und kann abbrechen oder bestätigen.
+    const vonRange = kw;
+    const bisRange = bisKw == null ? kw : Math.min(bisKw, maxKwImJahr);
+    const abgekoppelteImBereich = einsaetzeImJahr.filter(
+      (e) =>
+        e.teilgebietId === selectedTgId &&
+        e.vonGruppeAbgekoppelt === true &&
+        e.jahr === jahr &&
+        e.kw >= vonRange &&
+        e.kw <= bisRange,
+    );
+    if (abgekoppelteImBereich.length > 0) {
+      const liste = abgekoppelteImBereich
+        .sort((a, b) => a.kw - b.kw)
+        .map((e) => `KW ${e.kw}${e.kommentar ? ` („${e.kommentar}")` : ''}`)
+        .join(', ');
+      if (
+        !confirm(
+          `⚠ Im neuen Bereich gibt es abgekoppelte Einzeleintragung(en):\n${liste}\n\n` +
+            `Diese bleiben unverändert (Dauer-Springer wird in diesen KWs nicht eingetragen).\n\n` +
+            `Trotzdem speichern?`,
+        )
+      ) {
+        return;
+      }
+    }
+
     setSaving(true);
     setError(null);
     try {
@@ -2843,12 +3019,17 @@ function AusfallModal({
           .map((e) => loescheEinsatz(e.id)),
       );
 
+      // KWs, die durch eine separate abgekoppelte Eintragung belegt sind,
+      // vom Schreib-Loop ausnehmen.
+      const abgekoppelteKws = new Set(abgekoppelteImBereich.map((e) => e.kw));
+
       // Pro Ziel-KW: Ausgabe sicherstellen + Einsatz upserten.
       const typ: 'springer' | 'ungeklärt' = springerId ? 'springer' : 'ungeklärt';
       const ausfallBisJahr = bisKw == null ? undefined : jahr;
       const ausfallBisKw = bisKw == null ? undefined : bis;
 
       for (let k = von; k <= bis; k++) {
+        if (abgekoppelteKws.has(k)) continue;
         const ausgabeId = await getOrCreateAusgabe(jahr, k, parameter);
         await setzeEinsatz({
           ausgabeId,
@@ -2861,6 +3042,10 @@ function AusfallModal({
           externerLink: externerLink.trim() || undefined,
           ausfallBisJahr,
           ausfallBisKw,
+          // Explizit löschen — falls dieser Eintrag vorher als Single-Cell
+          // abgekoppelt war und jetzt regulär (re-)gespeichert wird, soll
+          // das Flag verschwinden, sonst hängt das 🔌-Icon.
+          vonGruppeAbgekoppelt: undefined,
           standardAustraegerSnapshot: standardSnapshot,
         });
       }
@@ -2868,6 +3053,57 @@ function AusfallModal({
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Speichern fehlgeschlagen.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /**
+   * Koppelt die aktuell bearbeitete KW aus einer Mehrwochen-Gruppe ab
+   * (Anwendungsfall: Dauer-Springer fällt in dieser KW aus).
+   * Der Einsatz wird auf „unbesetzt" gesetzt mit eigenem Kommentar und aus
+   * der Gruppe genommen (`ausfallBisKw` wird geleert + Flag gesetzt).
+   * Andere Gruppen-KWs bleiben unberührt.
+   */
+  async function handleAbkoppeln() {
+    if (!existing || !selectedTgId) return;
+    if (istVergangeneKw(jahr, kw)) {
+      if (
+        !confirm(
+          `⚠ KW ${kw}/${jahr} liegt in der Vergangenheit.\n\n` +
+            `Die Abkopplung wirkt sich direkt auf die Abrechnung dieser KW aus.\n\n` +
+            `Trotzdem abkoppeln?`,
+        )
+      ) {
+        return;
+      }
+    }
+    if (!parameter) {
+      setError('Parameter noch nicht geladen — bitte einen Moment warten und erneut versuchen.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const ausgabeId = await getOrCreateAusgabe(jahr, kw, parameter);
+      await setzeEinsatz({
+        ausgabeId,
+        jahr,
+        kw,
+        teilgebietId: selectedTgId,
+        mitarbeiterId: null,
+        typ: 'ungeklärt',
+        kommentar: abkopplungKommentar.trim() || undefined,
+        externerLink: existing.externerLink,
+        // Single-Cell ab jetzt — diese KW ist nicht mehr Teil der Gruppe.
+        ausfallBisJahr: undefined,
+        ausfallBisKw: undefined,
+        vonGruppeAbgekoppelt: true,
+        standardAustraegerSnapshot: existing.standardAustraegerSnapshot ?? null,
+      });
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Abkoppeln fehlgeschlagen.');
     } finally {
       setSaving(false);
     }
@@ -2966,6 +3202,55 @@ function AusfallModal({
             Prüfen, ob der ursprüngliche Plan noch passt.
           </div>
         )}
+
+        {/* Abkopplung einer einzelnen KW aus einer Mehrwochen-Gruppe:
+            Sichtbar nur, wenn der aktuelle Einsatz Teil einer Gruppe (>1) ist,
+            nicht selbst schon abgekoppelt, nicht gesperrt und ein Springer
+            vorhanden ist (sonst nichts zum „Ausfall" zu erklären).
+            Anwendungsfall: Dauer-Springer fällt in dieser KW aus
+            (z. B. erkrankt). Diese KW wird auf „unbesetzt" mit eigenem
+            Kommentar gesetzt; die übrigen KWs der Gruppe bleiben unverändert. */}
+        {(() => {
+          if (!existing || istGesperrt) return null;
+          if (existing.vonGruppeAbgekoppelt === true) return null;
+          const gruppe = findeGruppe();
+          if (gruppe.length < 2) return null;
+          const springerName = existing.mitarbeiterId
+            ? mitarbeiterById.get(existing.mitarbeiterId)?.name?.split(' ')[0]
+            : null;
+          const platzhalter = springerName
+            ? `z. B. „Springer ${springerName} erkrankt"`
+            : 'Grund für die Abkopplung (optional)';
+          return (
+            <div className="rounded-lg border border-red-300 bg-red-50 p-3 space-y-2">
+              <div className="text-xs text-red-900">
+                <strong>🔌 Diese KW aus dem Dauer-Springer abkoppeln</strong>
+                <div className="mt-0.5 text-red-800">
+                  Der aktuelle Einsatz ist Teil einer Mehrwochen-Gruppe
+                  ({gruppe.length} KWs). Abkoppeln setzt nur diese KW auf
+                  unbesetzt — die übrigen Wochen bleiben mit dem Springer.
+                </div>
+              </div>
+              <textarea
+                value={abkopplungKommentar}
+                onChange={(e) => setAbkopplungKommentar(e.target.value)}
+                placeholder={platzhalter}
+                className="w-full border border-red-300 rounded px-2 py-1.5 text-sm bg-white"
+                rows={2}
+              />
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleAbkoppeln}
+                  disabled={saving}
+                  className="bg-red-600 hover:bg-red-700 disabled:bg-gray-300 text-white text-xs font-medium px-3 py-1.5 rounded"
+                >
+                  {saving ? 'Koppele ab…' : '🔌 Diese KW abkoppeln'}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Springer — nur MAs mit Freigabe für das gewählte TG.
             Der bisher gespeicherte Springer wird zur Sicherheit immer
@@ -3147,7 +3432,6 @@ function WechselCell({
   kw,
   einsatz,
   mitarbeiterById,
-  onClickPlan,
   onClickAusfall,
 }: {
   plan: StandardAustraegerWechselPlan;
@@ -3156,9 +3440,11 @@ function WechselCell({
   /** Konkreter Einsatz für (kw, tg) — typischerweise Lücken- oder Springer-Einsatz. */
   einsatz: Einsatz | undefined;
   mitarbeiterById: Map<string, Mitarbeiter>;
-  /** Klick auf „letzte" / „neue" Markierungen → Wechselplan-Modal. */
-  onClickPlan: () => void;
-  /** Klick auf Lücken-/Springer-Chips → Ausfall-Modal für diese KW. */
+  /**
+   * Klick auf JEDE Zelle → Ausfall-Modal für diese KW. Der Wechselplan
+   * selbst wird ausschließlich über das ✎ in der Seitenleiste (Zeilenkopf)
+   * bearbeitet — nicht mehr über die gelben/amber Plan-Marker-Zellen.
+   */
   onClickAusfall: () => void;
 }) {
   // 4 Zustände pro Zelle:
@@ -3225,12 +3511,17 @@ function WechselCell({
     );
   }
   if (cmpLetzte === 0) {
+    // Letzte Ausgabe des bisherigen Austrägers — TG ist BESETZT (durch den
+    // alten Standardausträger), daher grüner Hintergrund. Das ⏳-Icon
+    // signalisiert „Wechselplan: letzte Ausgabe vor Wechsel". Klick erfasst
+    // einen Ausfall/Springer für diese KW; den Wechselplan bearbeitet man
+    // über das ✎ links.
     return (
       <button
         type="button"
-        onClick={onClickPlan}
-        className="w-full text-[11px] font-medium py-1 rounded border bg-yellow-100 border-yellow-300 text-yellow-900 leading-tight"
-        title="Letzte Ausgabe des bisherigen Austrägers — Klick öffnet den Wechselplan"
+        onClick={onClickAusfall}
+        className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
+        title="Letzte Ausgabe des bisherigen Austrägers (Wechselplan-Beginn) — Klick erfasst einen Ausfall/Springer für diese KW. Wechselplan über ✎ links bearbeiten."
       >
         ⏳ letzte
       </button>
@@ -3306,19 +3597,18 @@ function WechselCell({
     );
   }
   // Erste Ausgabe des neuen Standardausträgers bei einem Wechsel von
-  // „unbesetzt → neu": Es gibt keinen bisherigen Austräger und damit
-  // keinen gelben „⏳ letzte"-Chip. Damit der geplante Wechsel trotzdem
-  // erkennbar ist (sonst wäre alles grün), wird die erste KW ab
-  // „abAusgabe" hervorgehoben — gestrichelter amber-Rahmen + 🔁.
-  // Klick öffnet den Wechselplan (analog zum gelben Chip beim besetzten
-  // TG). Greift nur, wenn ein neuer Austräger geplant ist.
+  // „unbesetzt → neu": TG ist ab dieser KW BESETZT (durch den neuen
+  // Austräger), daher grüner Hintergrund (Farbe = Besetzungs-Status). Das
+  // 🔁-Icon vor dem Austräger-Kürzel kennzeichnet „Wechselplan: neue
+  // Übernahme beginnt hier". Greift nur, wenn ein neuer Austräger geplant
+  // ist.
   if (!hatLetzte && cmpAb === 0 && plan.neuerAustraegerId) {
     return (
       <button
         type="button"
-        onClick={onClickPlan}
-        className="w-full text-[11px] font-medium py-1 rounded border-2 border-dashed border-amber-500 bg-amber-100 text-amber-900 leading-tight"
-        title={`Wechsel: ${ma?.name ?? '?'} übernimmt ab dieser Ausgabe als neuer Standardausträger — wird beim Monatswechsel vorgeschlagen. Klick öffnet den Wechselplan.`}
+        onClick={onClickAusfall}
+        className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
+        title={`Wechsel: ${ma?.name ?? '?'} übernimmt ab dieser Ausgabe als neuer Standardausträger — wird beim Monatswechsel vorgeschlagen. Klick erfasst einen Ausfall/Springer für diese KW. Wechselplan über ✎ links bearbeiten.`}
       >
         🔁 {kurzname}
       </button>
@@ -3353,6 +3643,7 @@ function WechselModal({
   maxKwImJahr,
   jahr,
   abrechnungsperioden,
+  istAdmin,
   onClose,
 }: {
   teilgebietId: string;
@@ -3369,6 +3660,8 @@ function WechselModal({
    *  der `letzteAusgabe` liegt — bis dorthin wird der neue Austräger als
    *  Springer vorausgefüllt. */
   abrechnungsperioden: import('../types').Abrechnungsperiode[];
+  /** Nur der Admin darf einen Wechselplan löschen. */
+  istAdmin: boolean;
   onClose: () => void;
 }) {
   // Bei einem TG ohne Standardausträger gibt es keine letzte Ausgabe
@@ -3402,12 +3695,16 @@ function WechselModal({
     return list;
   }, [freigegeben, neuerMa, austraegerMa]);
 
-  // H: Vorjahr entfällt — Vergangenheit ist nicht mehr planbar.
+  // H: Vorjahr entfällt; im laufenden Jahr sind ab Beginn des aktuellen
+  // Monats auch bereits vergangene Ausgaben wählbar (für nachträgliche
+  // Wechsel-Dokumentation — siehe ersteKwAktuellerMonat).
   const jahrOptions = useMemo(() => [jahr, jahr + 1, jahr + 2], [jahr]);
 
-  // Verfügbare KWs in Abhängigkeit vom gewählten Jahr — verbergen alles,
-  // was vor der aktuellen KW liegt. Für „ab Ausgabe" gilt zusätzlich
-  // „nach der letzten Ausgabe" (separat im Filter unten gehandhabt).
+  // Verfügbare KWs in Abhängigkeit vom gewählten Jahr. Im laufenden Jahr
+  // ist die untere Grenze die erste KW des aktuellen Monats (statt strikt
+  // „nach der aktuellen KW") — so lassen sich auch vergangene Ausgaben des
+  // laufenden Monats als „letzte Ausgabe" wählen. Für „ab Ausgabe" gilt
+  // zusätzlich „nach der letzten Ausgabe" (separat im Filter unten).
   const currentKw = useMemo(() => {
     const now = new Date();
     const start = Date.UTC(now.getUTCFullYear(), 0, 1);
@@ -3415,16 +3712,23 @@ function WechselModal({
     return Math.max(1, Math.ceil(dayOfYear / 7));
   }, []);
   const currentJahr = new Date().getFullYear();
+  // Erste KW des aktuellen Monats (= Abrechnungsperiode mit der heutigen KW).
+  const ersteKwAktuellerMonat = useMemo(() => {
+    const p = abrechnungsperioden.find(
+      (pp) => pp.jahr === currentJahr && pp.kalenderwochen.includes(currentKw),
+    );
+    return p && p.kalenderwochen.length > 0 ? Math.min(...p.kalenderwochen) : currentKw;
+  }, [abrechnungsperioden, currentJahr, currentKw]);
   function verfuegbareKws(forJahr: number): number[] {
     const all = Array.from({ length: maxKwImJahr }, (_, i) => i + 1);
     if (forJahr < currentJahr) return [];
     if (forJahr > currentJahr) return all;
-    return all.filter((k) => k > currentKw);
+    return all.filter((k) => k >= ersteKwAktuellerMonat);
   }
   const letzteKwOptionen = useMemo(
     () => (letzteJahr != null ? verfuegbareKws(letzteJahr) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [letzteJahr, maxKwImJahr, currentJahr, currentKw],
+    [letzteJahr, maxKwImJahr, currentJahr, currentKw, ersteKwAktuellerMonat],
   );
   const abKwOptionen = useMemo(() => {
     const list = abJahr != null ? verfuegbareKws(abJahr) : [];
@@ -3436,7 +3740,7 @@ function WechselModal({
       return cmpJahrKw(abJahr, k, letzteJahr, letzteKw) > 0;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [abJahr, letzteJahr, letzteKw, maxKwImJahr, currentJahr, currentKw]);
+  }, [abJahr, letzteJahr, letzteKw, maxKwImJahr, currentJahr, currentKw, ersteKwAktuellerMonat]);
 
   // O: Sicherstellen, dass State und Dropdown-Optionen synchron sind.
   // Der Browser zeigt bei <select value=X> automatisch die erste Option
@@ -3510,13 +3814,18 @@ function WechselModal({
 
     setSaving(true);
     try {
+      // Ohne neuen Standardausträger sind „ab Ausgabe (Jahr/KW)" inhaltlich
+      // gegenstandslos — zwingend leer schreiben, sonst hängt im Plan ein
+      // verwaister Übernahme-Termin (führt zum Fragezeichen-Marker).
+      const abJahrFinal = neuerMa ? abJahr ?? undefined : undefined;
+      const abKwFinal = neuerMa ? abKw ?? undefined : undefined;
       await setzeAustraegerwechselPlan({
         teilgebietId,
         letzteAusgabeJahr: letzteJahr ?? undefined,
         letzteAusgabeKw: letzteKw ?? undefined,
         neuerAustraegerId: neuerMa ?? undefined,
-        abAusgabeJahr: abJahr ?? undefined,
-        abAusgabeKw: abKw ?? undefined,
+        abAusgabeJahr: abJahrFinal,
+        abAusgabeKw: abKwFinal,
         kommentar: kommentar.trim() || undefined,
         externerLink: externerLink.trim() || undefined,
       });
@@ -3772,7 +4081,18 @@ function WechselModal({
           </label>
           <select
             value={neuerMa ?? ''}
-            onChange={(e) => setNeuerMa(e.target.value || null)}
+            onChange={(e) => {
+              const v = e.target.value || null;
+              setNeuerMa(v);
+              // Wenn der Nachfolger entfernt wird („noch unbekannt"), sind
+              // „ab Ausgabe (Jahr/KW)" inhaltlich gegenstandslos — direkt
+              // mit-leeren, damit das Formular keinen verwaisten Plan-Beginn
+              // zeigt und beim Speichern keine Werte zurückbleiben.
+              if (v === null) {
+                setAbJahr(null);
+                setAbKw(null);
+              }
+            }}
             className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
           >
             <option value="">— noch unbekannt —</option>
@@ -3867,7 +4187,7 @@ function WechselModal({
           >
             {saving ? 'Speichert…' : existing ? 'Speichern' : 'Anlegen'}
           </button>
-          {existing && (
+          {existing && istAdmin && (
             <button
               type="button"
               onClick={loeschen}

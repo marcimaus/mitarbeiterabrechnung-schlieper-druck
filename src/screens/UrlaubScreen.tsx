@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import UrlaubAuswertungDruck from '../components/UrlaubAuswertungDruck';
 import { useApp } from '../context/AppContext';
 import { urlaubsListenerProMa } from '../lib/planung';
 import { URLAUB_STATUS_LABELS, type UrlaubsEintrag } from '../types';
@@ -82,6 +83,7 @@ function UrlaubScreenInhalt() {
 
   const [eintraege, setEintraege] = useState<UrlaubsEintrag[] | null>(null);
   const [detail, setDetail] = useState<UrlaubGruppe | null>(null);
+  const [showAuswertung, setShowAuswertung] = useState(false);
 
   useEffect(() => {
     if (!selectedMaId) {
@@ -285,6 +287,22 @@ function UrlaubScreenInhalt() {
             ✕ Filter zurücksetzen
           </button>
         )}
+
+        <button
+          type="button"
+          onClick={() => setShowAuswertung(true)}
+          disabled={filterJahr === 'alle'}
+          title={
+            filterJahr === 'alle'
+              ? 'Bitte ein konkretes Jahr wählen'
+              : selectedMa
+                ? `Druckbare Urlaubs-Auswertung für ${selectedMa.name} im Jahr ${filterJahr} (Bestätigung für den Mitarbeiter)`
+                : `Druckbare Urlaubs-Auswertung aller Mitarbeiter im Jahr ${filterJahr}`
+          }
+          className="ml-auto bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded text-sm font-medium hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          🖨️ Auswertung{!selectedMa && filterJahr !== 'alle' ? ' (alle MA)' : ''}
+        </button>
       </div>
 
       {/* Inhalt */}
@@ -419,6 +437,22 @@ function UrlaubScreenInhalt() {
 
       {detail && (
         <UrlaubDetailModal gruppe={detail} onClose={() => setDetail(null)} />
+      )}
+
+      {showAuswertung && filterJahr !== 'alle' && (
+        selectedMa && eintraege ? (
+          <UrlaubAuswertungDruck
+            jahr={parseInt(filterJahr, 10)}
+            einzel={{ ma: selectedMa, eintraege }}
+            onClose={() => setShowAuswertung(false)}
+          />
+        ) : !selectedMa ? (
+          <UrlaubAuswertungDruck
+            jahr={parseInt(filterJahr, 10)}
+            alle={{ mitarbeiter: auswahlbareMa }}
+            onClose={() => setShowAuswertung(false)}
+          />
+        ) : null
       )}
     </div>
   );

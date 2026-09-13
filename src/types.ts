@@ -170,6 +170,64 @@ export interface Mitarbeiter {
   /** Minijob-Kennzeichen: Warnung wenn Bruttolohn im Monat die Minijob-Grenze überschreitet. */
   istMinijob?: boolean;
   /**
+   * Sozialversicherungsnummer (12-stellig, z. B. „12 345678 A 901"). Wird für
+   * Verdienstbescheinigungen (Minijob) benötigt und auf der Bescheinigung
+   * mitgedruckt. Pflichtfeld für den Bescheinigungs-Druck.
+   */
+  sozialversicherungsNummer?: string;
+  /**
+   * Steuerliche Identifikationsnummer (11-stellig, vom Bundeszentralamt für
+   * Steuern vergeben). Wird für die Anmeldung beim Lohnbüro benötigt.
+   */
+  steuerId?: string;
+  /**
+   * Optionale Anmerkung, die — wenn nicht leer — auf die Verdienstbescheinigung
+   * mitgedruckt wird (z. B. „Tätigkeit unterbrochen vom 01.03.–15.03.2025").
+   * Leer = im Druck ausgeblendet.
+   */
+  verdienstbescheinigungAnmerkung?: string;
+  /**
+   * Rein internes Memo zur Verdienstbescheinigung — wird NICHT gedruckt.
+   * Dient als Notiz-Feld für Rückfragen / Spezialfälle.
+   */
+  verdienstbescheinigungInternesMemo?: string;
+  /**
+   * Ansprechpartner beim Arbeitsamt (Sachbearbeiter Bundesagentur für Arbeit).
+   * Wird im Tab gepflegt und kann optional als Adresskopf auf der
+   * Verdienstbescheinigung gedruckt werden.
+   */
+  arbeitsamtKontakt?: {
+    name?: string;
+    telefon?: string;
+    email?: string;
+    strasse?: string;
+    plz?: string;
+    ort?: string;
+  };
+  /** Kundennummer des MA bei der Bundesagentur für Arbeit. */
+  arbeitsamtKundennummer?: string;
+  /** Wenn true → Kundennummer erscheint in der Betreffzeile der Bescheinigung. */
+  arbeitsamtKundennummerDrucken?: boolean;
+  /** „Ihr Zeichen" der Bundesagentur für Arbeit (z. B. Aktenzeichen). */
+  arbeitsamtZeichen?: string;
+  /** Wenn true → „Ihr Zeichen" erscheint in der Betreffzeile. */
+  arbeitsamtZeichenDrucken?: boolean;
+  /**
+   * Steuerung des Adresskopf-Bereichs auf der Bescheinigung:
+   *   - 'arbeitsamt' → Name + Adresse aus `arbeitsamtKontakt` werden gedruckt
+   *   - 'eigene'    → Freie Adresse aus `verdienstbescheinigungAdresskopfEigene`
+   *   - 'keine'     → Adressfeld bleibt leer
+   * Default (undefined) = 'arbeitsamt' wenn Ansprechpartner vorhanden, sonst 'keine'.
+   */
+  verdienstbescheinigungAdresskopfMode?: 'arbeitsamt' | 'eigene' | 'keine';
+  /** Alternative Adresse für den Adresskopf (Modus 'eigene'). */
+  verdienstbescheinigungAdresskopfEigene?: {
+    name?: string;
+    strasse?: string;
+    plz?: string;
+    ort?: string;
+  };
+  /**
    * Individuelle Lohngrenze (€/Monat) — z. B. wegen weiterer Minijobs bei
    * anderen Arbeitgebern oder vertraglicher Höchstgrenze. Wenn der
    * Bruttolohn im Monat diese Grenze überschreitet, erscheint in der
@@ -178,6 +236,8 @@ export interface Mitarbeiter {
   lohngrenzeIndividuellEur?: number;
   /** Begründung / Vermerk zur individuellen Lohngrenze. */
   lohngrenzeIndividuellKommentar?: string;
+  /** Externer Link mit weiterer Dokumentation zur Lohngrenze (z. B. Google Drive, Mail-Thread). */
+  lohngrenzeIndividuellLink?: string;
   /**
    * Pauschaler Tätigkeitsbonus in Minuten — gilt PRO Ausgabe der Abrechnungsperiode.
    * Wird mit dem Stundensatz des MA vergütet. Beispiel: 60 Min und 4 Ausgaben in
@@ -555,6 +615,49 @@ export interface Abrechnungsperiode {
   erstelltAm: number;
 }
 
+// ---- Statistik (Seitenzahl & Beilagensumme je KW/Jahr) -----
+//
+// Zwei Matrix-Tabellen (Jahre horizontal, KW vertikal): Seitenzahl und
+// Beilagensumme. Alt-Daten (≤ 2025) werden einmalig importiert; ab 2026
+// liefert die App Vorschlagswerte, die manuell überschrieben werden können.
+// Gespeichert wird je (typ, jahr) ein Dokument mit einer Zell-Map (KW → Wert).
+
+export type StatistikTyp = 'seiten' | 'beilagen';
+
+export interface StatistikZelle {
+  /** Gespeicherter „Echt"-Wert; null/fehlend = leer (UI zeigt ggf. App-Vorschlag). */
+  wert: number | null;
+  /** Farbmarkierung — Hex-Farbe, korrespondiert mit einem Legenden-Eintrag. */
+  farbe?: string;
+  /** Freitext-Kommentar zu dieser Zelle (KW/Jahr). */
+  kommentar?: string;
+  /** Externer Link (z. B. Google-Drive-Ordner der erschienenen Ausgabe). */
+  link?: string;
+}
+
+export interface StatistikJahr {
+  id: string;                 // Doc-ID = `${typ}_${jahr}`
+  typ: StatistikTyp;
+  jahr: number;
+  zellen: Record<number, StatistikZelle>; // KW (1–53) → Zelle
+  aktualisiertAm: number;
+}
+
+export interface StatistikLegendeEintrag {
+  id: string;
+  farbe: string;              // Hex, z. B. "#fde68a"
+  text: string;              // Erklärung der Markierung
+}
+
+export interface StatistikMeta {
+  /** KW (1–53) → Bezeichnung der Ausgabe, z. B. „Osterausgabe". */
+  kwBezeichnungen: Record<number, string>;
+  /** KW (1–53) → Hintergrundfarbe der Bezeichnungs-Zelle (Hex; '' = keine). */
+  kwFarben?: Record<number, string>;
+  legendeSeiten: StatistikLegendeEintrag[];
+  legendeBeilagen: StatistikLegendeEintrag[];
+}
+
 // ---- Austrägerwechsel-Vorbereitung (entfernt) --------------
 //
 // Der separate Reiter „Austrägerwechsel vorbereiten" wurde abgeschafft —
@@ -632,6 +735,14 @@ export interface Einsatz {
    * unberührt.
    */
   autoVomWechselplan?: boolean;
+  /**
+   * Eintrag wurde aus einer übergeordneten Mehrwochen-Ausfall-Gruppe
+   * abgekoppelt (z. B. weil der Dauer-Springer in dieser KW erkrankt ist).
+   * Schützt die KW vor Überschreiben, wenn die Original-Gruppe später neu
+   * gespeichert wird, und kennzeichnet sie im AusfallChip mit eigenem Icon.
+   * Wird nur in Verbindung mit `typ='ungeklärt'` (unbesetzt) genutzt.
+   */
+  vonGruppeAbgekoppelt?: boolean;
   // Selbstmeldung durch den Austräger (ohne Login, via QR-Code)
   arbeitszeit?: AustraegerArbeitszeit;
   restmenge?: number;           // nicht ausgetragene Stücke (Überschuss)
@@ -909,6 +1020,29 @@ export interface VariablerPeriodenZusatz {
   abrechnungsperiodeId: string;
   betragEur: number;
   kommentar?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
+// ---- Externer Abrechnungswert ------------------------------
+//
+// Betrag, der in einer externen Anwendung für die Aushilfen (Austräger /
+// Zusammenträger) ermittelt wurde: Summe aus Austragen + Zusammentragen +
+// Vorarbeit. Ist ein Wert für einen MA in einer Periode gesetzt, ERSETZT er
+// in der Lohnauswertung die entsprechenden App-Positionen (austraegerGesamt +
+// zusammentragenGesamt + Vorarbeit-Zeitlohn). Fahrtkosten, Boni, variabler
+// Periodenzusatz und Lohnkonto-Bewegungen bleiben unberührt.
+//
+// Doc-ID ist deterministisch: `${abrechnungsperiodeId}_${mitarbeiterId}` —
+// genau ein Wert je MA und Periode; idempotenter Excel-/Skill-Import.
+export interface ExterneAbrechnungswert {
+  id: string;
+  mitarbeiterId: string;
+  abrechnungsperiodeId: string;
+  /** Summe aus Austragen + Zusammentragen + Vorarbeit (EUR) aus der externen Anwendung. */
+  betragEur: number;
+  /** Herkunft: manuell im Reiter „Abrechnung" erfasst oder per Excel/Skill importiert. */
+  quelle?: 'manuell' | 'excel';
   erstelltAm: number;
   aktualisiertAm: number;
 }
@@ -1196,6 +1330,54 @@ export interface LohnbueroAnmeldung {
   indizierVersion: number;
 }
 
+// ---- Verdienstbescheinigung: globaler Fragen-Katalog --------
+//
+// Zusätzliche Fragen, die auf der Verdienstbescheinigung erscheinen sollen.
+// Der Katalog ist global — alle MAs sehen dieselbe Fragenliste; die
+// konkrete Antwort wird pro Bescheinigung im Tab gewählt (nicht persistiert).
+export type VerdienstbescheinigungAntwortTyp = 'jaNein' | 'betrag' | 'text';
+
+export interface VerdienstbescheinigungFrage {
+  id: string;
+  fragetext: string;
+  antwortTyp: VerdienstbescheinigungAntwortTyp;
+  sortierung: number;
+  /**
+   * Optional: Standard-Antwort, mit der die Frage in der UI vorbelegt wird.
+   * Leer = keine Vorbelegung, der Nutzer muss aktiv auswählen.
+   *   - jaNein: 'ja' | 'nein'
+   *   - betrag: numerischer Wert als String (z. B. „0" oder „125,00")
+   *   - text:   Freitext-Vorbelegung
+   */
+  standardAntwort?: string;
+  /**
+   * Optionaler Hinweistext zur Frage / zur Standardantwort. Wird als
+   * Tooltip via „i"-Icon neben der Antwort angezeigt.
+   */
+  hinweis?: string;
+  archiviert?: boolean;
+  erstelltAm: number;
+}
+
+// ---- Verdienstbescheinigung-Werte (Minijob) ----------------
+//
+// Pro (Mitarbeiter, Jahr, Monat) ein optionaler Eintrag mit:
+//   - bruttoManuell: vom Admin gesetzter Korrekturwert (überschreibt Brutto aus
+//     LohnbueroAbrechnung); undefined = kein Override
+//   - ueberprueft: true, wenn Admin den Brutto-Wert für diese Periode bestätigt
+//     hat. Voraussetzung, damit der Wert in die Bescheinigung darf.
+// Doc-ID: `${mitarbeiterId}_${jahr}_${monat}`
+export interface VerdienstbescheinigungWert {
+  id: string;
+  mitarbeiterId: string;
+  jahr: number;
+  monat: number;
+  bruttoManuell?: number;
+  ueberprueft: boolean;
+  ueberpruefVon?: string;
+  ueberpruefAm?: number;
+}
+
 // ---- Audit-Log (unveränderlich) ----------------------------
 
 export interface AuditLog {
@@ -1426,3 +1608,55 @@ export interface AustraegerAusfall {
   erstelltAm: number;
   aktualisiertAm: number;
 }
+
+// ---- Umgesetzte Wechselpläne & Mengenanpassungen -----------
+//
+// Beim Monatswechsel werden geplante Standardausträger-Wechsel
+// (`StandardAustraegerWechselPlan`) und vorbereitete Stückzahl-Anpassungen
+// (`StueckzahlAnpassung`) über zwei Dialoge im Abrechnungs-Screen umgesetzt.
+// Damit nachvollziehbar bleibt, was wann umgesetzt wurde, wird beim
+// Übernehmen ein unveränderlicher Protokoll-Eintrag in der Collection
+// `umgesetzteAnpassungen` geschrieben (Diskriminator `art`). Anzeige im
+// Teilgebiete-Screen, Reiter „Umgesetzte Wechselpläne & Mengenanpassungen".
+
+interface UmgesetzteAnpassungBase {
+  id: string;
+  teilgebietId: string;
+  /** Snapshot des TG-Namens — das TG kann später umbenannt/gelöscht werden. */
+  teilgebietName: string;
+  teilgebietPlz?: string;
+  /** Periode, für die der Monatswechsel durchgeführt wurde. */
+  periodeId: string;
+  periodeBezeichnung: string;
+  /** Monat der Umsetzung = Jahr/Monat der Periode. */
+  umsetzungJahr: number;
+  umsetzungMonat: number;
+  umgesetztAm: number;          // Date.now()
+  umgesetztVon?: string;        // adminName
+}
+
+export interface UmgesetzterStandardWechsel extends UmgesetzteAnpassungBase {
+  art: 'wechsel';
+  bisherigerAustraegerId: string | null;
+  bisherigerAustraegerName: string | null;
+  letzteAusgabeKw?: number;
+  letzteAusgabeJahr?: number;
+  /** null = Teilgebiet wurde als unbesetzt übernommen. */
+  neuerAustraegerId: string | null;
+  neuerAustraegerName: string | null;
+  abAusgabeKw?: number;
+  abAusgabeJahr?: number;
+  kommentar?: string;
+  externerLink?: string;
+}
+
+export interface UmgesetzteMengenanpassung extends UmgesetzteAnpassungBase {
+  art: 'menge';
+  alteStueckzahl: number;
+  neueStueckzahl: number;
+  bemerkung?: string;
+}
+
+export type UmgesetzteAnpassung =
+  | UmgesetzterStandardWechsel
+  | UmgesetzteMengenanpassung;

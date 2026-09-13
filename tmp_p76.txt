@@ -1,0 +1,70 @@
+Abrechnung der Brutto/Netto-Bezüge für Mai 2024                                                                                                  P1A/P3F 24366/35560/187
+                                                                                                                                                              10.06.2024 Blatt: 1
+Personal-Nr. Geburtsdatum StKl Faktor     Ki.Frbtr. Konfession Freibetrag jährl. 1 Freibetrag mtl. 1 DBA Midijob
+                                                                                                                                           St.-Tg. VJ Url. üb. Url. Anspr. Url.Tg.gen. Resturlaub
+
+00187 050647                                                                                                                                  30
+
+SV-Nummer                  Krankenkasse                                                           KK % 8 PGRS BGRS                         Um. SV-Tg.  Anw. Tage  Urlaub Tage Krankh. Tg. Fehlz. Tage
+
+10050647S012 BUN Die Bundesknappsch                                                                           109 6500 1 30
+
+                                                                                                              Eintritt     Austritt                    Anw. Std. Urlaub Std. Krankh. Std. Fehlz. Std.
+
+                                                                                                              010721
+
+                                                                                                              Steuer-ID                         MFB 7             Zeitlohn Std. Überstd. Bez. Std.
+
+         Schlieper-Druck GmbH*Schützenweg 18*37170 Uslar                                                      93237610455
+
+         *Pers.-Nr. 00187*    5*                                                   B/N                        Hinweise zur Abrechnung
+         *Abt.-Nr.                                                                P3F
+
+                                                                                                              Kst.                                     6
+
+         Karl-Heinz Sage
+         Im Eichengrund 2
+         37170 Uslar
+
+Brutto-Bezüge                                          www.datev.de/lohn-id                       Ir7et-LZib5-p3nYY-IpCLC-rbuvs
+
+Lohnart    Bezeichnung                                                            Einheit 2                   Menge 3                      Faktor 3 Prozentsatz St 4 SV4 GB5           Betrag
+
+     006 AUSHILFSLOHN                                                                                                                                     PPJ                   161,33
+                                                                                                                                                                                 22,50
+     041 Fahrgeld ST+SV frei                                                                                                                              FFJ
+
+Steuer/Sozialversicherung                                                                                                                                                                  Gesamt-Brutto
+
+St4            Steuer-Brutto                           Lohnsteuer      Kirchensteuer Solidaritätszuschlag                                                                               183,83
+
+                                                                                                                                                                                Steuerrechtliche Abzüge
+
+SV4        KV-Brutto           RV-Brutto               AV-Brutto       PV-Brutto  KV-Beitrag                            RV-Beitrag         AV-Beitrag             PV-Beitrag6   SV-rechtliche Abzüge
+
+L 16133                       16133
+
+Verdienstbescheinigung                                                                       Netto-Bezüge/Netto-Abzüge                                                          Netto-Verdienst
+Gesamt-Brutto
+Steuer-Brutto                 51613                    SV-Brutto       40333                 Nr.              Bezeichnung                                                        183,83
+Lohnsteuer                    11280                    KV-Beitrag
+Kirchensteuer                                          RV-Beitrag                                                                                                                         Betrag
+Solidaritätszuschlag                                   AV-Beitrag
+Steuerfreie Bezüge                                     PV-Beitrag
+P. verst. Zuk.sich.                                    VWL gesamt
+                                                       Kug-Auszahlung
+Pfändung Rest
+Darlehen Rest
+
+Bank Kr Spk Northeim                                                                              SV-AG-Anteil Zus. AG-Kosten                             Gesamtkosten          Auszahlungsbetrag
+
+Konto DE54 2625 0001 0120 0332 20                                                                             4517                         549            23449                     183,83
+
+1 H = Hinzurechnungsbetrag                             4 L = Laufender Bezug, S = Sonstiger Bezug, F = Frei,            5 J = Bestandteil des Gesamt-Bruttos
+2 Std = Stunden, T = Tage, Km = Kilometer, St = Stück    E = Einmalbezug, P = Pauschalierung, A = Abfindung,            6 Z = Einschl. Beitragszuschlag zur PV für Kinderlose
+                                                         M = mehrjährige Versteuerung, N = Nachberechnung               7 MFB = Mehrfachbeschäftigung
+  EUR = Euro, Tsd = Tausend Euro, Mio = Million Euro     V = Vorjahr, W = Entgeltguthaben                               8 Maßgeblicher Beitragssatz zur KV inkl. Zusatzbeitrag
+3 Gegebenenfalls Netto-Lohn/Netto-Stundenlohn
+
+AFP Form.-Nr. LOGN15                                   - Dies ist eine Entgeltbescheinigung nach § 108 Abs. 3 Satz 1 der Gewerbeordnung -
+

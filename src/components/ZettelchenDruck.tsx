@@ -76,9 +76,8 @@ export default function ZettelchenDruck({
         .zettel-row {
           display: grid;
           grid-template-columns: 1fr 1fr 1fr;
-          border: 1.5px dashed #374151;
           margin-bottom: 2mm;
-          min-height: 34mm;
+          min-height: 42mm;
         }
         .zettel-third {
           border-right: 1.5px dashed #6b7280;
@@ -122,12 +121,12 @@ export default function ZettelchenDruck({
         }
         .zettel-beil-box {
           margin-top: 2mm;
-          font-size: 9px;
+          font-size: 8pt;
           color: #1f2937;
           line-height: 1.3;
         }
         .zettel-beil-title {
-          font-size: 9px;
+          font-size: 8pt;
           font-weight: 700;
           text-transform: uppercase;
           letter-spacing: 0.04em;
@@ -198,8 +197,9 @@ function ZettelchenInhalt({
   ausgabe: Ausgabe;
   printOnly?: boolean;
 }) {
-  // Ca. 5–6 Zeilen je A4-Querseite (je Zeile ca. 34mm Höhe).
-  const proSeite = 5;
+  // Ca. 4 Zeilen je A4-Querseite (je Zeile ca. 42mm Höhe) — größere
+  // Beilagen-Schrift (≥8pt) braucht mehr Platz pro Teilgebiet.
+  const proSeite = 4;
   const seiten: Zeile[][] = [];
   for (let i = 0; i < zeilen.length; i += proSeite) {
     seiten.push(zeilen.slice(i, i + proSeite));
@@ -321,7 +321,7 @@ function BeilagenAbschnitte({
   int: Beilage[];
   compact?: boolean;
 }) {
-  const style = compact ? { fontSize: '8px' } : undefined;
+  const style = compact ? { fontSize: '8pt' } : undefined;
   return (
     <div style={{ display: 'flex', gap: '3mm', marginTop: '1.5mm', flex: 1 }}>
       <div style={{ flex: 1, minWidth: 0 }}>

@@ -15,7 +15,9 @@
       "Bash(npm install:*)",
       "Bash(node -e ':*)",
       "Bash(findstr /i \"firebase service\")",
-      "Bash(node scripts/import-firestore.mjs)"
+      "Bash(node scripts/import-firestore.mjs)",
+      "Bash(npx firebase *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

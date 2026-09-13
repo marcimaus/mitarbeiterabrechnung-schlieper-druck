@@ -26,7 +26,7 @@ import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
 } from '../lib/berechnung';
-import { effektiverStandardAustraegerId } from '../utils';
+import { effektiverStandardAustraegerId, effektiveLieferadresse } from '../utils';
 
 // ---- Typen --------------------------------------------------
 
@@ -362,6 +362,8 @@ export default function LieferscheinDruck({
             margin-bottom: 24px;
           }
         }
+        /* Dekorative Symbole (Emoji) entfärben — nicht bunt drucken. */
+        .ls-icon { filter: grayscale(100%); }
         .fill-line {
           border-bottom: 1px solid #374151;
           display: inline-block;
@@ -467,9 +469,22 @@ function LieferscheinSeite({
 
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=130x130&margin=4&data=${encodeURIComponent(meldungsLink)}`;
 
+  // Zweiter QR-Code: Straßenliste dieses Teilgebiets (öffentlich, ohne Login).
+  // Der Austräger sieht die Straßen seines Gebiets und kann die hinterlegten
+  // PlusCode-/Karten-Links direkt antippen.
+  const strassenLink = `${window.location.origin}/strassenliste?tg=${encodeURIComponent(tg.id)}`;
+  const strassenQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=130x130&margin=4&data=${encodeURIComponent(strassenLink)}`;
+
+  // Maßgebliche Lieferadresse für dieses TG: TG-spezifisch > allgemein
+  // abweichend > Wohnadresse. Bei abweichender Adresse wird sie auf dem
+  // Schein gesondert hervorgehoben; die Wohnadresse des MA bleibt als
+  // Kontaktangabe stehen.
+  const lieferInfo = effektiveLieferadresse(ma, tg.id);
+  const istAbweichendeLieferadresse = lieferInfo.quelle !== 'wohnadresse';
+  const lieferAdr = lieferInfo.adresse;
   const adresse = [
-    ma.adresse.strasse,
-    `${ma.adresse.plz} ${ma.adresse.ort}`.trim(),
+    lieferAdr.strasse,
+    `${lieferAdr.plz ?? ''} ${lieferAdr.ort ?? ''}`.trim(),
   ]
     .filter(Boolean)
     .join(', ');
@@ -507,7 +522,7 @@ function LieferscheinSeite({
             letterSpacing: '0.02em',
           }}
         >
-          📦 ABHOLUNG — STAPEL BLEIBT IM WERK
+          ABHOLUNG — STAPEL BLEIBT IM WERK
         </div>
       )}
 
@@ -515,7 +530,7 @@ function LieferscheinSeite({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: '18px', fontWeight: 700, color: headerFarbe, marginBottom: '2px' }}>
-            LIEFERSCHEIN{istSpringer ? ' — SPRINGER 🔄' : ''}
+            LIEFERSCHEIN{istSpringer ? ' — SPRINGER' : ''}
           </div>
           <div style={{ fontSize: '11px', color: '#6b7280' }}>
             Schlieper-Druck GmbH · Tip aktuell
@@ -523,34 +538,34 @@ function LieferscheinSeite({
           <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '1px' }}>
             Abrechnungsperiode: <strong>{periode.bezeichnung}</strong>
           </div>
-          {istSpringer && (
-            <div style={{
-              fontSize: '11px',
-              color: '#b91c1c',
-              fontWeight: 700,
-              marginTop: '3px',
-              padding: '2px 6px',
-              display: 'inline-block',
-              border: '1.5px solid #b91c1c',
-              borderRadius: '4px',
-              background: '#fef2f2',
-            }}>
-              ⚠ Achtung Fahrer: NICHT zum Standardausträger, sondern zum Springer!
-            </div>
-          )}
         </div>
-        {/* QR-Code rechts oben */}
-        <div style={{ textAlign: 'center' }}>
-          <img
-            src={qrUrl}
-            alt="QR-Code Online-Erfassung"
-            width={90}
-            height={90}
-            style={{ display: 'block', border: '1px solid #e5e7eb', borderRadius: '4px' }}
-            loading="lazy"
-          />
-          <div style={{ fontSize: '8px', color: '#6b7280', marginTop: '2px', maxWidth: '90px' }}>
-            Online-Erfassung
+        {/* QR-Codes rechts oben: Online-Erfassung + Straßenliste */}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ textAlign: 'center' }}>
+            <img
+              src={qrUrl}
+              alt="QR-Code Online-Erfassung"
+              width={90}
+              height={90}
+              style={{ display: 'block', border: '1px solid #e5e7eb', borderRadius: '4px' }}
+              loading="lazy"
+            />
+            <div style={{ fontSize: '8px', color: '#6b7280', marginTop: '2px', maxWidth: '90px' }}>
+              Online-Erfassung
+            </div>
+          </div>
+          <div style={{ textAlign: 'center' }}>
+            <img
+              src={strassenQrUrl}
+              alt="QR-Code Straßenliste"
+              width={90}
+              height={90}
+              style={{ display: 'block', border: '1px solid #e5e7eb', borderRadius: '4px' }}
+              loading="lazy"
+            />
+            <div style={{ fontSize: '8px', color: '#6b7280', marginTop: '2px', maxWidth: '90px' }}>
+              Straßenliste
+            </div>
           </div>
         </div>
       </div>
@@ -573,7 +588,9 @@ function LieferscheinSeite({
             textTransform: 'uppercase',
             letterSpacing: '0.05em',
           }}>
-            {istSpringer ? 'Springer (Ausliefer-Adresse!)' : 'Austräger'}
+            {istAbweichendeLieferadresse
+              ? (istSpringer ? 'Springer — Kontakt' : 'Austräger — Kontakt')
+              : (istSpringer ? 'Springer (Ausliefer-Adresse!)' : 'Austräger')}
           </div>
           <div style={{
             fontWeight: 800,
@@ -582,36 +599,28 @@ function LieferscheinSeite({
             color: istSpringer ? '#b91c1c' : '#111827',
           }}>
             {ma.name}
-            {istAbholer && (
-              <span
-                style={{
-                  marginLeft: '6px',
-                  display: 'inline-block',
-                  padding: '1px 6px',
-                  borderRadius: '4px',
-                  background: '#c2410c',
-                  color: '#fff',
-                  fontSize: '10px',
-                  fontWeight: 700,
-                  letterSpacing: '0.04em',
-                  verticalAlign: 'middle',
-                }}
-              >
-                📦 ABHOLER
-              </span>
-            )}
           </div>
-          {ma.adresse.strasse && (
+          {/* Wohnadresse nur anzeigen, wenn KEINE abweichende Lieferadresse
+              greift — sonst besteht die Gefahr, dass der Fahrer die hier
+              gedruckte (nicht beliefer-relevante) Adresse abliest und
+              fälschlich dorthin liefert. Telefon bleibt als Kontaktangabe
+              in jedem Fall stehen. */}
+          {!istAbweichendeLieferadresse && ma.adresse.strasse && (
             <div style={{ color: istSpringer ? '#b91c1c' : '#374151' }}>{ma.adresse.strasse}</div>
           )}
-          {(ma.adresse.plz || ma.adresse.ort) && (
+          {!istAbweichendeLieferadresse && (ma.adresse.plz || ma.adresse.ort) && (
             <div style={{ color: istSpringer ? '#b91c1c' : '#374151' }}>
               {ma.adresse.plz} {ma.adresse.ort}
             </div>
           )}
           {ma.telefon && (
             <div style={{ color: istSpringer ? '#b91c1c' : '#374151', marginTop: '2px', fontWeight: istSpringer ? 700 : 400 }}>
-              📞 {ma.telefon}
+              <span className="ls-icon">📞</span> {ma.telefon}
+            </div>
+          )}
+          {ma.mobilnummer && (
+            <div style={{ color: istSpringer ? '#b91c1c' : '#374151', marginTop: '1px', fontWeight: istSpringer ? 700 : 400 }}>
+              <span className="ls-icon">📱</span> {ma.mobilnummer}
             </div>
           )}
         </div>
@@ -632,15 +641,53 @@ function LieferscheinSeite({
             {tg.plz && <span style={{ fontWeight: 400, color: '#6b7280', marginLeft: '6px' }}>{tg.plz}</span>}
           </div>
           <div style={{ color: '#374151' }}>
-            📦 {tg.stueckzahl} Stück &nbsp;·&nbsp; 🛣️ {formatKm(tg.wegstreckeM)}
+            <span className="ls-icon">📦</span> {tg.stueckzahl} Stück &nbsp;·&nbsp; <span className="ls-icon">🛣️</span> {formatKm(tg.wegstreckeM)}
           </div>
           {mitMeldung > 0 && (
-            <div style={{ color: '#059669', fontSize: '10px', marginTop: '4px' }}>
-              ✅ {mitMeldung} Online-Meldung{mitMeldung > 1 ? 'en' : ''} eingegangen
+            <div style={{ color: '#374151', fontSize: '10px', marginTop: '4px' }}>
+              <span className="ls-icon">✅</span> {mitMeldung} Online-Meldung{mitMeldung > 1 ? 'en' : ''} eingegangen
             </div>
           )}
         </div>
       </div>
+
+      {/* ---- Abweichende Lieferadresse (hervorgehoben) ---- */}
+      {istAbweichendeLieferadresse && (
+        <div style={{
+          marginBottom: '12px',
+          border: '2px solid #c2410c',
+          borderRadius: '6px',
+          padding: '8px 12px',
+          background: '#fff7ed',
+        }}>
+          <div style={{
+            fontSize: '10px',
+            color: '#9a3412',
+            fontWeight: 800,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            marginBottom: '4px',
+          }}>
+            📍 Abweichende Lieferadresse{lieferInfo.quelle === 'teilgebiet' ? ' (für dieses Teilgebiet)' : ''} — hierhin liefern!
+          </div>
+          {lieferAdr.strasse && (
+            <div style={{ color: '#7c2d12', fontWeight: 700, fontSize: '13px' }}>{lieferAdr.strasse}</div>
+          )}
+          {(lieferAdr.plz || lieferAdr.ort) && (
+            <div style={{ color: '#7c2d12', fontWeight: 700, fontSize: '13px' }}>
+              {lieferAdr.plz} {lieferAdr.ort}
+            </div>
+          )}
+          {lieferAdr.telefon && (
+            <div style={{ color: '#9a3412', marginTop: '2px' }}><span className="ls-icon">📞</span> {lieferAdr.telefon}</div>
+          )}
+          {lieferAdr.memo && (
+            <div style={{ color: '#9a3412', marginTop: '3px', fontSize: '11px', whiteSpace: 'pre-wrap' }}>
+              ℹ {lieferAdr.memo}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ---- Tabelle ---- */}
       <table className="lieferschein-tabelle" style={{ marginBottom: '12px' }}>
@@ -706,13 +753,13 @@ function LieferscheinSeite({
                 <td style={{ textAlign: 'center', fontWeight: 600 }}>
                   {gewichtKg.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
                 </td>
-                <td style={{ color: beilagenText ? '#1d4ed8' : '#d1d5db', fontSize: '10px' }}>
+                <td style={{ color: beilagenText ? '#374151' : '#d1d5db', fontSize: '10px' }}>
                   {beilagenText || '—'}
                 </td>
                 {/* Von */}
                 <td>
                   {az ? (
-                    <span style={{ color: '#059669', fontWeight: 600 }}>{az.von}</span>
+                    <span style={{ color: '#111827', fontWeight: 600 }}>{az.von}</span>
                   ) : (
                     <span className="fill-cell" style={{ display: 'block', borderBottom: '1.5px solid #374151', minHeight: '18px' }} />
                   )}
@@ -720,7 +767,7 @@ function LieferscheinSeite({
                 {/* Bis */}
                 <td>
                   {az ? (
-                    <span style={{ color: '#059669', fontWeight: 600 }}>{az.bis}</span>
+                    <span style={{ color: '#111827', fontWeight: 600 }}>{az.bis}</span>
                   ) : (
                     <span className="fill-cell" style={{ display: 'block', borderBottom: '1.5px solid #374151', minHeight: '18px' }} />
                   )}
@@ -728,7 +775,7 @@ function LieferscheinSeite({
                 {/* Pause */}
                 <td style={{ textAlign: 'center' }}>
                   {az ? (
-                    <span style={{ color: '#059669', fontWeight: 600 }}>{az.pausenMinuten}</span>
+                    <span style={{ color: '#111827', fontWeight: 600 }}>{az.pausenMinuten}</span>
                   ) : (
                     <span className="fill-cell" style={{ display: 'block', borderBottom: '1.5px solid #374151', minHeight: '18px' }} />
                   )}
@@ -805,13 +852,13 @@ function LieferscheinSeite({
           border: '1px solid #d1d5db',
           borderRadius: '6px',
           padding: '6px 8px',
-          backgroundColor: '#eff6ff',
+          backgroundColor: '#f9fafb',
           fontSize: '9px',
-          color: '#1e40af',
+          color: '#374151',
         }}>
-          <strong style={{ fontSize: '10px' }}>📱 Online-Erfassung (empfohlen)</strong><br />
+          <strong style={{ fontSize: '10px' }}><span className="ls-icon">📱</span> Online-Erfassung (empfohlen)</strong><br />
           QR-Code rechts oben scannen — Zeiten direkt im Browser eingeben, kein Login nötig.<br /><br />
-          <strong>📷 Alternativ per WhatsApp / E-Mail:</strong><br />
+          <strong><span className="ls-icon">📷</span> Alternativ per WhatsApp / E-Mail:</strong><br />
           Ausgefüllten Zettel fotografieren und zurücksenden.
         </div>
       </div>

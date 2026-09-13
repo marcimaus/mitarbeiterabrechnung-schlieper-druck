@@ -13,6 +13,7 @@ import type {
   Parameter,
   Abrechnungsperiode,
   VariablerPeriodenZusatz,
+  ExterneAbrechnungswert,
   LohnkontoBuchung,
   StueckzahlAnpassung,
   LohnbueroAbrechnung,
@@ -20,6 +21,7 @@ import type {
   LohnbueroDriveLink,
   MitarbeiterMemo,
   MitarbeiterDarlehen,
+  VerdienstbescheinigungFrage,
 } from '../types';
 import {
   mitarbeiterListener,
@@ -28,6 +30,7 @@ import {
   parameterListener,
   abrechnungsperiodenListener,
   variablePeriodenZusaetzeListener,
+  externeAbrechnungswerteListener,
   lohnkontoBuchungenListener,
   stueckzahlAnpassungenListener,
   lohnbueroAbrechnungenListener,
@@ -35,6 +38,7 @@ import {
   lohnbueroDriveLinksListener,
   mitarbeiterMemosListener,
   mitarbeiterDarlehenListener,
+  verdienstbescheinigungFragenListener,
 } from '../lib/db';
 
 // ---- State -------------------------------------------------
@@ -52,6 +56,7 @@ interface AppState {
   parameter: Parameter | null;
   abrechnungsperioden: Abrechnungsperiode[];
   variablePeriodenZusaetze: VariablerPeriodenZusatz[];
+  externeAbrechnungswerte: ExterneAbrechnungswert[];
   lohnkontoBuchungen: LohnkontoBuchung[];
   stueckzahlAnpassungen: StueckzahlAnpassung[];
   lohnbueroAbrechnungen: LohnbueroAbrechnung[];
@@ -59,6 +64,7 @@ interface AppState {
   lohnbueroDriveLinks: LohnbueroDriveLink[];
   mitarbeiterMemos: MitarbeiterMemo[];
   mitarbeiterDarlehen: MitarbeiterDarlehen[];
+  verdienstbescheinigungFragen: VerdienstbescheinigungFrage[];
   aktivePeriodeId: string | null;
   isOnline: boolean;
   isLoading: boolean;
@@ -74,6 +80,7 @@ const initialState: AppState = {
   parameter: null,
   abrechnungsperioden: [],
   variablePeriodenZusaetze: [],
+  externeAbrechnungswerte: [],
   lohnkontoBuchungen: [],
   stueckzahlAnpassungen: [],
   lohnbueroAbrechnungen: [],
@@ -81,6 +88,7 @@ const initialState: AppState = {
   lohnbueroDriveLinks: [],
   mitarbeiterMemos: [],
   mitarbeiterDarlehen: [],
+  verdienstbescheinigungFragen: [],
   aktivePeriodeId: null,
   isOnline: navigator.onLine,
   isLoading: true,
@@ -96,6 +104,7 @@ type Action =
   | { type: 'SET_PARAMETER'; payload: Parameter | null }
   | { type: 'SET_ABRECHNUNGSPERIODEN'; payload: Abrechnungsperiode[] }
   | { type: 'SET_VARIABLE_PERIODEN_ZUSAETZE'; payload: VariablerPeriodenZusatz[] }
+  | { type: 'SET_EXTERNE_ABRECHNUNGSWERTE'; payload: ExterneAbrechnungswert[] }
   | { type: 'SET_LOHNKONTO_BUCHUNGEN'; payload: LohnkontoBuchung[] }
   | { type: 'SET_STUECKZAHL_ANPASSUNGEN'; payload: StueckzahlAnpassung[] }
   | { type: 'SET_LOHNBUERO_ABRECHNUNGEN'; payload: LohnbueroAbrechnung[] }
@@ -103,6 +112,7 @@ type Action =
   | { type: 'SET_LOHNBUERO_DRIVE_LINKS'; payload: LohnbueroDriveLink[] }
   | { type: 'SET_MITARBEITER_MEMOS'; payload: MitarbeiterMemo[] }
   | { type: 'SET_MITARBEITER_DARLEHEN'; payload: MitarbeiterDarlehen[] }
+  | { type: 'SET_VERDIENSTBESCHEINIGUNG_FRAGEN'; payload: VerdienstbescheinigungFrage[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_LOADING'; payload: boolean };
@@ -130,6 +140,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, abrechnungsperioden: action.payload };
     case 'SET_VARIABLE_PERIODEN_ZUSAETZE':
       return { ...state, variablePeriodenZusaetze: action.payload };
+    case 'SET_EXTERNE_ABRECHNUNGSWERTE':
+      return { ...state, externeAbrechnungswerte: action.payload };
     case 'SET_LOHNKONTO_BUCHUNGEN':
       return { ...state, lohnkontoBuchungen: action.payload };
     case 'SET_STUECKZAHL_ANPASSUNGEN':
@@ -144,6 +156,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, mitarbeiterMemos: action.payload };
     case 'SET_MITARBEITER_DARLEHEN':
       return { ...state, mitarbeiterDarlehen: action.payload };
+    case 'SET_VERDIENSTBESCHEINIGUNG_FRAGEN':
+      return { ...state, verdienstbescheinigungFragen: action.payload };
     case 'SET_AKTIVE_PERIODE':
       return { ...state, aktivePeriodeId: action.payload };
     case 'SET_ONLINE':
@@ -226,6 +240,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubZusaetze = variablePeriodenZusaetzeListener((list) => {
       dispatch({ type: 'SET_VARIABLE_PERIODEN_ZUSAETZE', payload: list });
     });
+    const unsubExterneWerte = externeAbrechnungswerteListener((list) => {
+      dispatch({ type: 'SET_EXTERNE_ABRECHNUNGSWERTE', payload: list });
+    });
     const unsubLohnkonto = lohnkontoBuchungenListener((list) => {
       dispatch({ type: 'SET_LOHNKONTO_BUCHUNGEN', payload: list });
     });
@@ -247,6 +264,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubDarlehen = mitarbeiterDarlehenListener((list) => {
       dispatch({ type: 'SET_MITARBEITER_DARLEHEN', payload: list });
     });
+    const unsubVbFragen = verdienstbescheinigungFragenListener((list) => {
+      dispatch({ type: 'SET_VERDIENSTBESCHEINIGUNG_FRAGEN', payload: list });
+    });
 
     return () => {
       unsubMitarbeiter();
@@ -255,6 +275,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubParameter();
       unsubPerioden();
       unsubZusaetze();
+      unsubExterneWerte();
       unsubLohnkonto();
       unsubStueckzahl();
       unsubLohnbueroAbr();
@@ -262,6 +283,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubMemos();
       unsubDriveLinks();
       unsubDarlehen();
+      unsubVbFragen();
     };
   }, []);
 

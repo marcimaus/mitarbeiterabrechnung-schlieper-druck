@@ -35,11 +35,17 @@ import type {
   Parameter,
   AuditLog,
   VariablerPeriodenZusatz,
+  ExterneAbrechnungswert,
   AuslieferungsMemo,
   LohnkontoBuchung,
   StueckzahlAnpassung,
+  UmgesetzteAnpassung,
   LohnbueroAbrechnung,
   LohnbueroAnmeldung,
+  StatistikTyp,
+  StatistikJahr,
+  StatistikZelle,
+  StatistikMeta,
 } from '../types';
 import { berechneStapel } from './berechnung';
 import { normalisiereRollen } from '../types';
@@ -530,6 +536,17 @@ export async function ladeEinsaetze(ausgabeId?: string): Promise<Einsatz[]> {
 /** Alle Einsätze eines Teilgebiets (über alle Ausgaben/KWs hinweg). */
 export async function ladeEinsaetzeFuerTeilgebiet(teilgebietId: string): Promise<Einsatz[]> {
   const q = query(collection(db, 'einsaetze'), where('teilgebietId', '==', teilgebietId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz));
+}
+
+/** Alle Einsätze der angegebenen Jahre (z. B. für die Restmengen-Analyse über
+ *  mehrere Perioden). Scoped per `jahr in (...)`, damit nicht die komplette
+ *  Collection geladen werden muss. Firestore-`in` ≤ 30 Werte (Jahre genügen). */
+export async function ladeEinsaetzeFuerJahre(jahre: number[]): Promise<Einsatz[]> {
+  const eindeutig = Array.from(new Set(jahre)).slice(0, 30);
+  if (eindeutig.length === 0) return [];
+  const q = query(collection(db, 'einsaetze'), where('jahr', 'in', eindeutig));
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Einsatz));
 }
@@ -1228,6 +1245,75 @@ export async function loescheVariablenPeriodenZusatz(id: string): Promise<void> 
   await deleteDoc(doc(db, 'variablePeriodenZusatz', id));
 }
 
+// ---- Externe Abrechnungswerte (Austragen+Zusammentragen+Vorarbeit) ----
+//
+// Ein Wert je MA und Periode. Deterministische Doc-ID `${periodeId}_${maId}`
+// macht Upsert (App-Eingabe + Excel-/Skill-Import) idempotent.
+
+function externerWertDocId(periodeId: string, mitarbeiterId: string): string {
+  return `${periodeId}_${mitarbeiterId}`;
+}
+
+export function externeAbrechnungswerteListener(
+  cb: (list: ExterneAbrechnungswert[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'externeAbrechnungswerte'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ExterneAbrechnungswert)));
+  });
+}
+
+export async function ladeExterneAbrechnungswerte(
+  periodeId?: string
+): Promise<ExterneAbrechnungswert[]> {
+  const q = periodeId
+    ? query(
+        collection(db, 'externeAbrechnungswerte'),
+        where('abrechnungsperiodeId', '==', periodeId)
+      )
+    : query(collection(db, 'externeAbrechnungswerte'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as ExterneAbrechnungswert));
+}
+
+/**
+ * Setzt (Upsert) den externen Abrechnungswert eines MA in einer Periode.
+ * Ein Betrag <= 0 oder nicht-endlich LÖSCHT den Eintrag — damit greift
+ * wieder die App-Berechnung.
+ */
+export async function setzeExterneAbrechnungswert(
+  periodeId: string,
+  mitarbeiterId: string,
+  betragEur: number,
+  quelle: 'manuell' | 'excel' = 'manuell'
+): Promise<void> {
+  const ref = doc(db, 'externeAbrechnungswerte', externerWertDocId(periodeId, mitarbeiterId));
+  if (!Number.isFinite(betragEur) || betragEur <= 0) {
+    await deleteDoc(ref).catch(() => {});
+    return;
+  }
+  const ts = now();
+  const snap = await getDoc(ref);
+  await setDoc(
+    ref,
+    {
+      abrechnungsperiodeId: periodeId,
+      mitarbeiterId,
+      betragEur: Math.round(betragEur * 100) / 100,
+      quelle,
+      aktualisiertAm: ts,
+      ...(snap.exists() ? {} : { erstelltAm: ts }),
+    },
+    { merge: true }
+  );
+}
+
+export async function loescheExterneAbrechnungswert(
+  periodeId: string,
+  mitarbeiterId: string
+): Promise<void> {
+  await deleteDoc(doc(db, 'externeAbrechnungswerte', externerWertDocId(periodeId, mitarbeiterId)));
+}
+
 // ---- Mitarbeiter-Memos (Abrechnungsvorbereitung) ----------
 
 export function mitarbeiterMemosListener(
@@ -1411,6 +1497,34 @@ export async function loescheStueckzahlAnpassung(id: string): Promise<void> {
   await deleteDoc(doc(db, 'stueckzahlAnpassungen', id));
 }
 
+// ---- Umgesetzte Wechselpläne & Mengenanpassungen -----------
+//
+// Protokoll der beim Monatswechsel umgesetzten Standardausträger-Wechsel und
+// Stückzahl-Anpassungen. Append-only: pro Übernahme ein neuer Eintrag (kein
+// Upsert), damit die Historie pro Teilgebiet/Monat erhalten bleibt.
+
+// Distributives Omit: erhält bei diskriminierten Unions die je-Variante
+// spezifischen Felder (normales Omit reduziert auf die gemeinsamen Keys).
+type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
+
+export async function protokolliereUmgesetzteAnpassung(
+  rec: DistributiveOmit<UmgesetzteAnpassung, 'id' | 'umgesetztAm'>
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'umgesetzteAnpassungen'), {
+    ...stripUndef(rec as Record<string, unknown>),
+    umgesetztAm: now(),
+  });
+  return ref.id;
+}
+
+export function umgesetzteAnpassungenListener(
+  cb: (list: UmgesetzteAnpassung[]) => void
+): Unsubscribe {
+  return onSnapshot(collection(db, 'umgesetzteAnpassungen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UmgesetzteAnpassung)));
+  });
+}
+
 // ---- Lohnbüro-Abrechnungen (indizierte PDFs) ---------------
 
 export async function ladeLohnbueroAbrechnungen(): Promise<LohnbueroAbrechnung[]> {
@@ -1482,6 +1596,111 @@ export async function loescheLohnbueroDriveLink(id: string): Promise<void> {
   await deleteDoc(doc(db, 'lohnbueroDriveLinks', id)).catch(() => {});
 }
 
+// ---- Verdienstbescheinigung-Werte (Minijob) ---------------------
+//
+// Pro (MA, Jahr, Monat) ein Doc. Dient als persistenter Speicher für
+// manuelle Brutto-Korrekturen + den „Wert überprüft"-Haken — der Admin
+// muss dieselbe Periode nicht für jede Bescheinigung neu prüfen.
+
+function verdienstbescheinigungWertDocId(mitarbeiterId: string, jahr: number, monat: number): string {
+  return `${mitarbeiterId}_${jahr}_${String(monat).padStart(2, '0')}`;
+}
+
+/**
+ * Ad-hoc Loader für alle persistierten Bescheinigungs-Werte eines MA in einem
+ * Jahres-/Monats-Bereich. Die Collection wird absichtlich NICHT global in den
+ * AppContext geladen — die Daten werden nur beim Öffnen des Bescheinigungs-
+ * Tabs gebraucht.
+ */
+export async function ladeVerdienstbescheinigungWerte(
+  mitarbeiterId: string,
+): Promise<import('../types').VerdienstbescheinigungWert[]> {
+  const snap = await getDocs(query(
+    collection(db, 'verdienstbescheinigungWerte'),
+    where('mitarbeiterId', '==', mitarbeiterId),
+  ));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as import('../types').VerdienstbescheinigungWert));
+}
+
+/**
+ * Upsert eines Bescheinigungs-Wertes für (MA, Jahr, Monat). Wenn weder
+ * `bruttoManuell` gesetzt noch `ueberprueft=true` ist, wird der Eintrag
+ * gelöscht (Default-Zustand). Sonst Upsert.
+ */
+export async function setzeVerdienstbescheinigungWert(
+  mitarbeiterId: string,
+  jahr: number,
+  monat: number,
+  patch: { bruttoManuell?: number; ueberprueft: boolean },
+  ueberpruefVon?: string,
+): Promise<void> {
+  const id = verdienstbescheinigungWertDocId(mitarbeiterId, jahr, monat);
+  const ref = doc(db, 'verdienstbescheinigungWerte', id);
+  const istLeer = patch.bruttoManuell == null && !patch.ueberprueft;
+  if (istLeer) {
+    await deleteDoc(ref).catch(() => {});
+    return;
+  }
+  await setDoc(ref, stripUndef({
+    mitarbeiterId,
+    jahr,
+    monat,
+    bruttoManuell: patch.bruttoManuell,
+    ueberprueft: patch.ueberprueft,
+    ueberpruefVon: patch.ueberprueft ? (ueberpruefVon || undefined) : undefined,
+    ueberpruefAm: patch.ueberprueft ? now() : undefined,
+  }));
+}
+
+export async function loescheVerdienstbescheinigungWert(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'verdienstbescheinigungWerte', id)).catch(() => {});
+}
+
+// ---- Verdienstbescheinigung: Fragen-Katalog (global) ----------
+//
+// Zusätzliche Fragen erscheinen auf der Bescheinigung; der Katalog ist
+// global (alle MAs sehen dieselbe Liste). Über den AppContext live geladen,
+// damit Änderungen sofort in offenen Tabs sichtbar werden.
+
+export function verdienstbescheinigungFragenListener(
+  cb: (list: import('../types').VerdienstbescheinigungFrage[]) => void,
+): Unsubscribe {
+  return onSnapshot(collection(db, 'verdienstbescheinigungFragen'), (snap) => {
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as import('../types').VerdienstbescheinigungFrage));
+    list.sort((a, b) => a.sortierung - b.sortierung || a.erstelltAm - b.erstelltAm);
+    cb(list);
+  });
+}
+
+export async function erstelleVerdienstbescheinigungFrage(
+  fragetext: string,
+  antwortTyp: import('../types').VerdienstbescheinigungAntwortTyp,
+  sortierung: number,
+  standardAntwort?: string,
+  hinweis?: string,
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'verdienstbescheinigungFragen'), stripUndef({
+    fragetext: fragetext.trim(),
+    antwortTyp,
+    sortierung,
+    standardAntwort: standardAntwort?.trim() || undefined,
+    hinweis: hinweis?.trim() || undefined,
+    erstelltAm: now(),
+  }));
+  return ref.id;
+}
+
+export async function aktualisiereVerdienstbescheinigungFrage(
+  id: string,
+  patch: Partial<Omit<import('../types').VerdienstbescheinigungFrage, 'id' | 'erstelltAm'>>,
+): Promise<void> {
+  await updateDoc(doc(db, 'verdienstbescheinigungFragen', id), stripUndef(patch as Record<string, unknown>));
+}
+
+export async function loescheVerdienstbescheinigungFrage(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'verdienstbescheinigungFragen', id)).catch(() => {});
+}
+
 /**
  * Legt einen Legacy-MA an. Dieser MA dient nur dazu, historische
  * Lohnbüro-PDF-Daten einem Namen zuzuordnen, ohne dass er in aktiven
@@ -1550,4 +1769,98 @@ export async function schreibeAuditLog(
   data: Omit<AuditLog, 'id'>
 ): Promise<void> {
   await addDoc(collection(db, 'auditlog'), data);
+}
+
+// ---- Statistik (Seitenzahl & Beilagensumme je KW/Jahr) -----
+//
+// Ein Doc pro (typ, jahr); Doc-ID = `${typ}_${jahr}`. Die Zell-Werte liegen
+// als Map `zellen` (KW → { wert, farbe }) im Dokument.
+
+function statistikDocId(typ: StatistikTyp, jahr: number): string {
+  return `${typ}_${jahr}`;
+}
+
+export async function ladeStatistik(typ?: StatistikTyp): Promise<StatistikJahr[]> {
+  const snap = await getDocs(collection(db, 'statistik'));
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StatistikJahr));
+  return typ ? list.filter((s) => s.typ === typ) : list;
+}
+
+/** Schreibt/überschreibt die komplette Zell-Map eines (typ, jahr)-Dokuments. */
+export async function speichereStatistikJahr(
+  typ: StatistikTyp,
+  jahr: number,
+  zellen: Record<number, StatistikZelle>,
+): Promise<void> {
+  await setDoc(
+    doc(db, 'statistik', statistikDocId(typ, jahr)),
+    { typ, jahr, zellen, aktualisiertAm: now() },
+    { merge: true },
+  );
+}
+
+/**
+ * Setzt eine einzelne Zelle (KW) eines (typ, jahr)-Dokuments. `wert: null`
+ * leert die Zelle; `farbe: undefined` entfernt die Markierung.
+ *
+ * „Edition-level"-Felder (farbe, kommentar, link) werden zusätzlich auf das
+ * Schwester-Dokument (anderer Typ, gleiches Jahr) gespiegelt, damit die
+ * optische Markierung zwischen Seitenzahl- und Beilagensumme-Tabelle
+ * automatisch in Sync bleibt — es handelt sich um dieselben Ausgaben.
+ */
+export async function setzeStatistikZelle(
+  typ: StatistikTyp,
+  jahr: number,
+  kw: number,
+  zelle: StatistikZelle,
+): Promise<void> {
+  const ref = doc(db, 'statistik', statistikDocId(typ, jahr));
+  const kommentar = zelle.kommentar?.trim();
+  const link = zelle.link?.trim();
+  const sharedFields = {
+    farbe: zelle.farbe === undefined ? deleteField() : zelle.farbe,
+    kommentar: kommentar ? kommentar : deleteField(),
+    link: link ? link : deleteField(),
+  };
+  const zelleData = {
+    wert: zelle.wert,
+    ...sharedFields,
+  };
+  await setDoc(
+    ref,
+    { typ, jahr, aktualisiertAm: now(), zellen: { [kw]: zelleData } },
+    { merge: true },
+  );
+
+  // Schwester-Dokument: nur shared Felder spiegeln, Wert unangetastet.
+  const otherTyp: StatistikTyp = typ === 'seiten' ? 'beilagen' : 'seiten';
+  const otherRef = doc(db, 'statistik', statistikDocId(otherTyp, jahr));
+  await setDoc(
+    otherRef,
+    { typ: otherTyp, jahr, aktualisiertAm: now(), zellen: { [kw]: sharedFields } },
+    { merge: true },
+  );
+}
+
+const STATISTIK_META_ID = 'config';
+
+export async function ladeStatistikMeta(): Promise<StatistikMeta> {
+  const snap = await getDoc(doc(db, 'statistikMeta', STATISTIK_META_ID));
+  const data = (snap.exists() ? snap.data() : {}) as Partial<StatistikMeta>;
+  return {
+    kwBezeichnungen: data.kwBezeichnungen ?? {},
+    kwFarben: data.kwFarben ?? {},
+    legendeSeiten: data.legendeSeiten ?? [],
+    legendeBeilagen: data.legendeBeilagen ?? [],
+  };
+}
+
+export async function speichereStatistikMeta(
+  patch: Partial<StatistikMeta>,
+): Promise<void> {
+  await setDoc(
+    doc(db, 'statistikMeta', STATISTIK_META_ID),
+    stripUndef({ ...patch }),
+    { merge: true },
+  );
 }

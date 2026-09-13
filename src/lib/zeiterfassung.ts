@@ -82,6 +82,21 @@ export function aktiveSessions(cb: (list: Arbeitszeit[]) => void): Unsubscribe {
   });
 }
 
+/**
+ * Live-Listener für sämtliche Vorarbeit-Arbeitszeiten. Wird auf der
+ * Startseite genutzt, um Stempelungen anzuzeigen, deren Ausgabe noch
+ * keine Vorarbeit-Freigabe besitzt — diese Minuten würden sonst in der
+ * Abrechnung verworfen.
+ */
+export function vorarbeitArbeitszeitenListener(
+  cb: (list: Arbeitszeit[]) => void,
+): Unsubscribe {
+  const q = query(collection(db, 'arbeitszeiten'), where('typ', '==', 'vorarbeit'));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit)));
+  });
+}
+
 export async function ladeAktiveSessionFuerMitarbeiter(
   mitarbeiterId: string
 ): Promise<Arbeitszeit | null> {
@@ -452,6 +467,38 @@ export async function ladeAlleMonatsarbeitszeiten(
 ): Promise<Arbeitszeit[]> {
   const von = new Date(jahr, monat - 1, 1).getTime();
   const bis = new Date(jahr, monat, 1).getTime();
+  const q = query(
+    collection(db, 'arbeitszeiten'),
+    where('startTime', '>=', von),
+    where('startTime', '<', bis),
+    orderBy('startTime', 'asc')
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
+}
+
+/** Arbeitszeiten eines MA in einem beliebigen Zeitfenster [von, bis). */
+export async function ladeArbeitszeitenZeitraum(
+  mitarbeiterId: string,
+  von: number,
+  bis: number
+): Promise<Arbeitszeit[]> {
+  const q = query(
+    collection(db, 'arbeitszeiten'),
+    where('mitarbeiterId', '==', mitarbeiterId),
+    where('startTime', '>=', von),
+    where('startTime', '<', bis),
+    orderBy('startTime', 'asc')
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
+}
+
+/** Arbeitszeiten aller MA in einem beliebigen Zeitfenster [von, bis). */
+export async function ladeAlleArbeitszeitenZeitraum(
+  von: number,
+  bis: number
+): Promise<Arbeitszeit[]> {
   const q = query(
     collection(db, 'arbeitszeiten'),
     where('startTime', '>=', von),

@@ -21,6 +21,7 @@ import type {
   Fahrt,
   Vorschuss,
   VariablerPeriodenZusatz,
+  ExterneAbrechnungswert,
   LohnkontoBuchung,
 } from '../types';
 import {
@@ -122,6 +123,17 @@ export interface MitarbeiterAbrechnung {
   lohnkontoSaldoVorPeriode: number;
   /** Saldo NACH dieser Periode = vor + Verschiebung − Verrechnung. */
   lohnkontoSaldoNachPeriode: number;
+  // Externer Abrechnungswert (Austragen+Zusammentragen+Vorarbeit aus externer
+  // Anwendung). Ist er gesetzt (`externerWertAktiv`), ERSETZT er die
+  // App-Positionen austraegerGesamt + zusammentragenGesamt + Vorarbeit-Zeitlohn
+  // in `gesamt` / `bruttoLohnbuero`. Die Einzelspalten (Austragen, Zusammentr.,
+  // Zeiterfassung) zeigen weiterhin die App-Berechnung zur Information.
+  /** Roher externer Wert, falls für MA+Periode hinterlegt (EUR). */
+  externerWert?: number;
+  /** true, wenn der externe Wert die App-Positionen tatsächlich ersetzt. */
+  externerWertAktiv: boolean;
+  /** App-Betrag, den der externe Wert ersetzt (austragen+zusammentragen+vorarbeit-Zeit) — zur Transparenz. */
+  externerWertErsetzt?: number;
   // Gesamt (brutto, intern berechnet — VOR Lohnkonto-Verschiebung)
   gesamt: number;
   /**
@@ -251,7 +263,8 @@ export function berechneAbrechnung(
   periode?: Abrechnungsperiode,
   variablePeriodenZusaetze: VariablerPeriodenZusatz[] = [],
   alleAbrechnungsperioden: Abrechnungsperiode[] = [],
-  alleLohnkontoBuchungen: LohnkontoBuchung[] = []
+  alleLohnkontoBuchungen: LohnkontoBuchung[] = [],
+  externeAbrechnungswerte: ExterneAbrechnungswert[] = []
 ): MitarbeiterAbrechnung[] {
   // Snapshot-Stufen:
   //  - End-Snapshot (status='abgeschlossen'): paramSnapshot + periodeSnapshot
@@ -448,6 +461,7 @@ export function berechneAbrechnung(
           ausgabenBoniLohnGesamt,
           bonusZeiterfassungEur,
           bonusZeiterfassungAnzahl,
+          externerWertAktiv: false,
           ...lk,
           gesamt,
           bruttoLohnbuero,
@@ -754,11 +768,31 @@ export function berechneAbrechnung(
     })();
     const bonusZeiterfassungEur = bonusZeiterfassungAnzahl * bonusZeiterfBetrag;
 
+    // --- Externer Abrechnungswert (Austragen+Zusammentragen+Vorarbeit) ---
+    // Ist für diesen MA + diese Periode ein Wert aus der externen Anwendung
+    // hinterlegt, ERSETZT er die App-Positionen austraegerGesamt +
+    // zusammentragenGesamt + Vorarbeit-Zeitlohn. Der Rest der Zeiterfassung
+    // (sonstige / austragen-/zusammentragen-Ist-Zeit) sowie Fahrtkosten, Boni,
+    // variabler Zusatz und Lohnkonto bleiben unberührt.
+    const zeitLohnVorarbeit = maArbeitszeiten
+      .filter((a) => a.typ === 'vorarbeit')
+      .reduce((s, a) => s + (berechneNettoMinuten(a) / 60) * stundenlohnZusammen, 0);
+    const zeitLohnRest = zeitLohn - zeitLohnVorarbeit;
+    const ersetzbareAppLeistung = austraegerGesamt + zusammentragenGesamt + zeitLohnVorarbeit;
+
+    const externerEintrag = periodeId
+      ? externeAbrechnungswerte.find(
+          (x) => x.mitarbeiterId === ma.id && x.abrechnungsperiodeId === periodeId
+        )
+      : undefined;
+    const externerWert = externerEintrag?.betragEur;
+    const externerWertAktiv = externerWert != null && externerWert > 0;
+    const leistungBasis = externerWertAktiv ? externerWert : ersetzbareAppLeistung;
+
     // --- Gesamt ---
     const gesamt =
-      austraegerGesamt +
-      zusammentragenGesamt +
-      zeitLohn +
+      leistungBasis +
+      zeitLohnRest +
       fahrtkostenGesamt +
       bonus +
       ausgabenBoniLohnGesamt +
@@ -778,7 +812,8 @@ export function berechneAbrechnung(
       bonus !== 0 ||
       lk.lohnkontoBuchungenPeriode.length > 0 ||
       lk.lohnkontoSaldoVorPeriode !== 0 ||
-      ausgabenBoniDetails.length > 0
+      ausgabenBoniDetails.length > 0 ||
+      externerWertAktiv
     ) {
       ergebnisse.push({
         mitarbeiter: ma,
@@ -806,6 +841,9 @@ export function berechneAbrechnung(
         ausgabenBoniLohnGesamt,
         bonusZeiterfassungEur,
         bonusZeiterfassungAnzahl,
+        externerWert,
+        externerWertAktiv,
+        externerWertErsetzt: externerWertAktiv ? ersetzbareAppLeistung : undefined,
         ...lk,
         gesamt,
         bruttoLohnbuero,
@@ -897,4 +935,62 @@ export function stdMin(stunden: number): string {
   const h = Math.floor(stunden);
   const m = Math.round((stunden - h) * 60);
   return `${h}:${m.toString().padStart(2, '0')} h`;
+}
+
+// ---- Statistik-Stunden (Statistikmeldung) ------------------
+//
+// Aggregiert für eine bereits berechnete Periode die für die behördliche
+// Statistik gemeldeten Arbeitsstunden:
+//   - Ist-Stunden  : tatsächlich erfasste Zeit für „Sonstige" und „Vorarbeit".
+//                    Vorarbeit umfasst BEIDE Quellen — die Stempeluhr
+//                    (Arbeitszeit-Typ „vorarbeit", gelohnt + nicht gelohnt) und
+//                    die manuell erfasste Vorarbeit beim Zusammentragen.
+//   - Soll-Stunden : die kalkulierte (Plan-)Zeit für „Austragen" und
+//                    „Zusammentragen" — unabhängig davon, ob tatsächlich nach
+//                    Ist-Zeit abgerechnet wird.
+
+export interface StatistikStunden {
+  /** Ist-Stunden Stempeluhr-Typ „Sonstige". */
+  istSonstige: number;
+  /** Ist-Stunden „Vorarbeit": Stempeluhr + Zusammentragen-Vorarbeit. */
+  istVorarbeit: number;
+  /** Soll-Stunden „Austragen" (kalkulierte Austrägerzeit je Einsatz). */
+  sollAustragen: number;
+  /** Soll-Stunden „Zusammentragen" (kalkulierte Zeit, ohne Vorarbeit). */
+  sollZusammentragen: number;
+  /** Summe aller vier Positionen. */
+  gesamt: number;
+}
+
+export function aggregiereStatistikStunden(
+  ergebnisse: MitarbeiterAbrechnung[]
+): StatistikStunden {
+  let istSonstige = 0;
+  let istVorarbeit = 0;
+  let sollAustragen = 0;
+  let sollZusammentragen = 0;
+
+  for (const e of ergebnisse) {
+    // Ist-Stunden aus der Stempeluhr — alle erfassten Zeiten, gelohnt wie
+    // nicht gelohnt (für die Statistik zählt die geleistete Arbeitszeit).
+    for (const a of [...e.arbeitszeiten, ...e.arbeitszeitenNichtAbgerechnet]) {
+      const std = berechneNettoMinuten(a) / 60;
+      if (a.typ === 'sonstige') istSonstige += std;
+      else if (a.typ === 'vorarbeit') istVorarbeit += std;
+    }
+    // Soll-Stunden Austragen (kalkulierte Austrägerzeit inkl. Beilagenzeit).
+    for (const ae of e.austraegerEinsaetze) {
+      sollAustragen += ae.detail.zeitStunden;
+    }
+    // Zusammentragen: Plan-Zeit ohne Vorarbeit fließt in „Soll Zusammentragen",
+    // die Vorarbeit-Einsätze zählen als Ist-Vorarbeit (zweite Quelle).
+    for (const ze of e.zusammentragenEinsaetze) {
+      const std = ze.stunden ?? 0;
+      if (ze.istVorarbeit) istVorarbeit += std;
+      else sollZusammentragen += std;
+    }
+  }
+
+  const gesamt = istSonstige + istVorarbeit + sollAustragen + sollZusammentragen;
+  return { istSonstige, istVorarbeit, sollAustragen, sollZusammentragen, gesamt };
 }

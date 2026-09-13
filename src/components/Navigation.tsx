@@ -18,7 +18,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/fahrten', label: 'Fahrtkosten', icon: '🚗', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   // Zeitübersicht: für Mitarbeiter ebenfalls sichtbar — eingeschränkt auf
   // die eigenen Daten (Filterung im Screen).
-  { to: '/zeitübersicht', label: 'Zeitübersicht', icon: '📊', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
+  { to: '/zeitübersicht', label: 'Zeiten & Restmengen', icon: '📊', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   { to: '/mitarbeiter', label: 'Mitarbeiter & Interessenten', icon: '👥', roles: ['admin', 'abrechnung'] },
   { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin', 'abrechnung'] },
   { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin', 'abrechnung'] },

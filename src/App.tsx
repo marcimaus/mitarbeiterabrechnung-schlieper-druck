@@ -22,6 +22,7 @@ import ParameterScreen from './screens/ParameterScreen';
 import ReklamationenScreen from './screens/ReklamationenScreen';
 import NfcLandingScreen from './screens/NfcLandingScreen';
 import AustraegerMeldungScreen from './screens/AustraegerMeldungScreen';
+import StrassenlisteScreen from './screens/StrassenlisteScreen';
 import VerteilplanScreen from './screens/VerteilplanScreen';
 import PlanungScreen from './screens/PlanungScreen';
 import UrlaubScreen from './screens/UrlaubScreen';
@@ -57,9 +58,9 @@ function AppLayout() {
     : <Navigate to="/zeiterfassung" replace />;
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className="flex flex-col h-screen">
       <OfflineBanner />
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         <Navigation />
         <main className={`flex-1 overflow-y-auto bg-gray-50 ${mobilePt} md:pt-0`}>
           <Routes>
@@ -83,6 +84,7 @@ function AppLayout() {
             <Route path="/reklamationen" element={<ReklamationenScreen />} />
             <Route path="/nfc" element={<NfcLandingScreen />} />
             <Route path="/meldung" element={<AustraegerMeldungScreen />} />
+            <Route path="/strassenliste" element={<StrassenlisteScreen />} />
             <Route path="/verteilplan" element={<VerteilplanScreen />} />
             <Route path="/planung" element={<PlanungScreen />} />
             <Route path="/urlaub" element={<UrlaubScreen />} />

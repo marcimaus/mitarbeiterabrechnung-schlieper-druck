@@ -33,6 +33,25 @@ function donnerstagMittag(kw: number, jahr: number): Date {
   return new Date(`${iso}T12:00:00`);
 }
 
+/** Donnerstag (Tagesende, lokale Zeit) der laufenden ISO-Woche. */
+function aktuelleWocheDonnerstagEnde(): Date {
+  const now = new Date();
+  const day = now.getDay() || 7; // So=0 → 7, Mo=1 …
+  const thursday = new Date(now);
+  thursday.setDate(now.getDate() + (4 - day));
+  thursday.setHours(23, 59, 59, 999);
+  return thursday;
+}
+
+/** True, wenn die Ausgabe-KW in einer späteren Woche liegt als die laufende
+ *  (Erscheinung in der Zukunft → für die Selbstmeldung noch nicht relevant).
+ *  So sieht der Austräger maximal die aktuell laufende Ausgabe, nicht die
+ *  zukünftigen — das vermeidet Fehleingaben auf der falschen KW. */
+function istZukunftsausgabe(kw: number, jahr: number): boolean {
+  const erscheint = new Date(`${donnerstagDerKW(kw, jahr)}T12:00:00`);
+  return erscheint > aktuelleWocheDonnerstagEnde();
+}
+
 /** Sekunden zwischen Beginn (HH:MM) + Soll-Stunden als HH:MM. */
 function plusStunden(von: string, sollStunden: number): string {
   const [h, m] = von.split(':').map(Number);
@@ -182,7 +201,7 @@ export default function AustraegerMeldungScreen() {
         (tg) => tg.standardAustraegerId === mitarbeiterId && tg.isActive
       );
       const aktiveAusgaben = Array.from(ausgabenMap.values()).filter(
-        (a) => a.status !== 'abgeschlossen'
+        (a) => a.status !== 'abgeschlossen' && !istZukunftsausgabe(a.kw, a.jahr)
       );
       const aktiveAusgabeIds = aktiveAusgaben.map((a) => a.id);
       // Alle Einsätze für die noch offenen Ausgaben (egal welcher MA), um
@@ -219,7 +238,12 @@ export default function AustraegerMeldungScreen() {
         }
       }
 
-      const alle = [...loadedEinsaetze, ...virtuelle];
+      // Zukünftige Ausgaben ausblenden — auch bei explizit angelegten Einsätzen
+      // (z. B. vorab geplante Springer): es soll maximal bis zur aktuell
+      // laufenden Ausgabe gemeldet werden können.
+      const alle = [...loadedEinsaetze, ...virtuelle].filter(
+        (e) => !istZukunftsausgabe(e.kw, e.jahr)
+      );
       // Einsätze sortieren: neueste Ausgabe zuerst
       alle.sort((a, b) => {
         if (b.jahr !== a.jahr) return b.jahr - a.jahr;

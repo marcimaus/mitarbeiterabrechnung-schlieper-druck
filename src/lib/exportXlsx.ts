@@ -1,14 +1,56 @@
 // Excel-Export der Monatsabrechnung mit ExcelJS
 
 import ExcelJS from 'exceljs';
-import type { Abrechnungsperiode, Mitarbeiter, MitarbeiterMemo } from '../types';
-import { MEMO_KATEGORIE_LABELS } from '../types';
-import type { MitarbeiterAbrechnung } from './abrechnungslogik';
-import { formatierDatum } from './zeiterfassung';
+import type {
+  Abrechnungsperiode,
+  Mitarbeiter,
+  MitarbeiterMemo,
+  Teilgebiet,
+  Parameter,
+  VariablerPeriodenZusatz,
+  StueckzahlAnpassung,
+} from '../types';
+import { MEMO_KATEGORIE_LABELS, ROLLEN_LABELS } from '../types';
+import type { MitarbeiterAbrechnung, PeriodeData } from './abrechnungslogik';
+import { formatierDatum, berechneNettoMinuten } from './zeiterfassung';
+
+// Einheitliche Kopfzeilen-Formatierung für die Archiv-Blätter.
+const HEADER_BLAU = 'FF1D4ED8';
+function styleHeaderRow(
+  ws: ExcelJS.Worksheet,
+  rowNr: number,
+  anzahlSpalten: number,
+  farbe = HEADER_BLAU,
+): void {
+  const row = ws.getRow(rowNr);
+  for (let c = 1; c <= anzahlSpalten; c++) {
+    const cell = row.getCell(c);
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: farbe } };
+  }
+}
+
+const EUR_FMT = '#,##0.00 "€"';
+
+/**
+ * Zusätzlicher Kontext für den Archiv-Export: alle Bewegungs- und Stammdaten
+ * einer Periode, damit der Export ohne erneutes Öffnen der Periode beantwortbar
+ * bleibt. Alle Felder optional — fehlt eines, wird das jeweilige Blatt
+ * übersprungen (Abwärtskompatibilität).
+ */
+export interface AbrechnungExportKontext {
+  periodeData?: PeriodeData;
+  alleMitarbeiter?: Mitarbeiter[];
+  teilgebiete?: Teilgebiet[];
+  parameter?: Parameter;
+  variablePeriodenZusaetze?: VariablerPeriodenZusatz[];
+  stueckzahlAnpassungen?: StueckzahlAnpassung[];
+}
 
 export async function exportiereAbrechnung(
   periode: Abrechnungsperiode,
-  ergebnisse: MitarbeiterAbrechnung[]
+  ergebnisse: MitarbeiterAbrechnung[],
+  kontext: AbrechnungExportKontext = {},
 ): Promise<void> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Schlieper-Druck Mitarbeiterabrechnung';
@@ -192,22 +234,26 @@ export async function exportiereAbrechnung(
     { header: 'Pause (min)', key: 'pause', width: 12 },
     { header: 'Netto (h)', key: 'netto', width: 10 },
     { header: 'Lohn (€)', key: 'lohn', width: 12 },
+    { header: 'Abgerechnet', key: 'abger', width: 13 },
+    { header: 'Hinweis', key: 'hinweis', width: 30 },
   ];
 
-  wsZe.getRow(1).eachCell((cell) => {
-    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D4ED8' } };
-  });
+  styleHeaderRow(wsZe, 1, 11);
 
   for (const er of ergebnisse) {
-    for (const az of er.arbeitszeiten) {
-      const nettoMin = er.zeitStunden > 0
-        ? (az.endTime ? (az.endTime - az.startTime) / 60_000 - az.gesamtPauseMinuten : 0)
-        : 0;
-      const nettoH = Math.max(0, nettoMin) / 60;
-      const stundenlohn = er.zeitLohn > 0 && er.zeitStunden > 0
-        ? er.zeitLohn / er.zeitStunden
-        : 0;
+    const stundenlohn = er.zeitLohn > 0 && er.zeitStunden > 0
+      ? er.zeitLohn / er.zeitStunden
+      : 0;
+    // Beide Listen: gelohnte UND nicht-abgerechnete Zeiten — „alle Zeiten".
+    const zeilen = [
+      ...er.arbeitszeiten.map((az) => ({ az, abgerechnet: true })),
+      ...er.arbeitszeitenNichtAbgerechnet.map((az) => ({ az, abgerechnet: false })),
+    ];
+    for (const { az, abgerechnet } of zeilen) {
+      const nettoH = Math.max(0, berechneNettoMinuten(az)) / 60;
+      const hinweis = az.nichtBeruecksichtigen
+        ? `nicht berücksichtigt${az.nichtBeruecksichtigenGrund ? ': ' + az.nichtBeruecksichtigenGrund : ''}`
+        : '';
       const r = wsZe.addRow([
         er.mitarbeiter.name,
         er.mitarbeiter.nummer,
@@ -219,17 +265,449 @@ export async function exportiereAbrechnung(
           : '—',
         Math.round(az.gesamtPauseMinuten),
         nettoH,
-        nettoH * stundenlohn,
+        abgerechnet ? nettoH * stundenlohn : 0,
+        abgerechnet ? 'Ja' : 'Nein',
+        hinweis,
       ]);
       r.getCell(8).numFmt = '0.00';
-      r.getCell(9).numFmt = '#,##0.00 "€"';
+      r.getCell(9).numFmt = EUR_FMT;
       r.getCell(8).alignment = { horizontal: 'right' };
       r.getCell(9).alignment = { horizontal: 'right' };
+      if (!abgerechnet) {
+        r.getCell(10).font = { color: { argb: 'FFB45309' } };
+      }
     }
   }
 
   wsZe.views = [{ state: 'frozen', ySplit: 1 }];
-  wsZe.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+  wsZe.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 11 } };
+
+  // ====================================================
+  // Blatt 4: Zusammentragen
+  // ====================================================
+  const wsZt = wb.addWorksheet('Zusammentragen');
+  wsZt.columns = [
+    { header: 'Name', key: 'name', width: 25 },
+    { header: 'Nr.', key: 'nr', width: 8 },
+    { header: 'KW', key: 'kw', width: 6 },
+    { header: 'Teilgebiet', key: 'tg', width: 18 },
+    { header: 'Stückzahl', key: 'stk', width: 11 },
+    { header: 'Stapel', key: 'stapel', width: 9 },
+    { header: 'Vorarbeit', key: 'vor', width: 10 },
+    { header: 'Int. Beilagen', key: 'intb', width: 12 },
+    { header: 'Ext. Beilagen', key: 'extb', width: 12 },
+    { header: 'Zeit (h)', key: 'zeit', width: 10 },
+    { header: 'Lohn (€)', key: 'lohn', width: 12 },
+  ];
+  styleHeaderRow(wsZt, 1, 11);
+  for (const er of ergebnisse) {
+    for (const z of er.zusammentragenEinsaetze) {
+      const r = wsZt.addRow([
+        er.mitarbeiter.name,
+        er.mitarbeiter.nummer,
+        z.kw,
+        z.teilgebietName ?? '—',
+        z.stueckzahl ?? null,
+        z.stapelBearbeitet,
+        z.istVorarbeit ? 'Ja' : '',
+        z.intBeilagenAnzahl ?? null,
+        z.extBeilagenAnzahl ?? null,
+        z.stunden ?? null,
+        z.lohn,
+      ]);
+      r.getCell(10).numFmt = '0.00';
+      r.getCell(11).numFmt = EUR_FMT;
+      for (let c = 5; c <= 11; c++) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+  }
+  wsZt.views = [{ state: 'frozen', ySplit: 1 }];
+  wsZt.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 11 } };
+
+  // ====================================================
+  // Blatt 5: Fahrten (Fahrtkosten der abgerechneten MA)
+  // ====================================================
+  const wsFa = wb.addWorksheet('Fahrten');
+  wsFa.columns = [
+    { header: 'Datum', key: 'datum', width: 14 },
+    { header: 'Name', key: 'name', width: 25 },
+    { header: 'Nr.', key: 'nr', width: 8 },
+    { header: 'Strecke (km)', key: 'km', width: 13 },
+    { header: 'Satz (€/km)', key: 'satz', width: 12 },
+    { header: 'Betrag (€)', key: 'betrag', width: 13 },
+    { header: 'Ziel / Touren', key: 'ziel', width: 30 },
+    { header: 'Bemerkung', key: 'bem', width: 30 },
+  ];
+  styleHeaderRow(wsFa, 1, 8);
+  let fahrtSumKm = 0;
+  let fahrtSumBetrag = 0;
+  const fahrtZeilen = ergebnisse
+    .flatMap((er) => er.fahrten.map((f) => ({ er, f })))
+    .sort((a, b) => a.f.datum.localeCompare(b.f.datum));
+  for (const { er, f } of fahrtZeilen) {
+    const satz = er.fahrtSatzEurProKm;
+    const betrag = f.streckKm * satz;
+    fahrtSumKm += f.streckKm;
+    fahrtSumBetrag += betrag;
+    const r = wsFa.addRow([
+      formatierDatum(new Date(f.datum + 'T00:00:00').getTime()),
+      er.mitarbeiter.name,
+      er.mitarbeiter.nummer,
+      f.streckKm,
+      satz,
+      betrag,
+      f.ziel || (f.tourIds && f.tourIds.length ? `Touren: ${f.tourIds.join(', ')}` : '—'),
+      f.bemerkung ?? '',
+    ]);
+    r.getCell(4).numFmt = '#,##0.0';
+    r.getCell(5).numFmt = EUR_FMT;
+    r.getCell(6).numFmt = EUR_FMT;
+    for (let c = 4; c <= 6; c++) r.getCell(c).alignment = { horizontal: 'right' };
+  }
+  if (fahrtZeilen.length > 0) {
+    const sr = wsFa.addRow(['', '', 'Σ Gesamt', fahrtSumKm, '', fahrtSumBetrag, '', '']);
+    sr.getCell(3).font = { bold: true };
+    sr.getCell(4).numFmt = '#,##0.0';
+    sr.getCell(6).numFmt = EUR_FMT;
+    for (const c of [4, 6]) {
+      sr.getCell(c).font = { bold: true };
+      sr.getCell(c).alignment = { horizontal: 'right' };
+    }
+  }
+  wsFa.views = [{ state: 'frozen', ySplit: 1 }];
+  wsFa.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 8 } };
+
+  // ====================================================
+  // Blatt 6: Vorschüsse, Boni & Lohnkonto
+  // ====================================================
+  const wsVo = wb.addWorksheet('Vorschüsse & Boni');
+  wsVo.columns = [
+    { header: 'Name', key: 'name', width: 25 },
+    { header: 'Nr.', key: 'nr', width: 8 },
+    { header: 'Art', key: 'art', width: 26 },
+    { header: 'Betrag (€)', key: 'betrag', width: 13 },
+    { header: 'Kommentar', key: 'kommentar', width: 40 },
+  ];
+  styleHeaderRow(wsVo, 1, 5);
+  for (const er of ergebnisse) {
+    const ma = er.mitarbeiter;
+    const zeile = (art: string, betrag: number, kommentar?: string) => {
+      const r = wsVo.addRow([ma.name, ma.nummer, art, betrag, kommentar ?? '']);
+      r.getCell(4).numFmt = EUR_FMT;
+      r.getCell(4).alignment = { horizontal: 'right' };
+    };
+    for (const v of er.vorschuesse) zeile('Vorschuss', -v.betragEur, v.bemerkung);
+    if (er.bonus) zeile('Periodenzusatz / Bonus', er.bonus, er.bonusKommentar);
+    for (const b of er.ausgabenBoni) {
+      zeile(`Tätigkeitsbonus (KW ${b.kw}, ${b.minuten} Min)`, b.lohn, b.kommentar);
+    }
+    for (const lk of er.lohnkontoBuchungenPeriode) {
+      const art = lk.art === 'verschiebung' ? 'Lohnkonto-Verschiebung' : 'Lohnkonto-Verrechnung';
+      const betrag = lk.art === 'verschiebung' ? -lk.betragEur : lk.betragEur;
+      zeile(art, betrag, lk.kommentar);
+    }
+  }
+  wsVo.views = [{ state: 'frozen', ySplit: 1 }];
+  wsVo.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 5 } };
+
+  // ====================================================
+  // Kontext-basierte Archiv-Blätter (Stammdaten der Periode)
+  // ====================================================
+  const { periodeData, alleMitarbeiter, teilgebiete, parameter, stueckzahlAnpassungen } = kontext;
+
+  const tgName = (id: string): string =>
+    teilgebiete?.find((t) => t.id === id)?.name ?? id;
+  const maName = (id: string | null | undefined): string => {
+    if (!id) return '—';
+    const m = alleMitarbeiter?.find((x) => x.id === id);
+    return m ? `${m.name} (${m.nummer})` : id;
+  };
+
+  // ---- Blatt 7: Mitarbeiter-Stammdaten (der abgerechneten MA) ----
+  {
+    const wsSt = wb.addWorksheet('Mitarbeiter-Stammdaten');
+    wsSt.columns = [
+      { header: 'Nr.', key: 'nr', width: 8 },
+      { header: 'Name', key: 'name', width: 26 },
+      { header: 'Geburtsdatum', key: 'geb', width: 13 },
+      { header: 'Straße', key: 'str', width: 24 },
+      { header: 'PLZ', key: 'plz', width: 8 },
+      { header: 'Ort', key: 'ort', width: 16 },
+      { header: 'Telefon', key: 'tel', width: 15 },
+      { header: 'Mobil', key: 'mob', width: 15 },
+      { header: 'E-Mail', key: 'email', width: 26 },
+      { header: 'Rollen', key: 'rollen', width: 24 },
+      { header: 'Stundenlohn ind. (€)', key: 'slohn', width: 16 },
+      { header: 'Festgehalt', key: 'fest', width: 11 },
+      { header: 'Festgehalt (€)', key: 'feste', width: 14 },
+      { header: 'Wochenstd.', key: 'wstd', width: 11 },
+      { header: 'Monatsstd.', key: 'mstd', width: 11 },
+      { header: 'Minijob', key: 'mini', width: 9 },
+      { header: 'SV-frei', key: 'sv', width: 9 },
+      { header: 'Lohngrenze ind. (€)', key: 'lgrenze', width: 16 },
+      { header: 'Fahrtkosten €/km', key: 'fkm', width: 15 },
+      { header: 'Bonus-Min/Ausgabe', key: 'bmin', width: 16 },
+      { header: 'Anmeldestatus', key: 'anm', width: 26 },
+      { header: 'Abgemeldet', key: 'abg', width: 11 },
+    ];
+    styleHeaderRow(wsSt, 1, 22);
+    const sortiertMa = [...ergebnisse].sort((a, b) =>
+      a.mitarbeiter.nummer.localeCompare(b.mitarbeiter.nummer, 'de', { numeric: true }),
+    );
+    for (const er of sortiertMa) {
+      const m = er.mitarbeiter;
+      const r = wsSt.addRow([
+        m.nummer,
+        m.name,
+        m.geburtsdatum ?? '',
+        m.adresse?.strasse ?? '',
+        m.adresse?.plz ?? '',
+        m.adresse?.ort ?? '',
+        m.telefon ?? '',
+        m.mobilnummer ?? '',
+        m.email ?? '',
+        (m.rollen ?? []).map((rr) => ROLLEN_LABELS[rr] ?? rr).join(', '),
+        m.stundenlohnIndividuell ?? null,
+        m.hatFestgehalt ? 'Ja' : '',
+        m.hatFestgehalt ? (m.festgehaltEur ?? null) : null,
+        m.wochenstundenFestgehalt ?? null,
+        m.monatsstundenFestgehalt ?? null,
+        m.istMinijob ? 'Ja' : '',
+        m.sozialversicherungsBefreit ? 'Ja' : '',
+        m.lohngrenzeIndividuellEur ?? null,
+        m.fahrkostenEurProKm ?? null,
+        m.ausgabenBonusMinuten ?? null,
+        m.anmeldungStatus ?? (m.nochNichtAngemeldet ? 'noch nicht angemeldet' : ''),
+        m.abgemeldet ? 'Ja' : '',
+      ]);
+      for (const c of [11, 13, 18, 19]) r.getCell(c).numFmt = EUR_FMT;
+      for (const c of [11, 13, 14, 15, 18, 19, 20]) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    wsSt.views = [{ state: 'frozen', ySplit: 1, xSplit: 2 }];
+    wsSt.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 22 } };
+  }
+
+  // ---- Blatt 8: Teilgebiete (Strecken & Stückzahlen) ----
+  // Verwendete Werte: bevorzugt der beim Monatswechsel fixierte Snapshot,
+  // sonst der aktuelle Stammdaten-Stand. Die Quelle wird je Zeile vermerkt.
+  if (teilgebiete && teilgebiete.length > 0) {
+    const tgSnaps = periode.monatswechselSnapshot?.teilgebietSnapshots;
+    const snapMap = new Map((tgSnaps ?? []).map((s) => [s.id, s]));
+    const wsTg = wb.addWorksheet('Teilgebiete');
+    wsTg.columns = [
+      { header: 'Name', key: 'name', width: 16 },
+      { header: 'PLZ', key: 'plz', width: 8 },
+      { header: 'Tour', key: 'tour', width: 10 },
+      { header: 'Standardausträger', key: 'sa', width: 26 },
+      { header: 'Stückzahl (verw.)', key: 'stk', width: 15 },
+      { header: 'Wegstrecke (m, verw.)', key: 'weg', width: 18 },
+      { header: 'Anz. Straßen', key: 'anzstr', width: 12 },
+      { header: 'Σ Straßen-Stk.', key: 'sumstr', width: 14 },
+      { header: 'Sonderauslagen', key: 'sonder', width: 13 },
+      { header: 'Auslagestelle', key: 'ausl', width: 12 },
+      { header: 'Aktiv', key: 'aktiv', width: 8 },
+      { header: 'Quelle Werte', key: 'quelle', width: 16 },
+    ];
+    styleHeaderRow(wsTg, 1, 12);
+    const sortiertTg = [...teilgebiete].sort((a, b) =>
+      a.name.localeCompare(b.name, 'de', { numeric: true }),
+    );
+    for (const tg of sortiertTg) {
+      const snap = snapMap.get(tg.id);
+      const stk = snap?.stueckzahl ?? tg.stueckzahl;
+      const weg = snap?.wegstreckeM ?? tg.wegstreckeM;
+      const saId = snap?.standardAustraegerId ?? tg.standardAustraegerId;
+      const sumStr = (tg.strassen ?? []).reduce((s, x) => s + (x.stueckzahl || 0), 0);
+      const sumSonder = (tg.sonderauslagen ?? []).reduce((s, x) => s + (x.stueckzahl || 0), 0);
+      const r = wsTg.addRow([
+        tg.name,
+        tg.plz,
+        tg.tourId ?? '',
+        maName(saId),
+        stk,
+        weg,
+        (tg.strassen ?? []).length,
+        sumStr,
+        sumSonder,
+        tg.istAuslagestelle ? 'Ja' : '',
+        tg.isActive ? 'Ja' : '',
+        snap ? 'Monatswechsel-Snapshot' : 'aktuell',
+      ]);
+      for (const c of [5, 6, 7, 8, 9]) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    wsTg.views = [{ state: 'frozen', ySplit: 1 }];
+    wsTg.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 12 } };
+
+    // ---- Blatt 9: Straßen-Detail (Stückzahlen je Straße) ----
+    const wsStr = wb.addWorksheet('Straßen-Detail');
+    wsStr.columns = [
+      { header: 'Teilgebiet', key: 'tg', width: 16 },
+      { header: 'Straße', key: 'str', width: 32 },
+      { header: 'Stückzahl', key: 'stk', width: 11 },
+      { header: 'Plus-Code', key: 'pc', width: 18 },
+    ];
+    styleHeaderRow(wsStr, 1, 4);
+    for (const tg of sortiertTg) {
+      for (const s of tg.strassen ?? []) {
+        const r = wsStr.addRow([tg.name, s.strassenname, s.stueckzahl, s.plusCode ?? '']);
+        r.getCell(3).alignment = { horizontal: 'right' };
+      }
+      for (const so of tg.sonderauslagen ?? []) {
+        const r = wsStr.addRow([tg.name, `[Sonderauslage] ${so.bezeichnung}`, so.stueckzahl, so.adresse ?? '']);
+        r.getCell(3).alignment = { horizontal: 'right' };
+      }
+    }
+    wsStr.views = [{ state: 'frozen', ySplit: 1 }];
+    wsStr.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 4 } };
+
+    // Vorgemerkte Stückzahl-Anpassungen (noch nicht übernommen) — als Hinweis.
+    if (stueckzahlAnpassungen && stueckzahlAnpassungen.length > 0) {
+      wsTg.addRow([]);
+      const hr = wsTg.addRow(['Vorgemerkte Stückzahl-Anpassungen (noch nicht übernommen)']);
+      hr.getCell(1).font = { bold: true, color: { argb: 'FFB45309' } };
+      const hr2 = wsTg.addRow(['Teilgebiet', 'neue Stückzahl', 'Bemerkung']);
+      hr2.eachCell((c) => (c.font = { bold: true }));
+      for (const a of stueckzahlAnpassungen) {
+        wsTg.addRow([tgName(a.teilgebietId), a.neueStueckzahl, a.bemerkung ?? '']);
+      }
+    }
+  }
+
+  // ---- Blatt 10: Ausgaben + Blatt 11: Beilagenaufträge ----
+  if (periodeData) {
+    const ausgabenSort = [...periodeData.ausgaben].sort((a, b) => a.kw - b.kw);
+    const beilagenProAusgabe = new Map<string, number>();
+    for (const b of periodeData.beilagen) {
+      beilagenProAusgabe.set(b.ausgabeId, (beilagenProAusgabe.get(b.ausgabeId) ?? 0) + 1);
+    }
+
+    const wsAg = wb.addWorksheet('Ausgaben');
+    wsAg.columns = [
+      { header: 'KW', key: 'kw', width: 6 },
+      { header: 'Jahr', key: 'jahr', width: 8 },
+      { header: 'Status', key: 'status', width: 14 },
+      { header: 'Seitenzahl', key: 'seiten', width: 11 },
+      { header: 'Anz. Stapel', key: 'stapel', width: 11 },
+      { header: 'Grammatur (g/m²)', key: 'gramm', width: 15 },
+      { header: 'Format (mm)', key: 'format', width: 14 },
+      { header: 'Vorarbeit freig.', key: 'vorarbeit', width: 14 },
+      { header: 'Anz. Beilagen', key: 'anzb', width: 13 },
+    ];
+    styleHeaderRow(wsAg, 1, 9);
+    for (const a of ausgabenSort) {
+      const r = wsAg.addRow([
+        a.kw,
+        a.jahr,
+        a.status,
+        a.seitenzahl,
+        a.stapelAnzahl,
+        a.grammaturGqm,
+        a.seitenformatMm ? `${a.seitenformatMm.breite}×${a.seitenformatMm.hoehe}` : '',
+        a.vorarbeitFreigegeben ? 'Ja' : '',
+        beilagenProAusgabe.get(a.id) ?? 0,
+      ]);
+      for (const c of [1, 2, 4, 5, 6, 9]) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    wsAg.views = [{ state: 'frozen', ySplit: 1 }];
+    wsAg.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+
+    // Beilagenaufträge
+    const kwVonAusgabe = new Map(periodeData.ausgaben.map((a) => [a.id, a.kw]));
+    const wsBe = wb.addWorksheet('Beilagenaufträge');
+    wsBe.columns = [
+      { header: 'KW', key: 'kw', width: 6 },
+      { header: 'Arbeitstitel', key: 'titel', width: 26 },
+      { header: 'Kunde', key: 'kunde', width: 24 },
+      { header: 'int/ext', key: 'kz', width: 8 },
+      { header: 'Format', key: 'format', width: 10 },
+      { header: 'Gewicht (g/Stk)', key: 'gewicht', width: 14 },
+      { header: 'Anz. Teilgebiete', key: 'anztg', width: 14 },
+      { header: 'Gesamtauflage', key: 'auflage', width: 14 },
+      { header: 'Teilgebiete', key: 'tgs', width: 50 },
+    ];
+    styleHeaderRow(wsBe, 1, 9);
+    const beilagenSort = [...periodeData.beilagen].sort((a, b) => {
+      const ka = kwVonAusgabe.get(a.ausgabeId) ?? 0;
+      const kb = kwVonAusgabe.get(b.ausgabeId) ?? 0;
+      return ka !== kb ? ka - kb : a.kundenname.localeCompare(b.kundenname, 'de');
+    });
+    for (const b of beilagenSort) {
+      const tgIds = b.teilgebietIds ?? [];
+      const auflage = tgIds.reduce((s, id) => {
+        const tg = teilgebiete?.find((t) => t.id === id);
+        return s + (tg?.stueckzahl ?? 0);
+      }, 0);
+      const r = wsBe.addRow([
+        kwVonAusgabe.get(b.ausgabeId) ?? '',
+        b.arbeitstitel,
+        b.kundenname,
+        b.kennzeichen,
+        b.format,
+        b.gewichtGStk,
+        tgIds.length,
+        teilgebiete ? auflage : null,
+        tgIds.map((id) => tgName(id)).join(', '),
+      ]);
+      for (const c of [1, 6, 7, 8]) r.getCell(c).alignment = { horizontal: 'right' };
+      r.getCell(9).alignment = { wrapText: true, vertical: 'top' };
+    }
+    wsBe.views = [{ state: 'frozen', ySplit: 1 }];
+    wsBe.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+  }
+
+  // ---- Blatt 12: Verwendete Parameter ----
+  if (parameter) {
+    // Bevorzugt der zum Monatswechsel fixierte Parameter-Snapshot, sonst der
+    // bei Periodenanlage gespeicherte, sonst der aktuelle Stand.
+    const snap = periode.monatswechselSnapshot?.paramSnapshot ?? periode.paramSnapshot;
+    const quelle = periode.monatswechselSnapshot?.paramSnapshot
+      ? 'Monatswechsel-Snapshot'
+      : periode.paramSnapshot
+        ? 'Snapshot bei Periodenanlage'
+        : 'aktueller Stand';
+    const wert = <K extends keyof Parameter>(k: K): Parameter[K] =>
+      (snap && k in snap ? (snap as Parameter)[k] : parameter[k]);
+
+    const wsPa = wb.addWorksheet('Parameter');
+    wsPa.getCell('A1').value = 'Verwendete Abrechnungs-Parameter';
+    wsPa.getCell('A1').font = { bold: true, size: 14 };
+    wsPa.getCell('A2').value = `Quelle: ${quelle}`;
+    wsPa.getCell('A2').font = { italic: true, size: 10, color: { argb: 'FF888888' } };
+    const headerRowPa = 4;
+    wsPa.getRow(headerRowPa).values = ['Parameter', 'Wert', 'Einheit'];
+    styleHeaderRow(wsPa, headerRowPa, 3);
+    wsPa.columns = [{ width: 52 }, { width: 16 }, { width: 14 }];
+
+    const rows: [string, string | number, string][] = [
+      ['Laufgeschwindigkeit', wert('laufgeschwindigkeitMProH'), 'm/h'],
+      ['Steckzeit', wert('steckzeitStkProH'), 'Stk/h'],
+      ['Stundenlohn Erwachsene (Austragen)', wert('stundenlohnErwachseneAustr'), '€/h'],
+      ['Stundenlohn Minderjährige (Austragen)', wert('stundenlohnMinderjAustr'), '€/h'],
+      ['Mindeststundenlohn (Warnschwelle)', wert('mindeststundenlohn'), '€/h'],
+      ['Zusammentragen: erste 2 Stapel', wert('zusammentragGeschwErste2StapelStkProH'), 'Stk/h'],
+      ['Zusammentragen: weitere Stapel', wert('zusammentragGeschwWeitereStapelStkProH'), 'Stk/h'],
+      ['Externe Beilage einlegen', wert('externeBeilageEinlegeGeschwStkProH'), 'Stk/h'],
+      ['Stundenlohn Erwachsene (Zusammentragen)', wert('stundenlohnErwachseneZusammen'), '€/h'],
+      ['Stundenlohn Minderjährige (Zusammentragen)', wert('stundenlohnMinderjZusammen'), '€/h'],
+      ['Springer-Zuschlag', wert('springerZuschlagProzent'), '%'],
+      ['Gewichtszulage Anzeigenblatt', wert('gewichtszulageAnzeigenblattEurKg'), '€/kg'],
+      ['Gewichtszulage Beilagen', wert('gewichtszulageBeilagenEurKg'), '€/kg'],
+      ['Standard-Grammatur', wert('standardGrammurGqm'), 'g/m²'],
+      ['Standard-Format Breite', wert('standardSeitenformatBreiteMm'), 'mm'],
+      ['Standard-Format Höhe', wert('standardSeitenformatHoeheMm'), 'mm'],
+      ['Fahrtkosten', wert('fahrkostenEurProKm'), '€/km'],
+      ['Minijob-Grenze', wert('minijobGrenzeEurProMonat'), '€/Monat'],
+      ['Bonus Zeiterfassung Austragen', wert('bonusZeiterfassungEur') ?? 0, '€/Einsatz'],
+      ['Abrechnung Austragen nach Ist-Zeit', wert('austragenNachIstZeit') ? 'Ja' : 'Nein', ''],
+      ['Abrechnung Zusammentragen nach Ist-Zeit', wert('zusammentragenNachIstZeit') ? 'Ja' : 'Nein', ''],
+    ];
+    let pr = headerRowPa + 1;
+    for (const [label, value, einheit] of rows) {
+      wsPa.getRow(pr).values = [label, value, einheit];
+      wsPa.getRow(pr).getCell(2).alignment = { horizontal: 'right' };
+      pr++;
+    }
+    wsPa.views = [{ state: 'frozen', ySplit: headerRowPa }];
+  }
 
   // ====================================================
   // Download auslösen
@@ -301,11 +779,10 @@ export async function exportiereLohnuebermittlung(
     { width: 16 },
   ];
 
-  // Lohnbüro wünscht Sortierung nach Mitarbeiternummer aufsteigend
-  // (statt der UI-Sortierung Festgehalt → Stunden → Saldo → Brutto desc).
-  const sortiert = [...ergebnisse].sort((a, b) =>
-    a.mitarbeiter.nummer.localeCompare(b.mitarbeiter.nummer, 'de', { numeric: true }),
-  );
+  // Reihenfolge wie in der Ansicht „Abrechnung": `ergebnisse` ist bereits von
+  // `berechneAbrechnung` sortiert (Festgehalt → Stunden → Saldo → Brutto desc).
+  // Diese Reihenfolge wird 1:1 übernommen.
+  const sortiert = ergebnisse;
 
   let r = headerRow + 1;
   let sumVorschuss = 0;

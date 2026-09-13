@@ -2,6 +2,8 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import ZettelchenDruck from '../components/ZettelchenDruck';
+import StatistikUebersicht from '../components/StatistikUebersicht';
 import {
   ladeAusgaben,
   erstelleAusgabe,
@@ -38,7 +40,7 @@ export default function AusgabenScreen() {
 }
 
 function AusgabenInhalt() {
-  const [tab, setTab] = useState<'ausgaben' | 'perioden'>('ausgaben');
+  const [tab, setTab] = useState<'ausgaben' | 'perioden' | 'statistik'>('ausgaben');
 
   return (
     <div className="p-6">
@@ -57,10 +59,22 @@ function AusgabenInhalt() {
           >
             📅 Abrechnungsperioden
           </button>
+          <button
+            onClick={() => setTab('statistik')}
+            className={`px-4 py-2 border-l border-gray-300 ${tab === 'statistik' ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+          >
+            📊 Statistik
+          </button>
         </div>
       </div>
 
-      {tab === 'ausgaben' ? <AusgabenListe /> : <AbrechnungsperiodenInhalt />}
+      {tab === 'ausgaben' ? (
+        <AusgabenListe />
+      ) : tab === 'perioden' ? (
+        <AbrechnungsperiodenInhalt />
+      ) : (
+        <StatistikUebersicht />
+      )}
     </div>
   );
 }
@@ -126,12 +140,21 @@ function AusgabenListe() {
       setAusgaben(alle);
       setLoading(false);
       if (alle.length > 0) {
-        setFilterJahr(alle[0].jahr); // aktuellstes Jahr mit Ausgaben auswählen
-        setSelected(alle[0]);
-        // Aktuelle Periode vorauswählen, falls vorhanden
-        const aktuellePeriode = perioden
-          .filter((p) => p.jahr === alle[0].jahr)
-          .sort((a, b) => b.monat - a.monat)[0];
+        // Bevorzugt die Ausgabe der aktuellen Kalenderwoche; sonst die jüngste.
+        const heute = getCurrentKW();
+        const aktuell =
+          alle.find((a) => a.jahr === heute.jahr && a.kw === heute.kw) ?? alle[0];
+        setFilterJahr(aktuell.jahr);
+        setSelected(aktuell);
+        // Periode vorauswählen, die diese KW enthält (damit die Ausgabe in der
+        // gefilterten Liste sichtbar bleibt); sonst jüngste Periode des Jahres.
+        const aktuellePeriode =
+          perioden.find(
+            (p) => p.jahr === aktuell.jahr && p.kalenderwochen.includes(aktuell.kw)
+          ) ??
+          perioden
+            .filter((p) => p.jahr === aktuell.jahr)
+            .sort((a, b) => b.monat - a.monat)[0];
         if (aktuellePeriode) setFilterPeriodeId(aktuellePeriode.id);
       }
     });
@@ -321,10 +344,11 @@ function AusgabeDetail({
   onEdit: () => void;
   onDelete: () => Promise<void>;
 }) {
-  const { abrechnungsperioden } = useApp();
+  const { abrechnungsperioden, teilgebiete, touren } = useApp();
   const zugehoerigerPeriode = abrechnungsperioden.find(
     (p) => p.jahr === ausgabe.jahr && p.kalenderwochen.includes(ausgabe.kw)
   );
+  const [zettelchenOffen, setZettelchenOffen] = useState(false);
   // Sperre: Periode abgeschlossen ODER Monatswechsel-Snapshot existiert.
   // Nach dem Monatswechsel sind die Mengen der Teilgebiete fixiert — eine
   // Änderung an Beilagen/Zusammentragen würde das Ergebnis verschieben.
@@ -332,6 +356,16 @@ function AusgabeDetail({
   const istMonatswechsel = !!zugehoerigerPeriode?.monatswechselSnapshot;
   const istGesperrt = istAbgeschlossen || istMonatswechsel;
   const kannGeloeschtWerden = !zugehoerigerPeriode;
+
+  // Wird hochgezählt, wenn Beilagen geändert werden, damit die
+  // Teilgebiet-Beilagen-Matrix (eigene Datenkopie) neu lädt.
+  const [beilagenVersion, setBeilagenVersion] = useState(0);
+
+  // Beilagen dieser Ausgabe für den Zettelchen-Druck (folgt beilagenVersion).
+  const [beilagenFuerDruck, setBeilagenFuerDruck] = useState<Beilage[]>([]);
+  useEffect(() => {
+    ladeBeilagen(ausgabe.id).then(setBeilagenFuerDruck);
+  }, [ausgabe.id, beilagenVersion]);
 
   async function handleLoeschen() {
     if (!confirm(`Ausgabe ${kwLabel(ausgabe.kw, ausgabe.jahr)} wirklich löschen?`)) return;
@@ -348,6 +382,14 @@ function AusgabeDetail({
             <p className="text-sm text-gray-500">Erscheint: {formatDonnerstag(ausgabe.kw, ausgabe.jahr)}</p>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setZettelchenOffen(true)}
+              className="text-xs font-medium px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-gray-700 hover:border-blue-500 hover:text-blue-700 transition-colors"
+              title="Arbeitsvorbereitungs-Zettelchen (Zusammentragen + Vorarbeit) für diese Ausgabe drucken"
+            >
+              🗒️ Zettelchen
+            </button>
             {!istGesperrt && (
               <button onClick={onEdit} className="text-sm text-blue-600 hover:text-blue-800">Bearbeiten</button>
             )}
@@ -409,13 +451,28 @@ function AusgabeDetail({
       </div>
 
       {/* Beilagen */}
-      <BeilagenVerwaltung ausgabe={ausgabe} istGesperrt={istGesperrt} />
+      <BeilagenVerwaltung
+        ausgabe={ausgabe}
+        istGesperrt={istGesperrt}
+        onBeilagenChange={() => setBeilagenVersion((v) => v + 1)}
+      />
 
       {/* Austräger-Einsätze */}
       <EinsaetzeUebersicht ausgabe={ausgabe} />
 
       {/* Teilgebiet-Beilagen-Matrix: für jedes Teilgebiet die gebuchten Beilagen */}
-      <TeilgebietBeilagenUebersicht ausgabe={ausgabe} />
+      <TeilgebietBeilagenUebersicht ausgabe={ausgabe} reloadKey={beilagenVersion} />
+
+      {/* Zettelchen-Druck-Modal */}
+      {zettelchenOffen && (
+        <ZettelchenDruck
+          ausgabe={ausgabe}
+          teilgebiete={teilgebiete}
+          beilagen={beilagenFuerDruck}
+          touren={touren}
+          onClose={() => setZettelchenOffen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -998,7 +1055,15 @@ function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
 // BEILAGEN
 // ============================================================
 
-function BeilagenVerwaltung({ ausgabe, istGesperrt }: { ausgabe: Ausgabe; istGesperrt: boolean }) {
+function BeilagenVerwaltung({
+  ausgabe,
+  istGesperrt,
+  onBeilagenChange,
+}: {
+  ausgabe: Ausgabe;
+  istGesperrt: boolean;
+  onBeilagenChange?: () => void;
+}) {
   const { teilgebiete } = useApp();
   const [beilagen, setBeilagen] = useState<Beilage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1017,6 +1082,7 @@ function BeilagenVerwaltung({ ausgabe, istGesperrt }: { ausgabe: Ausgabe; istGes
     if (!confirm('Beilage wirklich löschen?')) return;
     await loescheBeilage(id);
     setBeilagen((prev) => prev.filter((b) => b.id !== id));
+    onBeilagenChange?.();
   }
 
   const gesamtgewichtKg = (b: Beilage) => {
@@ -1110,6 +1176,7 @@ function BeilagenVerwaltung({ ausgabe, istGesperrt }: { ausgabe: Ausgabe; istGes
               if (idx >= 0) { const u = [...prev]; u[idx] = b; return u; }
               return [...prev, b];
             });
+            onBeilagenChange?.();
             setShowForm(false);
           }}
           onCancel={() => setShowForm(false)}
@@ -1743,7 +1810,7 @@ const inputClass = 'w-full border border-gray-300 rounded-lg px-3 py-2 text-sm f
 // Beilage zeigt, welche Teilgebiete sie erhält.
 // ============================================================
 
-function TeilgebietBeilagenUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
+function TeilgebietBeilagenUebersicht({ ausgabe, reloadKey }: { ausgabe: Ausgabe; reloadKey?: number }) {
   const { teilgebiete, touren } = useApp();
   const [beilagen, setBeilagen] = useState<Beilage[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1754,7 +1821,7 @@ function TeilgebietBeilagenUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
       setBeilagen(list);
       setLoading(false);
     });
-  }, [ausgabe.id]);
+  }, [ausgabe.id, reloadKey]);
 
   const aktiveTeilgebiete = teilgebiete
     .filter((tg) => tg.isActive)

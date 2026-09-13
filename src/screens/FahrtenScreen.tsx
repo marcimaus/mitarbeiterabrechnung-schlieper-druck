@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import FahrtenAuswertungDruck from '../components/FahrtenAuswertungDruck';
+import FahrtenAuswertungAlleMaDruck from '../components/FahrtenAuswertungAlleMaDruck';
 import { istEinsatzbereit } from '../utils';
 import {
   ladeFahrten,
@@ -50,6 +52,8 @@ function FahrtenInhalt() {
   // Bulk-Zuweisung
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkPeriodeId, setBulkPeriodeId] = useState('');
+  // Auswertung (Druck)
+  const [showAuswertung, setShowAuswertung] = useState(false);
 
   const reload = async () => {
     setLoading(true);
@@ -72,8 +76,11 @@ function FahrtenInhalt() {
     // Globaler Filter: nur Fahrten zu MA mit fahrtkostenerstattung —
     // im Mitarbeiter-Login wird das durch den filterMaId-Vergleich oben
     // bereits abgedeckt; für Admin/Abrechnung schneidet er Altdaten von
-    // MAs ab, denen das Flag inzwischen entzogen wurde.
-    if (!isMitarbeiter && !fahrtkostenMaIds.has(f.mitarbeiterId)) return false;
+    // MAs ab, denen das Flag inzwischen entzogen wurde (oder die gelöscht
+    // wurden). Ausnahme: noch NICHT zugeordnete („verwaiste") Fahrten
+    // bleiben sichtbar — die Abrechnung warnt vor genau diesen, also
+    // müssen sie hier erreichbar bleiben, um sie zuzuordnen oder zu löschen.
+    if (!isMitarbeiter && !fahrtkostenMaIds.has(f.mitarbeiterId) && f.abrechnungsperiodeId) return false;
     if (filterPeriodeId === '__offen__' && f.abrechnungsperiodeId) return false;
     if (filterPeriodeId && filterPeriodeId !== '__offen__' && f.abrechnungsperiodeId !== filterPeriodeId) return false;
     return true;
@@ -138,6 +145,26 @@ function FahrtenInhalt() {
   );
   const offenePerioden = sortedPerioden.filter((p) => p.status === 'offen');
 
+  // ---- Auswertung (Druck) -------------------------------------
+  // Wirksamer MA: im Mitarbeiter-Login der eigene, sonst der gefilterte.
+  const auswertungMaId = isMitarbeiter ? (loggedInMaId ?? '') : filterMaId;
+  const auswertungMa = mitarbeiter.find((m) => m.id === auswertungMaId);
+  const auswertungPeriode = abrechnungsperioden.find((p) => p.id === filterPeriodeId);
+  // Modus „alle MA": nur für Admin/Abrechnung, kein MA gefiltert, konkrete Periode gewählt
+  const auswertungAlleModus = !isMitarbeiter && !filterMaId && !!auswertungPeriode;
+  const auswertungBereit = auswertungAlleModus || (!!auswertungMa && !!auswertungPeriode);
+  const auswertungSatz =
+    auswertungMa?.fahrkostenEurProKm ?? parameter?.fahrkostenEurProKm ?? 0.30;
+  const auswertungFahrtenDesMa = fahrten.filter((f) => f.mitarbeiterId === auswertungMaId);
+  // „Alle MA" — alle Fahrten der Periode von MAs mit Fahrtkostenerstattung
+  const auswertungFahrtenAlle = auswertungPeriode
+    ? fahrten.filter(
+        (f) =>
+          f.abrechnungsperiodeId === auswertungPeriode.id &&
+          fahrtkostenMaIds.has(f.mitarbeiterId)
+      )
+    : [];
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
@@ -147,12 +174,28 @@ function FahrtenInhalt() {
             Standardsatz: {(parameter?.fahrkostenEurProKm ?? 0.30).toFixed(2)} €/km
           </p>
         </div>
-        <button
-          onClick={() => { setEditTarget(null); setShowForm(true); }}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          + Neue Fahrt
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAuswertung(true)}
+            disabled={!auswertungBereit}
+            title={
+              auswertungBereit
+                ? auswertungAlleModus
+                  ? 'Druckbare Auswertung aller Fahrtkosten-Mitarbeiter für die gewählte Abrechnungsperiode (Anlage zur Lohnabrechnung)'
+                  : 'Druckbare Auswertung für den gewählten Mitarbeiter und die gewählte Abrechnungsperiode'
+                : 'Bitte eine konkrete Abrechnungsperiode wählen (optional zusätzlich einen Mitarbeiter)'
+            }
+            className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            🖨️ Auswertung
+          </button>
+          <button
+            onClick={() => { setEditTarget(null); setShowForm(true); }}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+          >
+            + Neue Fahrt
+          </button>
+        </div>
       </div>
 
       {/* Filter */}
@@ -266,6 +309,9 @@ function FahrtenInhalt() {
                 const periode = abrechnungsperioden.find((p) => p.id === f.abrechnungsperiodeId);
                 const istGesperrt = periode?.status === 'abgeschlossen';
                 const isSelected = selectedIds.has(f.id);
+                // Verwaist: MA gelöscht oder ohne Fahrtkostenerstattung-Flag —
+                // taucht nur auf, weil noch keiner Periode zugeordnet.
+                const istVerwaist = !isMitarbeiter && !fahrtkostenMaIds.has(f.mitarbeiterId);
 
                 return (
                   <tr key={f.id} className={`hover:bg-gray-50 ${isSelected ? 'bg-blue-50' : ''}`}>
@@ -283,7 +329,19 @@ function FahrtenInhalt() {
                     )}
                     <td className="px-4 py-2.5 text-gray-700 whitespace-nowrap">{f.datum}</td>
                     <td className="px-4 py-2.5">
-                      <div className="font-medium text-gray-900">{ma?.name ?? '?'}</div>
+                      <div className="font-medium text-gray-900">
+                        {ma?.name ?? 'Unbekannter Mitarbeiter'}
+                        {istVerwaist && (
+                          <span
+                            className="ml-2 text-xs px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 align-middle"
+                            title={ma
+                              ? 'Mitarbeiter hat keine Fahrtkostenerstattung (mehr) — bitte zuordnen oder löschen'
+                              : 'Mitarbeiter wurde gelöscht — bitte zuordnen oder löschen'}
+                          >
+                            ⚠ verwaist
+                          </span>
+                        )}
+                      </div>
                       {ma?.fahrkostenEurProKm && (
                         <div className="text-xs text-gray-400">{satz.toFixed(2)} €/km (individuell)</div>
                       )}
@@ -374,6 +432,29 @@ function FahrtenInhalt() {
           onCancel={() => setShowForm(false)}
         />
       </Modal>
+
+      {showAuswertung && auswertungPeriode && auswertungAlleModus && (
+        <FahrtenAuswertungAlleMaDruck
+          periode={auswertungPeriode}
+          fahrten={auswertungFahrtenAlle}
+          mitarbeiter={mitarbeiter}
+          parameter={parameter}
+          onClose={() => setShowAuswertung(false)}
+        />
+      )}
+
+      {showAuswertung && auswertungMa && auswertungPeriode && !auswertungAlleModus && (
+        <FahrtenAuswertungDruck
+          ma={auswertungMa}
+          periode={auswertungPeriode}
+          fahrtenPeriode={auswertungFahrtenDesMa.filter(
+            (f) => f.abrechnungsperiodeId === auswertungPeriode.id
+          )}
+          fahrtenOffen={auswertungFahrtenDesMa.filter((f) => !f.abrechnungsperiodeId)}
+          satz={auswertungSatz}
+          onClose={() => setShowAuswertung(false)}
+        />
+      )}
     </div>
   );
 }

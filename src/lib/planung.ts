@@ -262,6 +262,31 @@ export function urlaubsAusstehendListener(
   });
 }
 
+/**
+ * Live-Listener für Urlaubseinträge in einer Menge konkreter (jahr, kw)-
+ * Zellen — typisch „diese und kommende Woche" auf der Startseite. Bei
+ * Jahreswechsel (z. B. KW 52 → KW 1) werden mehrere Jahre abgedeckt.
+ */
+export function urlaubsWochenListener(
+  wochen: Array<{ jahr: number; kw: number }>,
+  cb: (list: UrlaubsEintrag[]) => void,
+): Unsubscribe {
+  const jahre = Array.from(new Set(wochen.map((w) => w.jahr)));
+  if (jahre.length === 0) {
+    cb([]);
+    return () => {};
+  }
+  const wochenKey = new Set(wochen.map((w) => `${w.jahr}-${w.kw}`));
+  const q = query(collection(db, URLAUB_COLL), where('jahr', 'in', jahre));
+  return onSnapshot(q, (snap) => {
+    cb(
+      snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as UrlaubsEintrag))
+        .filter((e) => wochenKey.has(`${e.jahr}-${e.kw}`)),
+    );
+  });
+}
+
 export async function setzeUrlaub(
   jahr: number,
   kw: number,

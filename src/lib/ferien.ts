@@ -54,6 +54,29 @@ const FERIEN_NDS: Record<number, Ferienzeitraum[]> = {
   ],
 };
 
+/** Liefert alle Ferienzeiträume, die in Niedersachsen für das gegebene Jahr hinterlegt sind. */
+export function ferienDesjahres(jahr: number): Ferienzeitraum[] {
+  return FERIEN_NDS[jahr] ?? [];
+}
+
+/**
+ * Liefert die sortierten einzigartigen KW-Nummern im gegebenen ISO-Jahr,
+ * die mit dem Ferienzeitraum überlappen. KWs, die in ein anderes ISO-Jahr
+ * fallen (z. B. KW 53 am Jahresende → ISO-Jahr Folgejahr), werden
+ * ignoriert — es zählt nur das übergebene `jahr`.
+ */
+export function kwsImFerienzeitraum(zeitraum: Ferienzeitraum, jahr: number): number[] {
+  const kws = new Set<number>();
+  const von = new Date(zeitraum.von);
+  const bis = new Date(zeitraum.bis);
+  const c = new Date(von);
+  while (c <= bis) {
+    if (getISOYear(c) === jahr) kws.add(getISOWeek(c));
+    c.setDate(c.getDate() + 1);
+  }
+  return Array.from(kws).sort((a, b) => a - b);
+}
+
 /**
  * Liefert alle Ferien-Zeiträume, die mindestens einen Tag in der
  * angegebenen ISO-Kalenderwoche enthalten. Zeiträume, die über

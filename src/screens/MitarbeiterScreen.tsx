@@ -18,16 +18,23 @@ import {
   erstelleSondervereinbarung,
   aktualisiereSondervereinbarung,
   loescheSondervereinbarung,
+  ladeVerdienstbescheinigungWerte,
+  setzeVerdienstbescheinigungWert,
+  erstelleVerdienstbescheinigungFrage,
+  loescheVerdienstbescheinigungFrage,
 } from '../lib/db';
+import VerdienstbescheinigungDruck from '../components/VerdienstbescheinigungDruck';
+import type { LohnbueroAbrechnung, LohnbueroDriveLink, VerdienstbescheinigungWert, VerdienstbescheinigungFrage, VerdienstbescheinigungAntwortTyp } from '../types';
 import { hashPin } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit } from '../types';
+import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse } from '../types';
+// Re-Export, damit die Tab-Komponente unten den selben Typen-Pfad nutzt.
 import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
 import { nameMitFestgehaltSymbol } from '../utils';
 import { eur } from '../lib/abrechnungslogik';
 
-type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'anmeldung' | 'lohnkonto';
+type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'lieferadressen' | 'anmeldung' | 'lohnkonto' | 'verdienstbescheinigung';
 
 const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
@@ -82,7 +89,12 @@ const DEFAULT_FORM: Omit<Mitarbeiter, 'id' | 'erstelltAm' | 'aktualisiertAm' | '
   nochNichtAngemeldet: true,
   isActive: true,
   istInteressent: false,
+  abweichendeLieferadresseAktiv: false,
+  abweichendeLieferadresse: { strasse: '', plz: '', ort: '', telefon: '', memo: '' },
 };
+
+/** Leere Lieferadresse mit ausschließlich String-Feldern (Firestore-sicher). */
+const LEERE_LIEFERADRESSE = { strasse: '', plz: '', ort: '', telefon: '', memo: '' };
 
 const ALLE_INTERESSE_TAETIGKEITEN: InteresseTaetigkeit[] = [
   'aushilfeProduktion',
@@ -724,7 +736,7 @@ function MitarbeiterForm({
   onSave: () => void;
   onCancel: () => void;
 }) {
-  const { parameter, teilgebiete, mitarbeiter, userRole, abrechnungsperioden, lohnkontoBuchungen } = useApp();
+  const { parameter, teilgebiete, mitarbeiter, userRole, abrechnungsperioden, lohnkontoBuchungen, lohnbueroAbrechnungen, lohnbueroDriveLinks, adminName, verdienstbescheinigungFragen } = useApp();
   const isAdmin = userRole === 'admin';
   // Bei Mitarbeitern mit Status "noch nicht angemeldet" direkt den Anmelde-Tab öffnen,
   // damit die offene Erfassung sofort sichtbar ist.
@@ -756,6 +768,7 @@ function MitarbeiterForm({
         anmeldungStatus: initial.anmeldungStatus,
         anmeldungUnvollstaendigMemo: initial.anmeldungUnvollstaendigMemo,
         anmeldungUebermittlungDatum: initial.anmeldungUebermittlungDatum,
+        anmeldungMemo: initial.anmeldungMemo,
         abgemeldet: initial.abgemeldet ?? false,
         abmeldungUebermittlungDatum: initial.abmeldungUebermittlungDatum,
         letzteAbrechnungsperiodeId: initial.letzteAbrechnungsperiodeId,
@@ -771,8 +784,11 @@ function MitarbeiterForm({
         stundenlohnIndividuell: initial.stundenlohnIndividuell,
         abrechnungAlsErwachseneMiLoG: initial.abrechnungAlsErwachseneMiLoG ?? false,
         istMinijob: initial.istMinijob ?? false,
+        sozialversicherungsNummer: initial.sozialversicherungsNummer,
+        steuerId: initial.steuerId,
         lohngrenzeIndividuellEur: initial.lohngrenzeIndividuellEur,
         lohngrenzeIndividuellKommentar: initial.lohngrenzeIndividuellKommentar,
+        lohngrenzeIndividuellLink: initial.lohngrenzeIndividuellLink,
         sozialversicherungsBefreit: initial.sozialversicherungsBefreit ?? false,
         ausgabenBonusMinuten: initial.ausgabenBonusMinuten,
         ausgabenBonusKommentar: initial.ausgabenBonusKommentar,
@@ -784,6 +800,14 @@ function MitarbeiterForm({
         interessentKorrespondenzLink: initial.interessentKorrespondenzLink,
         interessentMemo: initial.interessentMemo,
         interessentAlterBeiErfassung: initial.interessentAlterBeiErfassung,
+        abweichendeLieferadresseAktiv: initial.abweichendeLieferadresseAktiv ?? false,
+        abweichendeLieferadresse: {
+          strasse: initial.abweichendeLieferadresse?.strasse ?? '',
+          plz: initial.abweichendeLieferadresse?.plz ?? '',
+          ort: initial.abweichendeLieferadresse?.ort ?? '',
+          telefon: initial.abweichendeLieferadresse?.telefon ?? '',
+          memo: initial.abweichendeLieferadresse?.memo ?? '',
+        },
         // Cast: Felder, die nicht im DEFAULT_FORM-Typ sind, werden über (form as any) gelesen
         ...(initial.fahrtkostenerstattung ? { fahrtkostenerstattung: true } : {}),
         ...(initial.fahrkostenEurProKm !== undefined ? { fahrkostenEurProKm: initial.fahrkostenEurProKm } : {}),
@@ -805,6 +829,18 @@ function MitarbeiterForm({
   });
   // Freigaben und Boni als eigene States
   const [freigaben, setFreigaben] = useState<string[]>(initial?.teilgebietFreigaben ?? []);
+  // Abweichende Lieferadressen je Teilgebiet — eigener Reiter, eigener State.
+  const [lieferadressenTg, setLieferadressenTg] = useState<TeilgebietLieferadresse[]>(
+    () =>
+      (initial?.lieferadressenJeTeilgebiet ?? []).map((l) => ({
+        teilgebietId: l.teilgebietId,
+        strasse: l.strasse ?? '',
+        plz: l.plz ?? '',
+        ort: l.ort ?? '',
+        telefon: l.telefon ?? '',
+        memo: l.memo ?? '',
+      })),
+  );
   // Anzahl der Sondervereinbarungen — wird vom Reiter selbst aktualisiert,
   // damit der Tab-Badge ohne zusätzliche Daten am MA-Payload korrekt zählt.
   const [sondervereinbarungenCount, setSondervereinbarungenCount] = useState(0);
@@ -945,12 +981,38 @@ function MitarbeiterForm({
     setSaving(true);
     setError('');
     try {
+      // Abweichende Lieferadresse je TG: nur Einträge mit befüllter Adresse
+      // (Straße oder Ort) persistieren; leere Hülsen verwerfen.
+      const lieferadressenTgClean: TeilgebietLieferadresse[] = lieferadressenTg
+        .filter((l) => l.strasse.trim() || l.ort.trim())
+        .map((l) => ({
+          teilgebietId: l.teilgebietId,
+          strasse: l.strasse.trim(),
+          plz: l.plz.trim(),
+          ort: l.ort.trim(),
+          telefon: (l.telefon ?? '').trim(),
+          memo: (l.memo ?? '').trim(),
+        }));
+
       // Hinweis: teilgebietBoni am MA wird NICHT mehr aktiv gepflegt — die
       // echte Quelle für TG-bezogene Zuschläge ist die Collection
       // `sondervereinbarungen` (eigener Reiter „Teilgebiet-Boni").
       const payload = {
         ...form,
         teilgebietFreigaben: freigaben,
+        // Abweichende Lieferadresse nur speichern, wenn aktiviert — sonst Feld
+        // löschen (undefined → deleteField in aktualisiereMitarbeiter).
+        abweichendeLieferadresse: form.abweichendeLieferadresseAktiv
+          ? {
+              strasse: (form.abweichendeLieferadresse?.strasse ?? '').trim(),
+              plz: (form.abweichendeLieferadresse?.plz ?? '').trim(),
+              ort: (form.abweichendeLieferadresse?.ort ?? '').trim(),
+              telefon: (form.abweichendeLieferadresse?.telefon ?? '').trim(),
+              memo: (form.abweichendeLieferadresse?.memo ?? '').trim(),
+            }
+          : undefined,
+        lieferadressenJeTeilgebiet:
+          lieferadressenTgClean.length > 0 ? lieferadressenTgClean : undefined,
         // Wenn aus Interessent ein „echter" MA wird, automatisch als
         // „noch nicht angemeldet" markieren — analog zu Neuerfassung.
         ...(wurdeEntInteressent ? { nochNichtAngemeldet: true } : {}),
@@ -1078,8 +1140,12 @@ function MitarbeiterForm({
       { id: 'stammdaten', label: 'Stammdaten' },
       { id: 'freigaben', label: 'Gebiets-Freigaben', count: freigaben.length },
       { id: 'boni', label: 'Teilgebiet-Boni', count: sondervereinbarungenCount },
+      { id: 'lieferadressen', label: 'Lieferadressen je TG', count: lieferadressenTg.filter((l) => l.strasse.trim() || l.ort.trim()).length },
       { id: 'anmeldung', label: 'Anmeldung / Abmeldung' },
       ...(isAdmin && initial ? [{ id: 'lohnkonto' as const, label: 'Lohnkonto' }] : []),
+      ...(isAdmin && initial && form.istMinijob
+        ? [{ id: 'verdienstbescheinigung' as const, label: 'Verdienstbescheinigung Minijob' }]
+        : []),
     ];
 
   // Wenn Interessent-Modus aktiv ist und ein anderer Tab gewählt war,
@@ -1089,6 +1155,14 @@ function MitarbeiterForm({
       setTab('stammdaten');
     }
   }, [form.istInteressent, tab]);
+
+  // Wenn Minijob-Haken entfernt wird, während der Bescheinigungs-Tab offen ist,
+  // zurück auf Stammdaten — der Tab ist dann ja gar nicht mehr in TABS.
+  useEffect(() => {
+    if (tab === 'verdienstbescheinigung' && !form.istMinijob) {
+      setTab('stammdaten');
+    }
+  }, [form.istMinijob, tab]);
 
   return (
     <form onSubmit={handleSubmit} className="space-y-0">
@@ -1749,6 +1823,105 @@ function MitarbeiterForm({
         </div>
       )}
 
+      {/* Abweichende Lieferadresse (allgemein) — Felder nur sichtbar, wenn aktiviert */}
+      <div className={`rounded-lg border p-3 ${form.abweichendeLieferadresseAktiv ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-gray-50'}`}>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.abweichendeLieferadresseAktiv ?? false}
+            onChange={(e) => setForm((f) => ({ ...f, abweichendeLieferadresseAktiv: e.target.checked }))}
+            className="mt-0.5 rounded"
+          />
+          <div>
+            <div className="text-sm font-medium text-gray-800">📍 Abweichende Lieferadresse</div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Aktivieren, wenn dieser Mitarbeiter nicht an seiner Wohnadresse beliefert wird.
+              Die Adresse erscheint auf den Lieferscheinen.
+            </p>
+          </div>
+        </label>
+
+        {form.abweichendeLieferadresseAktiv && (
+          <div className="mt-3 space-y-3 pl-7">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <FormField label="Straße & Hausnummer">
+                  <input
+                    type="text"
+                    value={form.abweichendeLieferadresse?.strasse ?? ''}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        abweichendeLieferadresse: { ...LEERE_LIEFERADRESSE, ...f.abweichendeLieferadresse, strasse: e.target.value },
+                      }))
+                    }
+                    placeholder="Ablageort, Musterstraße 1"
+                    className={inputClass}
+                  />
+                </FormField>
+              </div>
+              <FormField label="PLZ">
+                <input
+                  type="text"
+                  value={form.abweichendeLieferadresse?.plz ?? ''}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      abweichendeLieferadresse: { ...LEERE_LIEFERADRESSE, ...f.abweichendeLieferadresse, plz: e.target.value },
+                    }))
+                  }
+                  placeholder="37170"
+                  maxLength={5}
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <FormField label="Ort">
+              <input
+                type="text"
+                value={form.abweichendeLieferadresse?.ort ?? ''}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    abweichendeLieferadresse: { ...LEERE_LIEFERADRESSE, ...f.abweichendeLieferadresse, ort: e.target.value },
+                  }))
+                }
+                placeholder="Uslar"
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Telefon">
+              <input
+                type="tel"
+                value={form.abweichendeLieferadresse?.telefon ?? ''}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    abweichendeLieferadresse: { ...LEERE_LIEFERADRESSE, ...f.abweichendeLieferadresse, telefon: e.target.value },
+                  }))
+                }
+                placeholder="+49 5571 12345"
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Memo" hint="Grund / Hinweis zur Lieferadresse — erscheint auf dem Lieferschein.">
+              <textarea
+                value={form.abweichendeLieferadresse?.memo ?? ''}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    abweichendeLieferadresse: { ...LEERE_LIEFERADRESSE, ...f.abweichendeLieferadresse, memo: e.target.value },
+                  }))
+                }
+                placeholder="z. B. Paket im Carport ablegen"
+                rows={2}
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+        )}
+      </div>
+
       {/* Google-Drive-Link — Admin + Abrechnung sichtbar/editierbar */}
       <FormField
         label="Google-Drive-Link (Unterlagen)"
@@ -2148,44 +2321,108 @@ function MitarbeiterForm({
         </div>
       </FormField>
 
-      {/* Individuelle Lohngrenze — z. B. weitere Minijobs / Höchstgrenze.
-          Sichtbar/editierbar für Admin und Abrechnung (analog Minijob/SV-Befreiung). */}
+      {/* Sozialversicherungsnummer — Pflichtfeld für Minijob-Verdienstbescheinigung */}
       <FormField
-        label="Individuelle Lohngrenze (EUR/Monat)"
-        hint="Optional. Wenn der Bruttolohn im Monat diesen Wert überschreitet, erscheint in der Abrechnung eine Warnung — z. B. wegen weiterer Minijobs bei anderen Arbeitgebern oder vertraglicher Höchstgrenze."
+        label="Sozialversicherungsnummer"
+        hint="12-stellig (z. B. „12 345678 A 901“). Wird für Verdienstbescheinigungen (Minijob) benötigt."
       >
         <input
-          type="number"
-          min="0"
-          step="1"
-          value={form.lohngrenzeIndividuellEur ?? ''}
+          type="text"
+          value={form.sozialversicherungsNummer ?? ''}
           onChange={(e) => setForm((f) => ({
             ...f,
-            lohngrenzeIndividuellEur: e.target.value ? parseFloat(e.target.value) : undefined,
+            sozialversicherungsNummer: e.target.value || undefined,
           }))}
-          onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
-          placeholder="Leer = keine individuelle Grenze"
+          placeholder="z. B. 12 345678 A 901"
           className={inputClass}
         />
       </FormField>
 
-      {(form.lohngrenzeIndividuellEur ?? 0) > 0 && (
+      {/* Steuer-ID — 11-stellige Identifikationsnummer (Bundeszentralamt für Steuern) */}
+      <FormField
+        label="Steuer-ID"
+        hint="11-stellig. Wird für die Anmeldung beim Lohnbüro benötigt."
+      >
+        <input
+          type="text"
+          value={form.steuerId ?? ''}
+          onChange={(e) => setForm((f) => ({
+            ...f,
+            steuerId: e.target.value || undefined,
+          }))}
+          placeholder="z. B. 12345678901"
+          className={inputClass}
+        />
+      </FormField>
+
+      {/* Individuelle Lohngrenze — z. B. weitere Minijobs / Höchstgrenze.
+          Sichtbar/editierbar für Admin und Abrechnung (analog Minijob/SV-Befreiung). */}
+      <div className="border border-gray-300 rounded-lg p-3 space-y-3 bg-gray-50">
         <FormField
-          label="Grund / Vermerk zur Lohngrenze"
-          hint='Z. B. „weiterer Minijob bei XY", „Verabredung Höchstgrenze für beide Jobs".'
+          label="Individuelle Lohngrenze (EUR/Monat)"
+          hint="Optional. Wenn der Bruttolohn im Monat diesen Wert überschreitet, erscheint in der Abrechnung eine Warnung — z. B. wegen weiterer Minijobs bei anderen Arbeitgebern oder vertraglicher Höchstgrenze."
         >
           <input
-            type="text"
-            value={form.lohngrenzeIndividuellKommentar ?? ''}
+            type="number"
+            min="0"
+            step="1"
+            value={form.lohngrenzeIndividuellEur ?? ''}
             onChange={(e) => setForm((f) => ({
               ...f,
-              lohngrenzeIndividuellKommentar: e.target.value || undefined,
+              lohngrenzeIndividuellEur: e.target.value ? parseFloat(e.target.value) : undefined,
             }))}
-            placeholder="z. B. weiterer Minijob bei …"
+            onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+            placeholder="Leer = keine individuelle Grenze"
             className={inputClass}
           />
         </FormField>
-      )}
+
+        {(form.lohngrenzeIndividuellEur ?? 0) > 0 && (
+          <>
+            <FormField
+              label="Grund / Vermerk zur Lohngrenze"
+              hint='Z. B. „weiterer Minijob bei XY", „Verabredung Höchstgrenze für beide Jobs".'
+            >
+              <input
+                type="text"
+                value={form.lohngrenzeIndividuellKommentar ?? ''}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  lohngrenzeIndividuellKommentar: e.target.value || undefined,
+                }))}
+                placeholder="z. B. weiterer Minijob bei …"
+                className={inputClass}
+              />
+            </FormField>
+
+            <FormField
+              label="Externer Link zur Dokumentation"
+              hint="Optional. Link zu weiterführender Dokumentation (Google Drive, Mail-Thread, …)."
+            >
+              <input
+                type="url"
+                value={form.lohngrenzeIndividuellLink ?? ''}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  lohngrenzeIndividuellLink: e.target.value || undefined,
+                }))}
+                placeholder="https://…"
+                className={inputClass}
+              />
+              {form.lohngrenzeIndividuellLink && (
+                <a
+                  href={form.lohngrenzeIndividuellLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block mt-1 text-xs text-blue-600 hover:text-blue-800 underline break-all"
+                >
+                  🔗 Dokumentation öffnen
+                </a>
+              )}
+            </FormField>
+          </>
+        )}
+      </div>
 
       {/* Pauschaler Tätigkeitsbonus je Ausgabe — Abrechnungs-Rolle sieht nur (read-only) */}
       <FormField
@@ -2377,6 +2614,150 @@ function MitarbeiterForm({
         />
       )}
 
+      {/* ---- Tab: Abweichende Lieferadressen je Teilgebiet ---- */}
+      {tab === 'lieferadressen' && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Je Teilgebiet kann eine eigene abweichende Lieferadresse hinterlegt werden.
+            Sie hat bei Lieferung in dieses Teilgebiet <strong>Vorrang</strong> vor der allgemeinen
+            abweichenden Lieferadresse (Reiter „Stammdaten"). Anwendungsfall: Springer werden je
+            Teilgebiet an unterschiedlichen Ablageorten beliefert.
+          </p>
+
+          {(() => {
+            const tgNameMap = new Map(teilgebiete.map((tg) => [tg.id, tg]));
+            const belegteIds = new Set(lieferadressenTg.map((l) => l.teilgebietId));
+            const verfuegbare = [...aktiveTeilgebiete]
+              .filter((tg) => !belegteIds.has(tg.id))
+              .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+            const updateLA = (tgId: string, patch: Partial<TeilgebietLieferadresse>) =>
+              setLieferadressenTg((prev) =>
+                prev.map((l) => (l.teilgebietId === tgId ? { ...l, ...patch } : l)),
+              );
+            return (
+              <>
+                {/* Hinzufügen */}
+                <div className="flex items-center gap-2">
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const tgId = e.target.value;
+                      if (!tgId) return;
+                      setLieferadressenTg((prev) => [
+                        ...prev,
+                        { teilgebietId: tgId, ...LEERE_LIEFERADRESSE },
+                      ]);
+                    }}
+                    disabled={verfuegbare.length === 0}
+                    className={inputClass + ' max-w-xs'}
+                  >
+                    <option value="">
+                      {verfuegbare.length === 0
+                        ? 'Alle aktiven Teilgebiete bereits erfasst'
+                        : '+ Teilgebiet hinzufügen…'}
+                    </option>
+                    {verfuegbare.map((tg) => (
+                      <option key={tg.id} value={tg.id}>
+                        {tg.name}{tg.plz ? ` (${tg.plz})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {lieferadressenTg.length === 0 ? (
+                  <div className="text-gray-400 text-sm text-center py-8">
+                    Keine teilgebietsspezifischen Lieferadressen hinterlegt.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {lieferadressenTg.map((l) => {
+                      const tg = tgNameMap.get(l.teilgebietId);
+                      return (
+                        <div
+                          key={l.teilgebietId}
+                          className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-3"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold text-gray-800">
+                              📍 {tg ? tg.name : 'Unbekanntes Teilgebiet'}
+                              {tg?.plz && <span className="font-normal text-gray-500"> · {tg.plz}</span>}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setLieferadressenTg((prev) =>
+                                  prev.filter((x) => x.teilgebietId !== l.teilgebietId),
+                                )
+                              }
+                              className="ml-auto text-xs text-red-600 hover:text-red-800 border border-red-200 rounded px-2 py-0.5"
+                            >
+                              Entfernen
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="col-span-2">
+                              <FormField label="Straße & Hausnummer">
+                                <input
+                                  type="text"
+                                  value={l.strasse}
+                                  onChange={(e) => updateLA(l.teilgebietId, { strasse: e.target.value })}
+                                  placeholder="Ablageort, Musterstraße 1"
+                                  className={inputClass}
+                                />
+                              </FormField>
+                            </div>
+                            <FormField label="PLZ">
+                              <input
+                                type="text"
+                                value={l.plz}
+                                onChange={(e) => updateLA(l.teilgebietId, { plz: e.target.value })}
+                                placeholder="37170"
+                                maxLength={5}
+                                className={inputClass}
+                              />
+                            </FormField>
+                          </div>
+                          <FormField label="Ort">
+                            <input
+                              type="text"
+                              value={l.ort}
+                              onChange={(e) => updateLA(l.teilgebietId, { ort: e.target.value })}
+                              placeholder="Uslar"
+                              className={inputClass}
+                            />
+                          </FormField>
+                          <FormField label="Telefon">
+                            <input
+                              type="tel"
+                              value={l.telefon ?? ''}
+                              onChange={(e) => updateLA(l.teilgebietId, { telefon: e.target.value })}
+                              placeholder="+49 5571 12345"
+                              className={inputClass}
+                            />
+                          </FormField>
+                          <FormField label="Memo" hint="Grund / Hinweis — erscheint auf dem Lieferschein.">
+                            <textarea
+                              value={l.memo ?? ''}
+                              onChange={(e) => updateLA(l.teilgebietId, { memo: e.target.value })}
+                              placeholder="z. B. Paket beim Kiosk abgeben"
+                              rows={2}
+                              className={inputClass}
+                            />
+                          </FormField>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <p className="text-xs text-amber-700/80">
+                  Nur Einträge mit ausgefüllter Straße oder Ort werden gespeichert.
+                </p>
+              </>
+            );
+          })()}
+        </div>
+      )}
+
       {/* ---- Tab: Anmeldung / Abmeldung ---- */}
       {tab === 'anmeldung' && (
         <div className="space-y-5">
@@ -2511,6 +2892,19 @@ function MitarbeiterForm({
                 />
               </FormField>
             )}
+
+            <FormField
+              label="Anmeldedaten / Memo fürs Lohnbüro"
+              hint="Anmelderelevante Angaben, die mit dem Mitarbeiter in die Anmeldemaske des Lohnbüros einzutragen sind — z. B. Steuer-ID, Krankenkasse, SV-Nummer."
+            >
+              <textarea
+                value={form.anmeldungMemo ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, anmeldungMemo: e.target.value || undefined }))}
+                rows={4}
+                placeholder="z. B. Steuer-ID: 12 345 678 901&#10;Krankenkasse: AOK Niedersachsen&#10;SV-Nummer: …"
+                className={inputClass}
+              />
+            </FormField>
           </div>
 
           {/* Abmeldung-Block */}
@@ -2568,6 +2962,17 @@ function MitarbeiterForm({
       {/* ---- Tab: Lohnkonto (Admin-only) ---- */}
       {tab === 'lohnkonto' && isAdmin && initial && (
         <LohnkontoTab mitarbeiter={initial} />
+      )}
+
+      {/* ---- Tab: Verdienstbescheinigung Minijob (Admin-only) ---- */}
+      {tab === 'verdienstbescheinigung' && isAdmin && initial && form.istMinijob && (
+        <VerdienstbescheinigungTab
+          mitarbeiter={initial}
+          adminName={adminName}
+          lohnbueroAbrechnungen={lohnbueroAbrechnungen}
+          lohnbueroDriveLinks={lohnbueroDriveLinks}
+          fragenKatalog={verdienstbescheinigungFragen}
+        />
       )}
 
       {/* Aktionen — immer sichtbar */}
@@ -3489,6 +3894,1354 @@ function SondervereinbarungenReiter({
           {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// Verdienstbescheinigung-Tab (Admin-only, nur bei istMinijob)
+// ============================================================
+
+const MONATSNAMEN_KURZ = [
+  'Jan', 'Feb', 'Mär', 'Apr', 'Mai', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dez',
+];
+
+interface MonatsZeile {
+  jahr: number;
+  monat: number;
+  lbAbrechnung: LohnbueroAbrechnung | null;
+  gespeichert: VerdienstbescheinigungWert | null;
+  bruttoEditEur: string;       // String, damit Leer-Eingabe = kein Override
+  ueberprueftEdit: boolean;
+}
+
+function monatsBereich(vonJahr: number, vonMonat: number, bisJahr: number, bisMonat: number): Array<{ jahr: number; monat: number }> {
+  const liste: Array<{ jahr: number; monat: number }> = [];
+  const startKey = vonJahr * 12 + (vonMonat - 1);
+  const endKey = bisJahr * 12 + (bisMonat - 1);
+  if (endKey < startKey) return liste;
+  for (let k = startKey; k <= endKey; k++) {
+    liste.push({ jahr: Math.floor(k / 12), monat: (k % 12) + 1 });
+  }
+  return liste;
+}
+
+// Hardcodierte Standardfragen mit (MA-abhängiger) Vorbelegung + Hinweis.
+// `defaultFn` liefert 'ja'/'nein' wenn eine sinnvolle Vorbelegung möglich ist,
+// sonst null — dann wird der Nutzer gezwungen, aktiv zu wählen.
+// `hinweisFn` darf null liefern, wenn der Hinweis kontextabhängig entfällt.
+// `zusatzWennJa`/`zusatzWennNein` werden ggf. auf der gedruckten Bescheinigung
+// als weitere Textzeile unter die Antwort gesetzt.
+type StandardFrageDef = {
+  id: string;
+  fragetext: string;
+  defaultFn: (ma: Mitarbeiter) => 'ja' | 'nein' | null;
+  hinweisFn?: (ma: Mitarbeiter) => string | null;
+  zusatzWennJa?: string;
+  zusatzWennNein?: string;
+};
+
+const STANDARD_FRAGEN: StandardFrageDef[] = [
+  {
+    id: 'std-konstantes-einkommen',
+    fragetext: 'Bleibt das oben bescheinigte Einkommen und die wöchentliche Arbeitszeit künftig konstant?',
+    defaultFn: () => 'nein',
+    hinweisFn: () => 'Standardannahme: Minijob-Verdienst schwankt monatlich (z. B. mit der Anzahl ausgetragener Ausgaben). Bei konstanter Vergütung manuell auf „Ja" setzen.',
+  },
+  {
+    id: 'std-familienangehoerige',
+    fragetext: 'Ist die Leistungsbezieherin / der Leistungsbezieher mithelfende/r Familienangehörige/r?',
+    defaultFn: () => 'nein',
+    hinweisFn: () => 'Standardannahme bei Minijob-Mitarbeitern ohne familiäre Bindung an die Geschäftsführung.',
+  },
+  {
+    id: 'std-ehrenamtlich',
+    fragetext: 'Handelt es sich um eine ehrenamtliche Tätigkeit?',
+    defaultFn: () => 'nein',
+    hinweisFn: () => 'Standardannahme: Schlieper-Druck zahlt Lohn — also keine ehrenamtliche Tätigkeit.',
+  },
+  {
+    id: 'std-kv-pv-pflicht',
+    fragetext: 'Der Arbeitnehmer entrichtet Pflichtbeiträge zur gesetzlichen Kranken-/Pflegeversicherung.',
+    defaultFn: (ma) => (ma.istMinijob ? 'nein' : null),
+    hinweisFn: (ma) => (ma.istMinijob
+      ? 'Vorbelegt mit „Nein", weil der Mitarbeiter als Minijobber bei Schlieper-Druck keine eigenen KV-/PV-Pflichtbeiträge entrichtet (Arbeitgeber zahlt Pauschalbeiträge).'
+      : null),
+  },
+  {
+    id: 'std-rv-pflicht',
+    fragetext: 'Der Arbeitnehmer entrichtet Pflichtbeiträge zur gesetzlichen Rentenversicherung.',
+    defaultFn: (ma) => (ma.istMinijob && ma.sozialversicherungsBefreit ? 'nein' : null),
+    hinweisFn: (ma) => (ma.istMinijob && ma.sozialversicherungsBefreit
+      ? 'Vorbelegt mit „Nein": Minijob + Befreiung von der Rentenversicherungspflicht liegt vor.'
+      : ma.istMinijob
+        ? null
+        : null),
+  },
+  {
+    id: 'std-lohnsteuer',
+    fragetext: 'Der Arbeitnehmer entrichtet Steuern vom Einkommen.',
+    defaultFn: (ma) => (ma.istMinijob ? 'nein' : null),
+    hinweisFn: (ma) => (ma.istMinijob
+      ? 'Vorbelegt mit „Nein": Schlieper-Druck wendet bei Minijobs die 2 %-Pauschalversteuerung durch den Arbeitgeber an — der Mitarbeiter zahlt keine Lohnsteuer.'
+      : null),
+  },
+  {
+    id: 'std-sonderzahlungen',
+    fragetext: 'Sind im Lohn Sonderzahlungen enthalten (Urlaubsgeld, Weihnachtsgeld u. ä.)?',
+    defaultFn: () => 'nein',
+    hinweisFn: () => 'Mit „Nein" abgedeckt sind außerdem: 13. Monatsgehalt, Jahres-, Erfolgs-, Gewinn-, Leistungs-, Treue-, Anwesenheits- und Inflationsausgleichsprämien, einmalige Bonuszahlungen, Jubiläumszuwendungen, Tantiemen, Provisionen.',
+  },
+  {
+    id: 'std-fahrtkosten',
+    fragetext: 'Wurden Fahrtkosten erstattet?',
+    defaultFn: () => null,    // bewusst keine Vorbelegung — muss aktiv beantwortet werden
+    zusatzWennJa: 'Erstattete Fahrtkosten sind in den monatlichen Lohnabrechnungen separat ausgewiesen.',
+  },
+];
+
+export type FrageMitAntwort = {
+  id: string;
+  fragetext: string;
+  antwortTyp: 'jaNein' | 'betrag' | 'text';
+  antwort: string;       // 'ja'/'nein' bei jaNein; freier Text/Betrag sonst; '' = nicht beantwortet
+  zusatzText?: string;   // wird im Druck unter die Antwort gesetzt (z. B. Q5-Ja-Hinweis)
+};
+
+/** Berechnet die Default-Antworten aller Standardfragen für einen MA. */
+function berechneStandardDefaults(ma: Mitarbeiter): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const def of STANDARD_FRAGEN) {
+    const d = def.defaultFn(ma);
+    out[def.id] = d ?? '';
+  }
+  return out;
+}
+
+const STANDARD_FRAGEN_IDS = new Set(STANDARD_FRAGEN.map((f) => f.id));
+/** Filter: nur Zusatz-Frage-IDs aus einer Antworten-Map behalten. */
+function zusatzKeysAus(map: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(map)) {
+    if (!STANDARD_FRAGEN_IDS.has(k)) out[k] = v;
+  }
+  return out;
+}
+
+function VerdienstbescheinigungTab({
+  mitarbeiter,
+  adminName,
+  lohnbueroAbrechnungen,
+  lohnbueroDriveLinks,
+  fragenKatalog,
+}: {
+  mitarbeiter: Mitarbeiter;
+  adminName: string;
+  lohnbueroAbrechnungen: LohnbueroAbrechnung[];
+  lohnbueroDriveLinks: LohnbueroDriveLink[];
+  fragenKatalog: VerdienstbescheinigungFrage[];
+}) {
+  const heute = new Date();
+  // Default-Bereich: letzte 12 Monate (heute-1Jahr bis heute).
+  const vorigesJahr = new Date(heute.getFullYear(), heute.getMonth() - 11, 1);
+  const [vonJahr, setVonJahr] = useState<number>(vorigesJahr.getFullYear());
+  const [vonMonat, setVonMonat] = useState<number>(vorigesJahr.getMonth() + 1);
+  const [bisJahr, setBisJahr] = useState<number>(heute.getFullYear());
+  const [bisMonat, setBisMonat] = useState<number>(heute.getMonth() + 1);
+
+  // Freier Text. Vorbelegt je nach Rolle des MA; bei Bedarf überschreibbar
+  // (z. B. „Bürokraft", „Maschinenführer"). Die beiden Default-Werte sind
+  // als Datalist-Vorschläge eingebunden.
+  const defaultTaetigkeitText = mitarbeiter.rollen.includes('austräger')
+    ? 'Austräger Anzeigenblattes'
+    : 'Aushilfe in der Produktion';
+  const [taetigkeit, setTaetigkeit] = useState<string>(defaultTaetigkeitText);
+
+  const [werteMap, setWerteMap] = useState<Map<string, VerdienstbescheinigungWert>>(new Map());
+  const [bruttoInputs, setBruttoInputs] = useState<Map<string, string>>(new Map());
+  const [ueberprueftInputs, setUeberprueftInputs] = useState<Map<string, boolean>>(new Map());
+  const [ladeStatus, setLadeStatus] = useState<'init' | 'laden' | 'ok' | 'fehler'>('init');
+  const [saving, setSaving] = useState(false);
+  const [druckOffen, setDruckOffen] = useState(false);
+
+  // Antworten auf alle Fragen (Standardfragen + Zusatzfragen aus dem Katalog).
+  // Wert ist immer ein String:
+  //   - 'ja' / 'nein' bei Ja/Nein-Fragen
+  //   - '' = nicht beantwortet (Nutzer muss aktiv wählen)
+  //   - Freitext / Betrag-String bei text- bzw. betrag-Fragen
+  // Vorbelegung erfolgt aus `STANDARD_FRAGEN[*].defaultFn(ma)` bzw. der
+  // `standardAntwort` der Zusatzfrage; null/leer = keine Vorbelegung.
+  const [antworten, setAntworten] = useState<Record<string, string>>(() =>
+    berechneStandardDefaults(mitarbeiter)
+  );
+
+  // Re-Init der Standard-Defaults bei MA-Wechsel oder bei Änderung der
+  // entscheidungsrelevanten MA-Flags (Minijob / SV-Befreiung).
+  useEffect(() => {
+    setAntworten((prev) => ({ ...berechneStandardDefaults(mitarbeiter), ...zusatzKeysAus(prev) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mitarbeiter.id, mitarbeiter.istMinijob, mitarbeiter.sozialversicherungsBefreit]);
+
+  // Anmerkung + internes Memo — werden aus MA geladen und beim Druck-Klick
+  // (bzw. dem Speichern-Button) zurückgeschrieben.
+  const [anmerkungDruckEdit, setAnmerkungDruckEdit] = useState(mitarbeiter.verdienstbescheinigungAnmerkung ?? '');
+  const [internesMemoEdit, setInternesMemoEdit] = useState(mitarbeiter.verdienstbescheinigungInternesMemo ?? '');
+
+  // Arbeitsamt-Kontaktdaten + Kennzeichen.
+  const [arbeitsamtKontaktEdit, setArbeitsamtKontaktEdit] = useState(() => ({
+    name: mitarbeiter.arbeitsamtKontakt?.name ?? '',
+    telefon: mitarbeiter.arbeitsamtKontakt?.telefon ?? '',
+    email: mitarbeiter.arbeitsamtKontakt?.email ?? '',
+    strasse: mitarbeiter.arbeitsamtKontakt?.strasse ?? '',
+    plz: mitarbeiter.arbeitsamtKontakt?.plz ?? '',
+    ort: mitarbeiter.arbeitsamtKontakt?.ort ?? '',
+  }));
+  const [arbeitsamtKundennummerEdit, setArbeitsamtKundennummerEdit] = useState(mitarbeiter.arbeitsamtKundennummer ?? '');
+  const [arbeitsamtKundennummerDruckenEdit, setArbeitsamtKundennummerDruckenEdit] = useState(!!mitarbeiter.arbeitsamtKundennummerDrucken);
+  const [arbeitsamtZeichenEdit, setArbeitsamtZeichenEdit] = useState(mitarbeiter.arbeitsamtZeichen ?? '');
+  const [arbeitsamtZeichenDruckenEdit, setArbeitsamtZeichenDruckenEdit] = useState(!!mitarbeiter.arbeitsamtZeichenDrucken);
+  const [adresskopfModeEdit, setAdresskopfModeEdit] = useState<'arbeitsamt' | 'eigene' | 'keine'>(() => {
+    if (mitarbeiter.verdienstbescheinigungAdresskopfMode) return mitarbeiter.verdienstbescheinigungAdresskopfMode;
+    return mitarbeiter.arbeitsamtKontakt?.name ? 'arbeitsamt' : 'keine';
+  });
+  const [adresskopfEigeneEdit, setAdresskopfEigeneEdit] = useState(() => ({
+    name: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.name ?? '',
+    strasse: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.strasse ?? '',
+    plz: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.plz ?? '',
+    ort: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.ort ?? '',
+  }));
+
+  // Inline-Formular „neue Frage anlegen".
+  const [neueFrageOpen, setNeueFrageOpen] = useState(false);
+  const [neueFrageText, setNeueFrageText] = useState('');
+  const [neueFrageTyp, setNeueFrageTyp] = useState<VerdienstbescheinigungAntwortTyp>('jaNein');
+  const [neueFrageStandard, setNeueFrageStandard] = useState('');
+  const [neueFrageHinweis, setNeueFrageHinweis] = useState('');
+  const [neueFrageSaving, setNeueFrageSaving] = useState(false);
+
+  // Nach MA-Wechsel: Anmerkung/Memo neu laden.
+  useEffect(() => {
+    setAnmerkungDruckEdit(mitarbeiter.verdienstbescheinigungAnmerkung ?? '');
+    setInternesMemoEdit(mitarbeiter.verdienstbescheinigungInternesMemo ?? '');
+  }, [mitarbeiter.id, mitarbeiter.verdienstbescheinigungAnmerkung, mitarbeiter.verdienstbescheinigungInternesMemo]);
+
+  // Nach MA-Wechsel: alle Arbeitsamt-Felder neu laden.
+  useEffect(() => {
+    setArbeitsamtKontaktEdit({
+      name: mitarbeiter.arbeitsamtKontakt?.name ?? '',
+      telefon: mitarbeiter.arbeitsamtKontakt?.telefon ?? '',
+      email: mitarbeiter.arbeitsamtKontakt?.email ?? '',
+      strasse: mitarbeiter.arbeitsamtKontakt?.strasse ?? '',
+      plz: mitarbeiter.arbeitsamtKontakt?.plz ?? '',
+      ort: mitarbeiter.arbeitsamtKontakt?.ort ?? '',
+    });
+    setArbeitsamtKundennummerEdit(mitarbeiter.arbeitsamtKundennummer ?? '');
+    setArbeitsamtKundennummerDruckenEdit(!!mitarbeiter.arbeitsamtKundennummerDrucken);
+    setArbeitsamtZeichenEdit(mitarbeiter.arbeitsamtZeichen ?? '');
+    setArbeitsamtZeichenDruckenEdit(!!mitarbeiter.arbeitsamtZeichenDrucken);
+    setAdresskopfModeEdit(
+      mitarbeiter.verdienstbescheinigungAdresskopfMode ??
+      (mitarbeiter.arbeitsamtKontakt?.name ? 'arbeitsamt' : 'keine')
+    );
+    setAdresskopfEigeneEdit({
+      name: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.name ?? '',
+      strasse: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.strasse ?? '',
+      plz: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.plz ?? '',
+      ort: mitarbeiter.verdienstbescheinigungAdresskopfEigene?.ort ?? '',
+    });
+  }, [mitarbeiter.id]);
+
+  // Bei neuen Zusatzfragen: Vorbelegung aus `standardAntwort` übernehmen
+  // (leer = bewusst keine Vorbelegung; Nutzer muss aktiv wählen).
+  useEffect(() => {
+    setAntworten((prev) => {
+      const next: Record<string, string> = { ...prev };
+      let changed = false;
+      for (const f of fragenKatalog) {
+        if (f.archiviert) continue;
+        if (next[f.id] == null) {
+          next[f.id] = f.standardAntwort ?? '';
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [fragenKatalog]);
+
+  // Persistente Werte einmalig laden (pro MA-Wechsel).
+  useEffect(() => {
+    let abgebrochen = false;
+    setLadeStatus('laden');
+    ladeVerdienstbescheinigungWerte(mitarbeiter.id)
+      .then((werte) => {
+        if (abgebrochen) return;
+        const m = new Map<string, VerdienstbescheinigungWert>();
+        for (const w of werte) m.set(`${w.jahr}-${w.monat}`, w);
+        setWerteMap(m);
+        setBruttoInputs(new Map());
+        setUeberprueftInputs(new Map());
+        setLadeStatus('ok');
+      })
+      .catch(() => {
+        if (abgebrochen) return;
+        setLadeStatus('fehler');
+      });
+    return () => { abgebrochen = true; };
+  }, [mitarbeiter.id]);
+
+  // Abrechnungen je (Jahr, Monat) für DIESEN MA — sorgt für die LB-Brutto Anzeige.
+  // Nimmt jeweils die NICHT-Korrektur-Variante mit der höchsten Brutto (defensiver
+  // Default: falls mehrere PDFs für dieselbe Periode liegen).
+  const lbMap = (() => {
+    const map = new Map<string, LohnbueroAbrechnung>();
+    for (const e of lohnbueroAbrechnungen) {
+      if (e.mitarbeiterId !== mitarbeiter.id) continue;
+      const key = `${e.jahr}-${e.monat}`;
+      const bestehend = map.get(key);
+      if (!bestehend) {
+        map.set(key, e);
+      } else {
+        // Bevorzuge Original ggü. Korrektur; ansonsten die jüngste indizierte.
+        if (bestehend.istKorrektur && !e.istKorrektur) map.set(key, e);
+        else if (bestehend.istKorrektur === e.istKorrektur && e.indiziertAm > bestehend.indiziertAm) {
+          map.set(key, e);
+        }
+      }
+    }
+    return map;
+  })();
+
+  // Drive-Link je (Jahr, Monat) — Fallback auf Jahres-Link.
+  const driveLinkFuer = (jahr: number, monat: number): string | null => {
+    const monatsLink = lohnbueroDriveLinks.find((l) => l.jahr === jahr && l.monat === monat);
+    if (monatsLink) return monatsLink.url;
+    const jahresLink = lohnbueroDriveLinks.find((l) => l.jahr === jahr && l.monat == null);
+    return jahresLink ? jahresLink.url : null;
+  };
+
+  const zeilen: MonatsZeile[] = monatsBereich(vonJahr, vonMonat, bisJahr, bisMonat).map((m) => {
+    const key = `${m.jahr}-${m.monat}`;
+    const lb = lbMap.get(key) ?? null;
+    const gespeichert = werteMap.get(key) ?? null;
+    const bruttoEditEur =
+      bruttoInputs.get(key) ??
+      (gespeichert?.bruttoManuell != null
+        ? gespeichert.bruttoManuell.toFixed(2).replace('.', ',')
+        : '');
+    const ueberprueftEdit = ueberprueftInputs.get(key) ?? (gespeichert?.ueberprueft ?? false);
+    return { jahr: m.jahr, monat: m.monat, lbAbrechnung: lb, gespeichert, bruttoEditEur, ueberprueftEdit };
+  });
+
+  // Eingaben → effektiver Brutto-Wert je Zeile.
+  function effektivesBrutto(z: MonatsZeile): number | null {
+    const eingabe = z.bruttoEditEur.trim();
+    if (eingabe) {
+      const num = parseFloat(eingabe.replace(',', '.'));
+      return Number.isFinite(num) ? num : null;
+    }
+    return z.lbAbrechnung ? z.lbAbrechnung.gesamtBrutto : null;
+  }
+
+  // Welche Zeilen sind „dirty" (von gespeichertem Zustand abweichend)?
+  function istDirty(z: MonatsZeile): boolean {
+    const key = `${z.jahr}-${z.monat}`;
+    const bruttoEingabeRoh = bruttoInputs.get(key);
+    const ueberprueftEingabeRoh = ueberprueftInputs.get(key);
+    if (bruttoEingabeRoh == null && ueberprueftEingabeRoh == null) return false;
+    return true;
+  }
+
+  // Pflicht-Daten prüfen (für „Bescheinigung drucken"-Knopf).
+  function pflichtFehlend(): string[] {
+    const fehlend: string[] = [];
+    if (!mitarbeiter.sozialversicherungsNummer?.trim()) fehlend.push('Sozialversicherungsnummer');
+    if (!mitarbeiter.geburtsdatum) fehlend.push('Geburtsdatum');
+    if (!mitarbeiter.adresse?.strasse?.trim()) fehlend.push('Straße');
+    if (!mitarbeiter.adresse?.plz?.trim() || !mitarbeiter.adresse?.ort?.trim()) fehlend.push('PLZ/Ort');
+    if (!mitarbeiter.startDatum) fehlend.push('Startdatum (Reiter Anmeldung)');
+    return fehlend;
+  }
+
+  const ungepruefteMonate = zeilen.filter((z) => !z.ueberprueftEdit).map((z) => `${MONATSNAMEN_KURZ[z.monat - 1]} ${z.jahr}`);
+  const monateOhneLB = zeilen.filter((z) => !z.lbAbrechnung && !z.bruttoEditEur.trim() && !(z.gespeichert?.bruttoManuell != null)).map((z) => `${MONATSNAMEN_KURZ[z.monat - 1]} ${z.jahr}`);
+  const fehlend = pflichtFehlend();
+  const druckBereit = fehlend.length === 0 && ungepruefteMonate.length === 0 && monateOhneLB.length === 0 && zeilen.length > 0;
+
+  // Summe / Durchschnitt
+  const summe = zeilen.reduce((acc, z) => acc + (effektivesBrutto(z) ?? 0), 0);
+  const durchschnitt = zeilen.length > 0 ? summe / zeilen.length : 0;
+
+  function setBruttoInput(key: string, value: string) {
+    setBruttoInputs((prev) => {
+      const next = new Map(prev);
+      next.set(key, value);
+      return next;
+    });
+  }
+  function setUeberprueftInput(key: string, value: boolean) {
+    setUeberprueftInputs((prev) => {
+      const next = new Map(prev);
+      next.set(key, value);
+      return next;
+    });
+  }
+
+  const anmerkungDirty = (anmerkungDruckEdit || '') !== (mitarbeiter.verdienstbescheinigungAnmerkung ?? '');
+  const memoDirty = (internesMemoEdit || '') !== (mitarbeiter.verdienstbescheinigungInternesMemo ?? '');
+
+  // Dirty-Flag für die ganze Arbeitsamt-Section (Kontakt + Kennzeichen + Adresskopf-Mode).
+  const arbeitsamtDirty = (() => {
+    const k = mitarbeiter.arbeitsamtKontakt ?? {};
+    const e = mitarbeiter.verdienstbescheinigungAdresskopfEigene ?? {};
+    if ((arbeitsamtKontaktEdit.name || '') !== (k.name ?? '')) return true;
+    if ((arbeitsamtKontaktEdit.telefon || '') !== (k.telefon ?? '')) return true;
+    if ((arbeitsamtKontaktEdit.email || '') !== (k.email ?? '')) return true;
+    if ((arbeitsamtKontaktEdit.strasse || '') !== (k.strasse ?? '')) return true;
+    if ((arbeitsamtKontaktEdit.plz || '') !== (k.plz ?? '')) return true;
+    if ((arbeitsamtKontaktEdit.ort || '') !== (k.ort ?? '')) return true;
+    if ((arbeitsamtKundennummerEdit || '') !== (mitarbeiter.arbeitsamtKundennummer ?? '')) return true;
+    if (arbeitsamtKundennummerDruckenEdit !== !!mitarbeiter.arbeitsamtKundennummerDrucken) return true;
+    if ((arbeitsamtZeichenEdit || '') !== (mitarbeiter.arbeitsamtZeichen ?? '')) return true;
+    if (arbeitsamtZeichenDruckenEdit !== !!mitarbeiter.arbeitsamtZeichenDrucken) return true;
+    const aktuellerModus = mitarbeiter.verdienstbescheinigungAdresskopfMode ??
+      (mitarbeiter.arbeitsamtKontakt?.name ? 'arbeitsamt' : 'keine');
+    if (adresskopfModeEdit !== aktuellerModus) return true;
+    if ((adresskopfEigeneEdit.name || '') !== (e.name ?? '')) return true;
+    if ((adresskopfEigeneEdit.strasse || '') !== (e.strasse ?? '')) return true;
+    if ((adresskopfEigeneEdit.plz || '') !== (e.plz ?? '')) return true;
+    if ((adresskopfEigeneEdit.ort || '') !== (e.ort ?? '')) return true;
+    return false;
+  })();
+
+  async function speichereDirty() {
+    setSaving(true);
+    try {
+      for (const z of zeilen) {
+        if (!istDirty(z)) continue;
+        const bruttoStr = z.bruttoEditEur.trim();
+        const bruttoNum = bruttoStr ? parseFloat(bruttoStr.replace(',', '.')) : undefined;
+        const bruttoManuell = bruttoNum != null && Number.isFinite(bruttoNum) ? bruttoNum : undefined;
+        await setzeVerdienstbescheinigungWert(
+          mitarbeiter.id,
+          z.jahr,
+          z.monat,
+          { bruttoManuell, ueberprueft: z.ueberprueftEdit },
+          adminName || 'Admin',
+        );
+      }
+      // Anmerkung + internes Memo + Arbeitsamt-Daten persistieren, wenn geändert.
+      if (anmerkungDirty || memoDirty || arbeitsamtDirty) {
+        // Hilfsfunktion: Objekt nur dann setzen, wenn mindestens ein Feld
+        // ausgefüllt ist; sonst undefined (Feld in Firestore löschen).
+        const kontaktClean = {
+          name: arbeitsamtKontaktEdit.name.trim() || undefined,
+          telefon: arbeitsamtKontaktEdit.telefon.trim() || undefined,
+          email: arbeitsamtKontaktEdit.email.trim() || undefined,
+          strasse: arbeitsamtKontaktEdit.strasse.trim() || undefined,
+          plz: arbeitsamtKontaktEdit.plz.trim() || undefined,
+          ort: arbeitsamtKontaktEdit.ort.trim() || undefined,
+        };
+        const kontaktLeer = Object.values(kontaktClean).every((v) => v == null);
+        const eigeneClean = {
+          name: adresskopfEigeneEdit.name.trim() || undefined,
+          strasse: adresskopfEigeneEdit.strasse.trim() || undefined,
+          plz: adresskopfEigeneEdit.plz.trim() || undefined,
+          ort: adresskopfEigeneEdit.ort.trim() || undefined,
+        };
+        const eigeneLeer = Object.values(eigeneClean).every((v) => v == null);
+        await aktualisiereMitarbeiter(mitarbeiter.id, {
+          verdienstbescheinigungAnmerkung: anmerkungDruckEdit.trim() || undefined,
+          verdienstbescheinigungInternesMemo: internesMemoEdit.trim() || undefined,
+          arbeitsamtKontakt: kontaktLeer ? undefined : kontaktClean,
+          arbeitsamtKundennummer: arbeitsamtKundennummerEdit.trim() || undefined,
+          arbeitsamtKundennummerDrucken: arbeitsamtKundennummerDruckenEdit || undefined,
+          arbeitsamtZeichen: arbeitsamtZeichenEdit.trim() || undefined,
+          arbeitsamtZeichenDrucken: arbeitsamtZeichenDruckenEdit || undefined,
+          verdienstbescheinigungAdresskopfMode: adresskopfModeEdit,
+          verdienstbescheinigungAdresskopfEigene: eigeneLeer ? undefined : eigeneClean,
+        });
+      }
+      // Nach dem Speichern: neu laden, Eingabe-Caches leeren.
+      const frisch = await ladeVerdienstbescheinigungWerte(mitarbeiter.id);
+      const m = new Map<string, VerdienstbescheinigungWert>();
+      for (const w of frisch) m.set(`${w.jahr}-${w.monat}`, w);
+      setWerteMap(m);
+      setBruttoInputs(new Map());
+      setUeberprueftInputs(new Map());
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function druckenMitAutoSave() {
+    if (dirtyAnzahl > 0 || anmerkungDirty || memoDirty || arbeitsamtDirty) {
+      await speichereDirty();
+    }
+    setDruckOffen(true);
+  }
+
+  async function frageAnlegen() {
+    if (!neueFrageText.trim()) return;
+    setNeueFrageSaving(true);
+    try {
+      const maxSort = fragenKatalog.reduce((m, f) => Math.max(m, f.sortierung), 0);
+      await erstelleVerdienstbescheinigungFrage(
+        neueFrageText,
+        neueFrageTyp,
+        maxSort + 10,
+        neueFrageStandard.trim() || undefined,
+        neueFrageHinweis.trim() || undefined,
+      );
+      setNeueFrageText('');
+      setNeueFrageTyp('jaNein');
+      setNeueFrageStandard('');
+      setNeueFrageHinweis('');
+      setNeueFrageOpen(false);
+    } finally {
+      setNeueFrageSaving(false);
+    }
+  }
+
+  async function frageLoeschen(frageId: string) {
+    if (!confirm('Diese Zusatzfrage wirklich aus dem Katalog entfernen?\n\nSie verschwindet dann für ALLE Mitarbeiter — auf bereits gedruckten Bescheinigungen bleibt sie natürlich erhalten.')) return;
+    await loescheVerdienstbescheinigungFrage(frageId);
+  }
+
+  const aktiveZusatzFragen = fragenKatalog.filter((f) => !f.archiviert);
+  const dirtyAnzahl = zeilen.filter(istDirty).length;
+  const aktuellesJahr = heute.getFullYear();
+  const jahreAuswahl: number[] = [];
+  for (let j = aktuellesJahr - 5; j <= aktuellesJahr + 1; j++) jahreAuswahl.push(j);
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-lg border border-blue-200 bg-blue-50/40 p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-800">Bescheinigungs-Zeitraum</h3>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Von</label>
+            <div className="flex gap-1">
+              <select
+                value={vonMonat}
+                onChange={(e) => setVonMonat(parseInt(e.target.value, 10))}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                {MONATSNAMEN_KURZ.map((n, i) => (
+                  <option key={i + 1} value={i + 1}>{n}</option>
+                ))}
+              </select>
+              <select
+                value={vonJahr}
+                onChange={(e) => setVonJahr(parseInt(e.target.value, 10))}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                {jahreAuswahl.map((j) => <option key={j} value={j}>{j}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Bis</label>
+            <div className="flex gap-1">
+              <select
+                value={bisMonat}
+                onChange={(e) => setBisMonat(parseInt(e.target.value, 10))}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                {MONATSNAMEN_KURZ.map((n, i) => (
+                  <option key={i + 1} value={i + 1}>{n}</option>
+                ))}
+              </select>
+              <select
+                value={bisJahr}
+                onChange={(e) => setBisJahr(parseInt(e.target.value, 10))}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                {jahreAuswahl.map((j) => <option key={j} value={j}>{j}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="ml-auto">
+            <label className="block text-xs text-gray-500 mb-0.5">Tätigkeit</label>
+            <div className="flex gap-1.5 items-center">
+              <input
+                type="text"
+                value={taetigkeit}
+                onChange={(e) => setTaetigkeit(e.target.value)}
+                placeholder="Tätigkeit eingeben…"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm w-72"
+              />
+              {(['Austräger Anzeigenblattes', 'Aushilfe in der Produktion'] as const).map((preset) => {
+                const aktiv = taetigkeit === preset;
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setTaetigkeit(preset)}
+                    className={`px-2 py-1.5 text-xs rounded border whitespace-nowrap ${
+                      aktiv
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
+                    }`}
+                    title={`Tätigkeit auf „${preset}" setzen`}
+                  >
+                    {preset}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {ladeStatus === 'laden' && (
+        <div className="text-sm text-gray-500">Lade gespeicherte Werte…</div>
+      )}
+      {ladeStatus === 'fehler' && (
+        <div className="text-sm text-red-700">Fehler beim Laden der gespeicherten Werte.</div>
+      )}
+
+      {ladeStatus !== 'laden' && (
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Monat</th>
+                <th className="px-3 py-2 text-right font-medium" title="Brutto laut Lohnbüro-PDF">Brutto LB</th>
+                <th className="px-3 py-2 text-right font-medium" title="Manueller Override — leer = LB-Wert nutzen">Manuelles Brutto</th>
+                <th className="px-3 py-2 text-center font-medium" title="Wert wurde gegen die Original-PDF geprüft und ist freigegeben">Wert überprüft</th>
+                <th className="px-3 py-2 text-left font-medium">PDF</th>
+                <th className="px-3 py-2 text-right font-medium">Effektiv</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {zeilen.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-gray-400">
+                    Zeitraum-Bereich leer (Von &gt; Bis?).
+                  </td>
+                </tr>
+              ) : (
+                // Anzeige rückwärts — aktueller Monat oben. Für Druck +
+                // Summen-Berechnung bleibt `zeilen` chronologisch.
+                [...zeilen].reverse().map((z) => {
+                  const key = `${z.jahr}-${z.monat}`;
+                  const eff = effektivesBrutto(z);
+                  const dirty = istDirty(z);
+                  const driveLink = driveLinkFuer(z.jahr, z.monat);
+                  return (
+                    <tr key={key} className={dirty ? 'bg-amber-50/40' : ''}>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-700">
+                        {MONATSNAMEN_KURZ[z.monat - 1]} {z.jahr}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono text-gray-700">
+                        {z.lbAbrechnung ? eur(z.lbAbrechnung.gesamtBrutto) : <span className="text-gray-300" title="Für diesen Monat liegt keine Lohnbüro-PDF im System">— keine PDF —</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={z.bruttoEditEur}
+                          onChange={(e) => setBruttoInput(key, e.target.value)}
+                          placeholder={z.lbAbrechnung ? '' : '—'}
+                          className="w-28 text-right border border-gray-300 rounded px-2 py-1 text-sm font-mono"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <input
+                          type="checkbox"
+                          checked={z.ueberprueftEdit}
+                          onChange={(e) => setUeberprueftInput(key, e.target.checked)}
+                          className="rounded"
+                          title="Übernimmt den Brutto-Wert für die Bescheinigung"
+                        />
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        {z.lbAbrechnung ? (
+                          <a
+                            href={`https://drive.google.com/file/d/${z.lbAbrechnung.fileId}/view#page=${z.lbAbrechnung.seite}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-700 underline hover:text-blue-900"
+                            title={z.lbAbrechnung.fileName}
+                          >
+                            📄 Seite {z.lbAbrechnung.seite}
+                          </a>
+                        ) : driveLink ? (
+                          <a
+                            href={driveLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-gray-500 underline hover:text-gray-700"
+                            title="Kein indiziertes PDF — Drive-Ordner öffnen"
+                          >
+                            📁 Ordner
+                          </a>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono font-semibold text-gray-900">
+                        {eff != null ? eur(eff) : <span className="text-gray-300">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+            {zeilen.length > 0 && (
+              <tfoot className="bg-gray-50 border-t border-gray-200 text-xs">
+                <tr>
+                  <td className="px-3 py-2 font-semibold text-gray-700">Summe</td>
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{eur(summe)}</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-2 font-semibold text-gray-700">Durchschnitt</td>
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{eur(durchschnitt)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      )}
+
+      {/* ---- Fragenblock ---- */}
+      <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-800">Fragen auf der Bescheinigung</h3>
+          <button
+            type="button"
+            onClick={() => setNeueFrageOpen((v) => !v)}
+            className="text-xs text-blue-700 hover:text-blue-900 underline"
+          >
+            {neueFrageOpen ? '— abbrechen' : '+ Frage hinzufügen'}
+          </button>
+        </div>
+
+        {/* Standardfragen */}
+        <div className="space-y-2">
+          {STANDARD_FRAGEN.map((f) => {
+            const defaultAntwort = f.defaultFn(mitarbeiter);
+            const hinweis = f.hinweisFn?.(mitarbeiter) ?? null;
+            const aktuelleAntwort = antworten[f.id] ?? '';
+            return (
+              <FrageJaNeinZeile
+                key={f.id}
+                fragetext={f.fragetext}
+                wert={aktuelleAntwort}
+                defaultWert={defaultAntwort}
+                hinweis={hinweis}
+                onChange={(v) => setAntworten((prev) => ({ ...prev, [f.id]: v }))}
+                onLeeren={() => setAntworten((prev) => ({ ...prev, [f.id]: '' }))}
+              />
+            );
+          })}
+        </div>
+
+        {/* Zusatzfragen aus dem Katalog */}
+        {aktiveZusatzFragen.length > 0 && (
+          <div className="space-y-2 pt-2 border-t border-gray-100">
+            <p className="text-xs text-gray-500">
+              Zusatzfragen (Katalog gilt für alle Mitarbeiter):
+            </p>
+            {aktiveZusatzFragen.map((f) => (
+              <ZusatzFrageZeile
+                key={f.id}
+                frage={f}
+                antwort={antworten[f.id] ?? (f.standardAntwort ?? '')}
+                onAntwort={(v) => setAntworten((prev) => ({ ...prev, [f.id]: v }))}
+                onLoeschen={() => frageLoeschen(f.id)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Inline-Form für neue Frage */}
+        {neueFrageOpen && (
+          <div className="rounded-md border border-blue-200 bg-blue-50/50 p-3 space-y-2">
+            <div className="flex gap-2 items-start">
+              <input
+                type="text"
+                value={neueFrageText}
+                onChange={(e) => setNeueFrageText(e.target.value)}
+                placeholder="Fragetext (wird auf der Bescheinigung gedruckt)…"
+                className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
+                autoFocus
+              />
+              <select
+                value={neueFrageTyp}
+                onChange={(e) => {
+                  const t = e.target.value as VerdienstbescheinigungAntwortTyp;
+                  setNeueFrageTyp(t);
+                  // Wenn der Standardantwort-Wert nicht zum neuen Typ passt → leeren.
+                  if (t !== 'jaNein' && (neueFrageStandard === 'ja' || neueFrageStandard === 'nein')) {
+                    setNeueFrageStandard('');
+                  }
+                }}
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              >
+                <option value="jaNein">Ja/Nein</option>
+                <option value="betrag">Betrag (EUR)</option>
+                <option value="text">Freitext</option>
+              </select>
+            </div>
+            <div className="flex gap-2 items-center">
+              <label className="text-[11px] text-gray-600 shrink-0">Standardantwort:</label>
+              {neueFrageTyp === 'jaNein' ? (
+                <select
+                  value={neueFrageStandard}
+                  onChange={(e) => setNeueFrageStandard(e.target.value)}
+                  className="border border-gray-300 rounded px-2 py-1 text-xs"
+                >
+                  <option value="">— keine (Nutzer muss wählen) —</option>
+                  <option value="ja">Ja</option>
+                  <option value="nein">Nein</option>
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={neueFrageStandard}
+                  onChange={(e) => setNeueFrageStandard(e.target.value)}
+                  placeholder={neueFrageTyp === 'betrag' ? 'z. B. 0,00 (leer = keine Vorbelegung)' : 'leer = keine Vorbelegung'}
+                  className="flex-1 border border-gray-300 rounded px-2 py-1 text-xs"
+                />
+              )}
+            </div>
+            <textarea
+              value={neueFrageHinweis}
+              onChange={(e) => setNeueFrageHinweis(e.target.value)}
+              placeholder="Hinweistext (optional, erscheint als ⓘ neben der Antwort)"
+              rows={2}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-xs"
+            />
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={frageAnlegen}
+                disabled={!neueFrageText.trim() || neueFrageSaving}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-3 py-1.5 rounded text-sm font-medium"
+              >
+                {neueFrageSaving ? '…' : 'Anlegen'}
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-500">
+              Die neue Frage wird im globalen Fragen-Katalog gespeichert und erscheint
+              automatisch bei allen Mitarbeiter-Bescheinigungen.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* ---- Anmerkung (gedruckt) ---- */}
+      <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-2">
+        <h3 className="text-sm font-semibold text-gray-800">
+          Anmerkung auf der Bescheinigung
+        </h3>
+        <p className="text-xs text-gray-500">
+          Optional. Wenn ausgefüllt, erscheint dieser Text auf dem gedruckten
+          Dokument. Leer → wird ausgeblendet.
+        </p>
+        <textarea
+          value={anmerkungDruckEdit}
+          onChange={(e) => setAnmerkungDruckEdit(e.target.value)}
+          placeholder='z. B. „Beschäftigung unterbrochen vom 01.03.–15.03.2026 wegen Krankheit."'
+          rows={3}
+          className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+        />
+      </div>
+
+      {/* ---- Internes Memo (NICHT gedruckt) ---- */}
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-2">
+        <h3 className="text-sm font-semibold text-gray-800">
+          Internes Memo (wird nicht gedruckt)
+        </h3>
+        <textarea
+          value={internesMemoEdit}
+          onChange={(e) => setInternesMemoEdit(e.target.value)}
+          placeholder="Nur intern — z. B. Rückfragen, Hinweise für nächste Bescheinigung…"
+          rows={3}
+          className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+        />
+      </div>
+
+      {/* ---- Kontaktdaten Arbeitsamt ---- */}
+      <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
+        <h3 className="text-sm font-semibold text-gray-800">
+          Kontaktdaten Arbeitsamt (Bundesagentur für Arbeit)
+        </h3>
+
+        {/* Ansprechpartner */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Sachbearbeiter (Name)</label>
+            <input
+              type="text"
+              value={arbeitsamtKontaktEdit.name}
+              onChange={(e) => setArbeitsamtKontaktEdit((p) => ({ ...p, name: e.target.value }))}
+              placeholder="z. B. Frau Müller"
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Telefon</label>
+            <input
+              type="text"
+              value={arbeitsamtKontaktEdit.telefon}
+              onChange={(e) => setArbeitsamtKontaktEdit((p) => ({ ...p, telefon: e.target.value }))}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">E-Mail</label>
+            <input
+              type="email"
+              value={arbeitsamtKontaktEdit.email}
+              onChange={(e) => setArbeitsamtKontaktEdit((p) => ({ ...p, email: e.target.value }))}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Straße + Hausnr.</label>
+            <input
+              type="text"
+              value={arbeitsamtKontaktEdit.strasse}
+              onChange={(e) => setArbeitsamtKontaktEdit((p) => ({ ...p, strasse: e.target.value }))}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">PLZ</label>
+            <input
+              type="text"
+              value={arbeitsamtKontaktEdit.plz}
+              onChange={(e) => setArbeitsamtKontaktEdit((p) => ({ ...p, plz: e.target.value }))}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Ort</label>
+            <input
+              type="text"
+              value={arbeitsamtKontaktEdit.ort}
+              onChange={(e) => setArbeitsamtKontaktEdit((p) => ({ ...p, ort: e.target.value }))}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+        </div>
+
+        {/* Kundennummer + Ihr Zeichen mit Drucken-Toggle */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-gray-100">
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Kundennummer (des Mitarbeiters bei der BA)</label>
+            <input
+              type="text"
+              value={arbeitsamtKundennummerEdit}
+              onChange={(e) => setArbeitsamtKundennummerEdit(e.target.value)}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+            <label className="mt-1 flex items-center gap-2 text-xs text-gray-700">
+              <input
+                type="checkbox"
+                checked={arbeitsamtKundennummerDruckenEdit}
+                onChange={(e) => setArbeitsamtKundennummerDruckenEdit(e.target.checked)}
+                disabled={!arbeitsamtKundennummerEdit.trim()}
+                className="rounded"
+              />
+              In Betreffzeile der Bescheinigung drucken
+            </label>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-0.5">Ihr Zeichen (BA)</label>
+            <input
+              type="text"
+              value={arbeitsamtZeichenEdit}
+              onChange={(e) => setArbeitsamtZeichenEdit(e.target.value)}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+            <label className="mt-1 flex items-center gap-2 text-xs text-gray-700">
+              <input
+                type="checkbox"
+                checked={arbeitsamtZeichenDruckenEdit}
+                onChange={(e) => setArbeitsamtZeichenDruckenEdit(e.target.checked)}
+                disabled={!arbeitsamtZeichenEdit.trim()}
+                className="rounded"
+              />
+              In Betreffzeile der Bescheinigung drucken
+            </label>
+          </div>
+        </div>
+
+        {/* Adresskopf-Auswahl */}
+        <div className="pt-2 border-t border-gray-100 space-y-2">
+          <label className="block text-xs font-semibold text-gray-700">Adresskopf der Bescheinigung</label>
+          <div className="flex flex-wrap gap-3 text-sm text-gray-700">
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                checked={adresskopfModeEdit === 'arbeitsamt'}
+                onChange={() => setAdresskopfModeEdit('arbeitsamt')}
+              />
+              Name + Adresse Arbeitsamt
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                checked={adresskopfModeEdit === 'eigene'}
+                onChange={() => setAdresskopfModeEdit('eigene')}
+              />
+              Eigene Adresse
+            </label>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="radio"
+                checked={adresskopfModeEdit === 'keine'}
+                onChange={() => setAdresskopfModeEdit('keine')}
+              />
+              Keine Adresse
+            </label>
+          </div>
+          {adresskopfModeEdit === 'eigene' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pt-2">
+              <input
+                type="text"
+                value={adresskopfEigeneEdit.name}
+                onChange={(e) => setAdresskopfEigeneEdit((p) => ({ ...p, name: e.target.value }))}
+                placeholder="Name / Behörde"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm md:col-span-2"
+              />
+              <input
+                type="text"
+                value={adresskopfEigeneEdit.strasse}
+                onChange={(e) => setAdresskopfEigeneEdit((p) => ({ ...p, strasse: e.target.value }))}
+                placeholder="Straße + Hausnr."
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm md:col-span-2"
+              />
+              <input
+                type="text"
+                value={adresskopfEigeneEdit.plz}
+                onChange={(e) => setAdresskopfEigeneEdit((p) => ({ ...p, plz: e.target.value }))}
+                placeholder="PLZ"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+              <input
+                type="text"
+                value={adresskopfEigeneEdit.ort}
+                onChange={(e) => setAdresskopfEigeneEdit((p) => ({ ...p, ort: e.target.value }))}
+                placeholder="Ort"
+                className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ---- Aktionen ---- */}
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={speichereDirty}
+          disabled={(dirtyAnzahl === 0 && !anmerkungDirty && !memoDirty && !arbeitsamtDirty) || saving}
+          className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-4 py-2 rounded-lg text-sm font-medium"
+        >
+          {saving
+            ? 'Speichert…'
+            : `💾 Änderungen speichern${dirtyAnzahl + (anmerkungDirty ? 1 : 0) + (memoDirty ? 1 : 0) + (arbeitsamtDirty ? 1 : 0) > 0 ? ` (${dirtyAnzahl + (anmerkungDirty ? 1 : 0) + (memoDirty ? 1 : 0) + (arbeitsamtDirty ? 1 : 0)})` : ''}`}
+        </button>
+        <button
+          type="button"
+          onClick={druckenMitAutoSave}
+          disabled={!druckBereit || saving}
+          className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 text-white px-4 py-2 rounded-lg text-sm font-medium"
+          title={druckBereit
+            ? 'Bescheinigung in Druck-Vorschau öffnen (offene Änderungen werden automatisch gespeichert)'
+            : 'Pflichtdaten fehlen oder Monate sind nicht überprüft'}
+        >
+          🖨️ Verdienstbescheinigung drucken
+        </button>
+      </div>
+
+      {(fehlend.length > 0 || ungepruefteMonate.length > 0 || monateOhneLB.length > 0) && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-2">
+          <p className="font-semibold">Vor dem Druck noch zu erledigen:</p>
+          {fehlend.length > 0 && (
+            <div>
+              <span className="font-medium">Fehlende Stammdaten:</span>{' '}
+              {fehlend.join(', ')}
+            </div>
+          )}
+          {monateOhneLB.length > 0 && (
+            <div>
+              <span className="font-medium">Monate ohne Brutto-Wert (weder LB-PDF noch manueller Override):</span>{' '}
+              {monateOhneLB.join(', ')}
+            </div>
+          )}
+          {ungepruefteMonate.length > 0 && (
+            <div>
+              <span className="font-medium">Noch nicht überprüfte Monate:</span>{' '}
+              {ungepruefteMonate.join(', ')}
+            </div>
+          )}
+        </div>
+      )}
+
+      {druckOffen && (
+        <VerdienstbescheinigungDruck
+          mitarbeiter={mitarbeiter}
+          taetigkeit={taetigkeit}
+          zeilen={zeilen.map((z) => ({
+            jahr: z.jahr,
+            monat: z.monat,
+            bruttoEur: effektivesBrutto(z) ?? 0,
+          }))}
+          durchschnittEur={durchschnitt}
+          standardFragen={STANDARD_FRAGEN.map((f) => {
+            const a = antworten[f.id] ?? '';
+            return {
+              id: f.id,
+              fragetext: f.fragetext,
+              antwortTyp: 'jaNein' as const,
+              antwort: a === 'ja' ? 'Ja' : a === 'nein' ? 'Nein' : '',
+              zusatzText: a === 'ja' ? f.zusatzWennJa : a === 'nein' ? f.zusatzWennNein : undefined,
+            };
+          })}
+          zusatzFragen={aktiveZusatzFragen.map((f) => ({
+            id: f.id,
+            fragetext: f.fragetext,
+            antwortTyp: f.antwortTyp,
+            antwort: antworten[f.id] ?? '',
+          }))}
+          anmerkung={anmerkungDruckEdit.trim()}
+          adresskopf={(() => {
+            if (adresskopfModeEdit === 'arbeitsamt') {
+              return {
+                name: arbeitsamtKontaktEdit.name.trim(),
+                strasse: arbeitsamtKontaktEdit.strasse.trim(),
+                plz: arbeitsamtKontaktEdit.plz.trim(),
+                ort: arbeitsamtKontaktEdit.ort.trim(),
+              };
+            }
+            if (adresskopfModeEdit === 'eigene') {
+              return {
+                name: adresskopfEigeneEdit.name.trim(),
+                strasse: adresskopfEigeneEdit.strasse.trim(),
+                plz: adresskopfEigeneEdit.plz.trim(),
+                ort: adresskopfEigeneEdit.ort.trim(),
+              };
+            }
+            return null;  // 'keine'
+          })()}
+          betreffZusatz={[
+            arbeitsamtKundennummerDruckenEdit && arbeitsamtKundennummerEdit.trim()
+              ? `Kundennr. ${arbeitsamtKundennummerEdit.trim()}`
+              : null,
+            arbeitsamtZeichenDruckenEdit && arbeitsamtZeichenEdit.trim()
+              ? `Ihr Zeichen ${arbeitsamtZeichenEdit.trim()}`
+              : null,
+          ].filter(Boolean).join(' · ')}
+          onClose={() => setDruckOffen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---- Helfer: klickbares Info-Icon mit Hinweis-Popover -------
+
+function HinweisIcon({ text }: { text: string | null | undefined }) {
+  const [offen, setOffen] = useState(false);
+  if (!text) return null;
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOffen((v) => !v)}
+        className="w-4 h-4 inline-flex items-center justify-center rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold hover:bg-blue-200"
+        title="Hinweis anzeigen"
+        aria-label="Hinweis anzeigen"
+      >
+        i
+      </button>
+      {offen && (
+        <span className="absolute right-0 top-5 z-30 w-72 bg-white border border-gray-300 shadow-lg rounded p-2 text-xs text-gray-700 leading-snug whitespace-normal">
+          {text}
+          <button
+            type="button"
+            onClick={() => setOffen(false)}
+            className="absolute top-1 right-1 text-gray-400 hover:text-gray-700 text-xs"
+            aria-label="Schließen"
+          >
+            ✕
+          </button>
+        </span>
+      )}
+    </span>
+  );
+}
+
+// ---- Helfer: Ja/Nein-Zeile für Standardfragen ---------------
+
+function FrageJaNeinZeile({
+  fragetext,
+  wert,
+  defaultWert,
+  hinweis,
+  onChange,
+  onLeeren,
+}: {
+  fragetext: string;
+  wert: string;                          // '', 'ja' oder 'nein'
+  defaultWert: 'ja' | 'nein' | null;     // null = keine Vorbelegung
+  hinweis: string | null;
+  onChange: (v: 'ja' | 'nein') => void;
+  onLeeren: () => void;
+}) {
+  const istVorbelegt = defaultWert != null && wert === defaultWert;
+  return (
+    <div className="flex items-start gap-3 py-1">
+      <div className="flex-1 text-sm text-gray-700">
+        {fragetext}
+        {!wert && (
+          <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-700 font-semibold" title="Wird beim Druck weggelassen, solange keine Antwort gewählt ist.">
+            ⚠ keine Antwort → wird nicht gedruckt
+          </span>
+        )}
+        {istVorbelegt && (
+          <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-700 font-semibold" title="Diese Antwort ist als Standard vorbelegt — bei Bedarf umschalten oder löschen.">
+            ✓ vorbelegt
+          </span>
+        )}
+      </div>
+      <div className="flex gap-1 shrink-0 items-center">
+        <label className={`px-2.5 py-1 rounded text-xs cursor-pointer border ${wert === 'ja' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'}`}>
+          <input
+            type="radio"
+            checked={wert === 'ja'}
+            onChange={() => onChange('ja')}
+            className="hidden"
+          />
+          Ja
+        </label>
+        <label className={`px-2.5 py-1 rounded text-xs cursor-pointer border ${wert === 'nein' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'}`}>
+          <input
+            type="radio"
+            checked={wert === 'nein'}
+            onChange={() => onChange('nein')}
+            className="hidden"
+          />
+          Nein
+        </label>
+        <button
+          type="button"
+          onClick={onLeeren}
+          disabled={!wert}
+          className="px-1.5 py-1 text-xs text-gray-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-gray-400"
+          title="Antwort leeren (Frage erscheint dann nicht im Druck)"
+        >
+          ⌫
+        </button>
+        <HinweisIcon text={hinweis} />
+      </div>
+    </div>
+  );
+}
+
+// ---- Helfer: Zeile für Zusatzfrage aus dem Katalog ----------
+
+function ZusatzFrageZeile({
+  frage,
+  antwort,
+  onAntwort,
+  onLoeschen,
+}: {
+  frage: VerdienstbescheinigungFrage;
+  antwort: string;
+  onAntwort: (v: string) => void;
+  onLoeschen: () => void;
+}) {
+  const istVorbelegt = !!frage.standardAntwort && antwort === frage.standardAntwort;
+  const istLeer = !antwort.trim();
+  return (
+    <div className="flex items-start gap-3 py-1">
+      <div className="flex-1 text-sm text-gray-700">
+        {frage.fragetext}
+        {istLeer && (
+          <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-700 font-semibold" title="Wird beim Druck weggelassen, solange keine Antwort gewählt ist.">
+            ⚠ keine Antwort → wird nicht gedruckt
+          </span>
+        )}
+        {istVorbelegt && (
+          <span className="ml-2 text-[10px] uppercase tracking-wide text-blue-700 font-semibold" title="Diese Antwort ist als Standard vorbelegt.">
+            ✓ vorbelegt
+          </span>
+        )}
+      </div>
+      <div className="shrink-0 flex items-center gap-2">
+        {frage.antwortTyp === 'jaNein' ? (
+          <div className="flex gap-1">
+            <label className={`px-2.5 py-1 rounded text-xs cursor-pointer border ${antwort === 'ja' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'}`}>
+              <input
+                type="radio"
+                checked={antwort === 'ja'}
+                onChange={() => onAntwort('ja')}
+                className="hidden"
+              />
+              Ja
+            </label>
+            <label className={`px-2.5 py-1 rounded text-xs cursor-pointer border ${antwort === 'nein' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'}`}>
+              <input
+                type="radio"
+                checked={antwort === 'nein'}
+                onChange={() => onAntwort('nein')}
+                className="hidden"
+              />
+              Nein
+            </label>
+          </div>
+        ) : frage.antwortTyp === 'betrag' ? (
+          <input
+            type="text"
+            inputMode="decimal"
+            value={antwort}
+            onChange={(e) => onAntwort(e.target.value)}
+            placeholder="0,00 €"
+            className="w-32 text-right border border-gray-300 rounded px-2 py-1 text-xs font-mono"
+          />
+        ) : (
+          <input
+            type="text"
+            value={antwort}
+            onChange={(e) => onAntwort(e.target.value)}
+            placeholder="Antwort…"
+            className="w-56 border border-gray-300 rounded px-2 py-1 text-xs"
+          />
+        )}
+        <button
+          type="button"
+          onClick={() => onAntwort('')}
+          disabled={istLeer}
+          className="px-1.5 py-1 text-xs text-gray-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-gray-400"
+          title="Antwort leeren (Frage erscheint dann nicht im Druck)"
+        >
+          ⌫
+        </button>
+        <HinweisIcon text={frage.hinweis ?? null} />
+      </div>
+      <button
+        type="button"
+        onClick={onLoeschen}
+        className="shrink-0 text-gray-400 hover:text-red-600 text-xs"
+        title="Frage aus dem Katalog entfernen (gilt dann für alle MAs)"
+      >
+        ✕
+      </button>
     </div>
   );
 }

@@ -1,4 +1,5 @@
-import { useState, useEffect, type FormEvent, type ReactElement } from 'react';
+import { useState, useEffect, useRef, type FormEvent, type ReactElement } from 'react';
+import ExcelJS from 'exceljs';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
@@ -17,19 +18,25 @@ import {
   erstelleLohnkontoBuchung,
   loescheLohnkontoBuchung,
   ladeLohnkontoBuchungen,
+  ladeExterneAbrechnungswerte,
+  setzeExterneAbrechnungswert,
   schreibeMonatswechselSnapshot,
   verwerfeMonatswechselSnapshot,
   aktualisiereMitarbeiter,
   aktualisiereTeilgebiet,
   loescheStueckzahlAnpassung,
+  protokolliereUmgesetzteAnpassung,
   entferneAusAbmeldungenSnapshot,
   ladeFahrten,
   ladeAusgaben,
   ladeEinsaetzeFuerTeilgebiet,
+  ladeEinsaetzeFuerJahre,
   loescheEinsatz,
 } from '../lib/db';
+import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
-import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet } from '../types';
+import { getISOWeek, getISOYear } from '../lib/kalender';
+import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet, Arbeitszeit, Einsatz } from '../types';
 import {
   austraegerwechselPlanListener,
   loescheAustraegerwechselPlan,
@@ -73,6 +80,148 @@ function istRelevanterWechselplan(
   return letzteInPeriode || abInPeriode || abInNaechster;
 }
 
+/**
+ * Ermittelt erfasste Vorarbeit-Zeiten, deren zugeordnete Ausgabe NICHT
+ * freigegeben ist (`vorarbeitFreigegeben` fehlt). Solche Minuten werden in
+ * `berechneAbrechnung` verworfen und fließen NICHT in den Lohn ein — der
+ * Mitarbeiter hat also Vorarbeit gestempelt, die unbezahlt bliebe. Die
+ * Freigabe-Logik spiegelt exakt die der Lohnberechnung (direkte Ausgabe-
+ * Zuordnung bzw. Fallback über KW/Jahr der Stempelzeit).
+ */
+function ermittleVorarbeitOhneFreigabe(
+  data: { ausgaben: Ausgabe[]; arbeitszeiten: Arbeitszeit[] },
+  mitarbeiter: Mitarbeiter[],
+): { name: string; minuten: number; kws: number[] }[] {
+  const freigabeMap = new Map(data.ausgaben.map((a) => [a.id, !!a.vorarbeitFreigegeben]));
+  const istFreigegeben = (a: Arbeitszeit): boolean => {
+    if (a.ausgabeId) return freigabeMap.get(a.ausgabeId) === true;
+    const d = new Date(a.startTime);
+    return data.ausgaben.some(
+      (x) => x.jahr === getISOYear(d) && x.kw === getISOWeek(d) && x.vorarbeitFreigegeben === true,
+    );
+  };
+
+  const offene = data.arbeitszeiten.filter(
+    (a) =>
+      a.typ === 'vorarbeit' &&
+      a.status === 'abgeschlossen' &&
+      !a.nichtBeruecksichtigen &&
+      !istFreigegeben(a),
+  );
+
+  const proMa = new Map<string, { name: string; minuten: number; kws: Set<number> }>();
+  for (const a of offene) {
+    const name = mitarbeiter.find((m) => m.id === a.mitarbeiterId)?.name ?? 'Unbekannt';
+    const eintrag = proMa.get(a.mitarbeiterId) ?? { name, minuten: 0, kws: new Set<number>() };
+    eintrag.minuten += berechneNettoMinuten(a);
+    eintrag.kws.add(getISOWeek(new Date(a.startTime)));
+    proMa.set(a.mitarbeiterId, eintrag);
+  }
+
+  return [...proMa.values()]
+    .map((e) => ({ name: e.name, minuten: e.minuten, kws: [...e.kws].sort((x, y) => x - y) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Robustes Parsen eines EUR-Betrags aus Nutzereingabe / Excel-Zelle.
+ * Akzeptiert „1.234,56", „1234,56", „1234.56", „1234". Leerstring → 0.
+ * Rückgabe null, wenn nicht interpretierbar.
+ */
+function parseEuro(input: string): number | null {
+  const t = input.trim();
+  if (t === '') return 0;
+  let norm = t.replace(/[^\d.,-]/g, '');
+  if (norm.includes(',')) {
+    // Komma = Dezimaltrenner, Punkte = Tausenderpunkte
+    norm = norm.replace(/\./g, '').replace(',', '.');
+  }
+  const n = parseFloat(norm);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Editierbare Zelle „Wert externe Anwendung". Hält den Text lokal, speichert
+ * erst bei Verlassen des Feldes (Blur / Enter) und triggert danach eine
+ * Neuberechnung. Ein leerer / 0-Wert löscht den Eintrag (App-Berechnung greift
+ * wieder).
+ */
+function ExternerWertZelle({
+  periodeId,
+  mitarbeiterId,
+  wert,
+  aktiv,
+  disabled,
+  onSaved,
+}: {
+  periodeId: string;
+  mitarbeiterId: string;
+  wert?: number;
+  aktiv: boolean;
+  disabled: boolean;
+  onSaved: () => void;
+}) {
+  const anzeige = (v?: number) =>
+    v != null && v > 0 ? v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '';
+  const [text, setText] = useState(anzeige(wert));
+  const [saving, setSaving] = useState(false);
+
+  // Wert von außen (Neuberechnung / Excel-Import) übernehmen.
+  useEffect(() => {
+    setText(anzeige(wert));
+  }, [wert]);
+
+  async function commit() {
+    const val = parseEuro(text);
+    const current = wert ?? 0;
+    if (val == null) {
+      setText(anzeige(wert));
+      return;
+    }
+    if (Math.abs(val - current) < 0.005) {
+      setText(anzeige(val > 0 ? val : undefined));
+      return;
+    }
+    setSaving(true);
+    try {
+      await setzeExterneAbrechnungswert(periodeId, mitarbeiterId, val, 'manuell');
+      onSaved();
+    } catch (e: any) {
+      alert('Speichern fehlgeschlagen: ' + (e.message ?? e));
+      setText(anzeige(wert));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={text}
+        disabled={disabled || saving}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        placeholder="—"
+        title={
+          aktiv
+            ? 'Externer Wert aktiv — ersetzt Austragen + Zusammentragen + Vorarbeit in Brutto / An Lohnbüro'
+            : 'Betrag aus externer Anwendung (EUR) — ersetzt Austragen + Zusammentragen + Vorarbeit'
+        }
+        className={`w-24 text-right rounded border px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+          aktiv
+            ? 'border-blue-400 bg-blue-50 font-semibold text-blue-800'
+            : 'border-gray-200 bg-white text-gray-700'
+        } disabled:bg-gray-100 disabled:text-gray-400 disabled:border-gray-200`}
+      />
+    </td>
+  );
+}
+
 export default function AbrechnungScreen() {
   return (
     <AdminPinGate>
@@ -82,7 +231,7 @@ export default function AbrechnungScreen() {
 }
 
 function AbrechnungInhalt() {
-  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, variablePeriodenZusaetze, stueckzahlAnpassungen, mitarbeiterMemos, lohnbueroAbrechnungen } = useApp();
+  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, adminName, variablePeriodenZusaetze, externeAbrechnungswerte, stueckzahlAnpassungen, mitarbeiterMemos, lohnbueroAbrechnungen } = useApp();
   const [selectedPeriodeId, setSelectedPeriodeId] = useState('');
   const [ergebnisse, setErgebnisse] = useState<MitarbeiterAbrechnung[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -105,9 +254,23 @@ function AbrechnungInhalt() {
   // Warnung: Fahrtkosten-Datensätze, die noch keiner Abrechnungsperiode
   // zugeordnet sind (abrechnungsperiodeId fehlt).
   const [unzugeordneteFahrten, setUnzugeordneteFahrten] = useState<number>(0);
+  // Warnung: erfasste Vorarbeit-Zeiten, deren Ausgabe NICHT freigegeben ist —
+  // diese Minuten fließen NICHT in den Lohn ein. Wird beim Berechnen befüllt.
+  const [vorarbeitOhneFreigabe, setVorarbeitOhneFreigabe] = useState<
+    { name: string; minuten: number; kws: number[] }[]
+  >([]);
   // Ausgaben der gewählten Periode — zur Prüfung auf fehlende Seitenzahl /
   // Stapelzahl. Wird beim Periodenwechsel neu geladen.
   const [periodenAusgaben, setPeriodenAusgaben] = useState<Ausgabe[]>([]);
+
+  // Excel-Upload „Werte externe Anwendung": Datei-Input + Vorschau vor dem
+  // Schreiben (Zuordnung über die 5-stellige MA-Nummer).
+  const excelInputRef = useRef<HTMLInputElement | null>(null);
+  const [excelVorschau, setExcelVorschau] = useState<null | {
+    matched: { mitarbeiterId: string; name: string; nummer: string; betrag: number; alt?: number }[];
+    unmatched: { nummer?: string; name?: string; betrag: number }[];
+  }>(null);
+  const [excelSchreibt, setExcelSchreibt] = useState(false);
 
   useEffect(() => {
     if (!selectedPeriodeId) {
@@ -135,6 +298,31 @@ function AbrechnungInhalt() {
   );
   const periodeIstUnvollstaendig = ausgabenMitFehlendenWerten.length > 0;
 
+  // Restmengen-Hinweis für den Abschluss: Teilgebiete, die im Durchschnitt der
+  // letzten beiden Perioden mehr als 10 Stück Restmenge je Meldung hatten —
+  // hier sollte die hinterlegte Menge geprüft / angepasst werden.
+  const SCHWELLE_REST_ANPASSUNG = 10;
+  const letzteBeidePerioden = juengstePerioden(abrechnungsperioden, 2);
+  const [analyseEinsaetze, setAnalyseEinsaetze] = useState<Einsatz[]>([]);
+  useEffect(() => {
+    if (letzteBeidePerioden.length === 0) {
+      setAnalyseEinsaetze([]);
+      return;
+    }
+    let cancelled = false;
+    const jahre = Array.from(new Set(letzteBeidePerioden.map((p) => p.jahr)));
+    ladeEinsaetzeFuerJahre(jahre)
+      .then((list) => { if (!cancelled) setAnalyseEinsaetze(list); })
+      .catch((err) => console.error('Fehler beim Laden der Einsätze für den Restmengen-Hinweis:', err));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [letzteBeidePerioden.map((p) => p.id).join(',')]);
+  const restmengenHinweisTgs = analysiereRestmengen(
+    analyseEinsaetze,
+    letzteBeidePerioden,
+    teilgebiete,
+  ).filter((t) => t.durchschnittRest > SCHWELLE_REST_ANPASSUNG);
+
   // Beim Mount + nach Periode-Wechsel die Anzahl der nicht zugeordneten
   // Fahrten holen. Schlank gehalten: nur Anzahl, nicht die Datensätze.
   useEffect(() => {
@@ -161,6 +349,7 @@ function AbrechnungInhalt() {
     setFehler('');
     setErgebnisse(null);
     setExpandedId(null);
+    setVorarbeitOhneFreigabe([]);
 
     // Bei abgeschlossenen Perioden mit gespeichertem Abrechnungs-Snapshot:
     // direkt das gespeicherte Ergebnis laden, NICHT neu berechnen.
@@ -176,10 +365,12 @@ function AbrechnungInhalt() {
     }
 
     try {
-      const [data, lohnkontoFresh] = await Promise.all([
+      const [data, lohnkontoFresh, externeFresh] = await Promise.all([
         ladePeriodeData(selectedPeriode),
         ladeLohnkontoBuchungen(),
+        ladeExterneAbrechnungswerte(selectedPeriode.id),
       ]);
+      setVorarbeitOhneFreigabe(ermittleVorarbeitOhneFreigabe(data, mitarbeiter));
       const result = berechneAbrechnung(
         mitarbeiter,
         teilgebiete,
@@ -188,7 +379,8 @@ function AbrechnungInhalt() {
         selectedPeriode,
         variablePeriodenZusaetze,
         abrechnungsperioden,
-        lohnkontoFresh
+        lohnkontoFresh,
+        externeFresh
       );
       setErgebnisse(result);
     } catch (e: any) {
@@ -220,6 +412,7 @@ function AbrechnungInhalt() {
     }
     setExpandedId(null);
     setAbschliessenBestaetigt(false);
+    setVorarbeitOhneFreigabe([]);
     // selectedPeriodeId reicht als Trigger; wir wollen NICHT auf jede
     // Änderung von `abrechnungsperioden` re-rendern.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -229,7 +422,20 @@ function AbrechnungInhalt() {
     if (!selectedPeriode || !ergebnisse) return;
     setExportierend(true);
     try {
-      await exportiereAbrechnung(selectedPeriode, ergebnisse);
+      // Vollständiges Perioden-Archiv: alle Bewegungs- und Stammdaten laden,
+      // damit der Export ohne erneutes Öffnen der Periode auskunftsfähig ist.
+      const periodeData = await ladePeriodeData(selectedPeriode).catch((err) => {
+        console.error('Periodendaten für Archiv-Export nicht ladbar:', err);
+        return undefined;
+      });
+      await exportiereAbrechnung(selectedPeriode, ergebnisse, {
+        periodeData,
+        alleMitarbeiter: mitarbeiter,
+        teilgebiete,
+        parameter: params ?? undefined,
+        variablePeriodenZusaetze,
+        stueckzahlAnpassungen,
+      });
     } catch (e: any) {
       alert('Export fehlgeschlagen: ' + (e.message ?? e));
     } finally {
@@ -246,6 +452,122 @@ function AbrechnungInhalt() {
       alert('Export fehlgeschlagen: ' + (e.message ?? e));
     } finally {
       setExportierend(false);
+    }
+  }
+
+  // Excel-Datei einlesen und Vorschau aufbauen (schreibt noch nicht).
+  async function handleExcelDatei(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // erlaubt erneute Auswahl derselben Datei
+    if (!file || !selectedPeriode) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(buf);
+
+      // Blattwahl: Die Standard-Upload-Datei hat genau EIN Blatt mit den
+      // Spalten Nr. | P-Nr. | Name | Gesamtsumme → dann dieses nehmen. Wird
+      // versehentlich die große Mappe hochgeladen (viele Monatsblätter), das
+      // zur Periode passende „JAHR-MM Liste"-Blatt wählen.
+      const mm = String(selectedPeriode.monat).padStart(2, '0');
+      const prefix = `${selectedPeriode.jahr}${mm}`;
+      const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const ws =
+        wb.worksheets.length === 1
+          ? wb.worksheets[0]
+          : wb.worksheets.find((w) => norm(w.name).startsWith(prefix) && norm(w.name).includes('liste')) ??
+            wb.worksheets.find((w) => norm(w.name) === prefix);
+      if (!ws) {
+        const verfuegbar = wb.worksheets
+          .map((w) => w.name)
+          .filter((n) => /liste/i.test(n))
+          .join(', ');
+        alert(
+          `Die Datei hat mehrere Blätter, aber kein Blatt „${selectedPeriode.jahr}-${mm} Liste".\n\n` +
+            `Vorhandene Listen-Blätter:\n${verfuegbar || '(keine)'}\n\n` +
+            `Tipp: Eine Datei mit nur einem Blatt (Nr. | P-Nr. | Name | Gesamtsumme) hochladen.`
+        );
+        return;
+      }
+
+      const matched: { mitarbeiterId: string; name: string; nummer: string; betrag: number; alt?: number }[] = [];
+      const unmatched: { nummer?: string; name?: string; betrag: number }[] = [];
+      const gesehen = new Set<string>();
+
+      ws.eachRow((row) => {
+        const werte: (string | number)[] = [];
+        row.eachCell({ includeEmpty: false }, (cell) => {
+          let v: unknown = cell.value;
+          if (v && typeof v === 'object') {
+            const obj = v as Record<string, unknown>;
+            if ('result' in obj) v = obj.result; // Formel
+            else if ('text' in obj) v = obj.text; // RichText / Hyperlink
+          }
+          if (v != null && (typeof v === 'string' || typeof v === 'number')) werte.push(v);
+        });
+        if (werte.length === 0) return;
+
+        let nummer: string | undefined;
+        let name: string | undefined;
+        const betragKandidaten: number[] = [];
+        for (const v of werte) {
+          const s = String(v).trim();
+          if (!nummer && /^\d{5}$/.test(s)) {
+            nummer = s;
+            continue;
+          }
+          if (typeof v === 'number') {
+            betragKandidaten.push(v);
+          } else if (/[a-zA-ZäöüÄÖÜß]/.test(s)) {
+            if (!name) name = s;
+          } else {
+            const n = parseEuro(s);
+            if (n != null && /\d/.test(s)) betragKandidaten.push(n);
+          }
+        }
+        if (!nummer) return; // Header- oder Leerzeile
+        const betrag = betragKandidaten.length ? betragKandidaten[betragKandidaten.length - 1] : NaN;
+        if (!Number.isFinite(betrag) || betrag <= 0) return;
+        if (gesehen.has(nummer)) return;
+        gesehen.add(nummer);
+
+        const ma = mitarbeiter.find((m) => m.nummer === nummer);
+        if (ma) {
+          const alt = externeAbrechnungswerte.find(
+            (x) => x.mitarbeiterId === ma.id && x.abrechnungsperiodeId === selectedPeriode.id
+          )?.betragEur;
+          matched.push({ mitarbeiterId: ma.id, name: ma.name, nummer, betrag, alt });
+        } else {
+          unmatched.push({ nummer, name, betrag });
+        }
+      });
+
+      if (matched.length === 0 && unmatched.length === 0) {
+        alert(
+          'Keine verwertbaren Zeilen erkannt. Erwartet werden je Zeile: eine 5-stellige Mitarbeiter-Nummer und ein Betrag (EUR).'
+        );
+        return;
+      }
+      setExcelVorschau({ matched, unmatched });
+    } catch (err: any) {
+      alert('Datei konnte nicht gelesen werden: ' + (err.message ?? err));
+    }
+  }
+
+  // Vorschau bestätigen → externe Werte schreiben und neu berechnen.
+  async function handleExcelUebernehmen() {
+    if (!excelVorschau || !selectedPeriode) return;
+    setExcelSchreibt(true);
+    try {
+      for (const m of excelVorschau.matched) {
+        await setzeExterneAbrechnungswert(selectedPeriode.id, m.mitarbeiterId, m.betrag, 'excel');
+      }
+      setExcelVorschau(null);
+      await handleBerechnen();
+    } catch (e: any) {
+      alert('Import fehlgeschlagen: ' + (e.message ?? e));
+    } finally {
+      setExcelSchreibt(false);
     }
   }
 
@@ -491,6 +813,98 @@ function AbrechnungInhalt() {
     <div className="p-6 max-w-7xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Monatsabrechnung</h1>
 
+      {/* Vorschau-Dialog Excel-Import „Werte externe Anwendung" */}
+      {excelVorschau && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => !excelSchreibt && setExcelVorschau(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl max-w-2xl w-full max-h-[85vh] overflow-auto p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-gray-900 mb-1">Externe Werte übernehmen</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Periode <strong>{selectedPeriode?.bezeichnung}</strong> — Zuordnung über die
+              5-stellige Mitarbeiter-Nummer. Bestehende externe Werte dieser Mitarbeiter werden
+              überschrieben.
+            </p>
+
+            {excelVorschau.matched.length > 0 ? (
+              <div className="rounded-lg border border-gray-200 overflow-hidden mb-3">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600 text-xs border-b border-gray-200">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Nr.</th>
+                      <th className="px-3 py-2 text-left font-medium">Mitarbeiter</th>
+                      <th className="px-3 py-2 text-right font-medium">bisher</th>
+                      <th className="px-3 py-2 text-right font-medium">neu</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {excelVorschau.matched.map((m) => (
+                      <tr key={m.mitarbeiterId}>
+                        <td className="px-3 py-1.5 text-gray-500">{m.nummer}</td>
+                        <td className="px-3 py-1.5 text-gray-900">{m.name}</td>
+                        <td className="px-3 py-1.5 text-right text-gray-400">
+                          {m.alt != null ? eur(m.alt) : '—'}
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-medium text-blue-800">
+                          {eur(m.betrag)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 mb-3">
+                Keine der Zeilen konnte einem Mitarbeiter zugeordnet werden.
+              </div>
+            )}
+
+            {excelVorschau.unmatched.length > 0 && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 mb-3">
+                <div className="font-semibold mb-1">
+                  {excelVorschau.unmatched.length} Zeile
+                  {excelVorschau.unmatched.length === 1 ? '' : 'n'} ohne Zuordnung (Nummer nicht
+                  gefunden) — werden übersprungen:
+                </div>
+                <ul className="list-disc list-inside text-xs space-y-0.5">
+                  {excelVorschau.unmatched.map((u, i) => (
+                    <li key={i}>
+                      Nr. {u.nummer ?? '?'}
+                      {u.name ? ` — ${u.name}` : ''} — {eur(u.betrag)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setExcelVorschau(null)}
+                disabled={excelSchreibt}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50"
+              >
+                Abbrechen
+              </button>
+              <button
+                onClick={handleExcelUebernehmen}
+                disabled={excelVorschau.matched.length === 0 || excelSchreibt}
+                className="bg-teal-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-teal-700 transition-colors disabled:opacity-50"
+              >
+                {excelSchreibt
+                  ? 'Speichere…'
+                  : `${excelVorschau.matched.length} Wert${
+                      excelVorschau.matched.length === 1 ? '' : 'e'
+                    } übernehmen`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Periodenauswahl + Steuerung */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
         <div className="flex flex-wrap items-center gap-3">
@@ -543,6 +957,7 @@ function AbrechnungInhalt() {
                 onClick={handleExport}
                 disabled={exportierend}
                 className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-50"
+                title="Vollständiges Perioden-Archiv: Übersicht, Austräger, Zeiten, Zusammentragen, Fahrten, Vorschüsse/Boni, MA-Stammdaten, Teilgebiete & Straßen, Ausgaben, Beilagenaufträge und verwendete Parameter"
               >
                 {exportierend ? 'Exportiere...' : '↓ Excel-Export'}
               </button>
@@ -554,6 +969,26 @@ function AbrechnungInhalt() {
               >
                 {exportierend ? 'Exportiere...' : '✉ Lohnübermittlung'}
               </button>
+
+              {selectedPeriode?.status === 'offen' && (
+                <>
+                  <input
+                    ref={excelInputRef}
+                    type="file"
+                    accept=".xlsx,.xls"
+                    className="hidden"
+                    onChange={handleExcelDatei}
+                  />
+                  <button
+                    onClick={() => excelInputRef.current?.click()}
+                    disabled={excelSchreibt}
+                    className="bg-teal-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-teal-700 transition-colors disabled:opacity-50"
+                    title="Werte der externen Anwendung (Austragen + Zusammentragen + Vorarbeit) als Excel hochladen — Zuordnung über die 5-stellige Mitarbeiter-Nummer"
+                  >
+                    ⇪ Externe Werte (Excel)
+                  </button>
+                </>
+              )}
 
               {selectedPeriode?.status === 'offen' && (
                 <div className="ml-auto flex items-center gap-2 flex-wrap">
@@ -706,6 +1141,33 @@ function AbrechnungInhalt() {
             </p>
           </div>
         )}
+
+        {/* Hinweis: Teilgebiete mit hoher Ø-Restmenge (letzte 2 Perioden) —
+            Mengen prüfen und ggf. anpassen. */}
+        {selectedPeriode?.status === 'offen' && restmengenHinweisTgs.length > 0 && (
+          <div className="mt-3 rounded-lg border border-orange-400 bg-orange-50 px-4 py-3 text-sm">
+            <div className="font-semibold text-orange-900 mb-1">
+              📦 Restmengen-Hinweis — Bitte Anpassung der Mengen prüfen und ggf. anpassen
+            </div>
+            <p className="text-xs text-orange-800 mb-1.5">
+              Folgende Teilgebiete hatten im Durchschnitt der letzten beiden Perioden
+              über {SCHWELLE_REST_ANPASSUNG} Stück Restmenge je Meldung:
+            </p>
+            <ul className="list-disc list-inside text-orange-900 space-y-0.5">
+              {restmengenHinweisTgs.map((t) => (
+                <li key={t.teilgebietId} className="text-xs">
+                  <strong>{t.name}</strong>
+                  {t.plz ? ` (${t.plz})` : ''} — Ø{' '}
+                  {t.durchschnittRest.toLocaleString('de-DE', { maximumFractionDigits: 1 })} Stück
+                  {' '}aus {t.anzahlMeldungen} Meldung{t.anzahlMeldungen === 1 ? '' : 'en'}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-orange-700 mt-1.5 italic">
+              Hinterlegte Stückzahl unter „Teilgebiete" prüfen und ggf. reduzieren.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Warnung: nicht zugeordnete Fahrtkosten — periodenunabhängig */}
@@ -785,6 +1247,33 @@ function AbrechnungInhalt() {
         );
       })()}
 
+      {/* Warnung: erfasste Vorarbeit ohne Freigabe der Ausgabe —
+          diese Zeiten werden NICHT abgerechnet (vgl. Lohnberechnung). */}
+      {vorarbeitOhneFreigabe.length > 0 && (
+        <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm flex items-start gap-2">
+          <span className="text-red-700">⏱️</span>
+          <div className="text-red-900 flex-1">
+            <div className="font-semibold mb-0.5">
+              Erfasste Vorarbeit ohne Freigabe — wird NICHT abgerechnet
+            </div>
+            <p className="text-xs text-red-800 mb-2">
+              Folgende Mitarbeiter haben Zeiten als „Vorarbeit" erfasst, deren
+              Ausgabe nicht für Vorarbeit freigegeben ist. Diese Stunden fließen
+              daher in keinen Lohn ein. Bitte unter „Ausgaben" die Vorarbeit
+              freigeben (dann erneut berechnen) oder die Zeiten korrigieren.
+            </p>
+            <ul className="text-xs text-red-900 space-y-0.5">
+              {vorarbeitOhneFreigabe.map((v) => (
+                <li key={v.name}>
+                  <span className="font-medium">{v.name}</span>: {stdMin(v.minuten / 60)}
+                  {' '}(KW {v.kws.join(', ')})
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {/* Ergebnisse */}
       {ergebnisse && (
         <>
@@ -819,6 +1308,79 @@ function AbrechnungInhalt() {
               </span>
             </div>
           )}
+
+          {/* Hinweis-Banner: Vorschau auf den Monatswechsel — welche Teilgebiete
+              bekommen einen Standardausträger-Wechsel bzw. eine Mengenänderung,
+              wenn jetzt „Monatswechsel durchführen" geklickt wird. */}
+          {selectedPeriode?.status === 'offen' && !selectedPeriode.monatswechselSnapshot && (() => {
+            const wechselVorschau = wechselplaene
+              .filter((p) => istRelevanterWechselplan(p, selectedPeriode, abrechnungsperioden))
+              .map((p) => {
+                const tg = teilgebiete.find((t) => t.id === p.teilgebietId);
+                const bisher = tg?.standardAustraegerId
+                  ? mitarbeiter.find((m) => m.id === tg.standardAustraegerId)?.name ?? '?'
+                  : null;
+                const neu = p.neuerAustraegerId
+                  ? mitarbeiter.find((m) => m.id === p.neuerAustraegerId)?.name ?? '?'
+                  : null;
+                return { id: p.id, tgName: tg?.name ?? '— gelöscht —', tgPlz: tg?.plz, bisher, neu,
+                  abKw: p.abAusgabeKw, abJahr: p.abAusgabeJahr };
+              })
+              .sort((a, b) => a.tgName.localeCompare(b.tgName, 'de', { numeric: true }));
+            const mengenVorschau = stueckzahlAnpassungen
+              .map((w) => {
+                const tg = teilgebiete.find((t) => t.id === w.teilgebietId);
+                return { id: w.id, tgName: tg?.name ?? '— gelöscht —', tgPlz: tg?.plz,
+                  alt: tg?.stueckzahl ?? 0, neu: w.neueStueckzahl };
+              })
+              .sort((a, b) => a.tgName.localeCompare(b.tgName, 'de', { numeric: true }));
+            if (wechselVorschau.length === 0 && mengenVorschau.length === 0) return null;
+            return (
+              <div className="mb-4 rounded-lg border border-blue-300 bg-blue-50 px-4 py-3 text-sm">
+                <div className="font-semibold text-blue-900 mb-1">
+                  🔄 Vorschau Monatswechsel — folgende Teilgebiete werden beim Klick auf
+                  „📌 Monatswechsel durchführen" zur Übernahme vorgeschlagen:
+                </div>
+                {wechselVorschau.length > 0 && (
+                  <div className="mt-1.5">
+                    <div className="text-xs font-medium text-blue-800 mb-0.5">
+                      Standardausträger-Wechsel ({wechselVorschau.length}):
+                    </div>
+                    <ul className="list-disc list-inside text-blue-900 space-y-0.5">
+                      {wechselVorschau.map((v) => (
+                        <li key={v.id} className="text-xs">
+                          <strong>{v.tgName}</strong>{v.tgPlz ? ` (${v.tgPlz})` : ''}:{' '}
+                          {v.bisher ?? <span className="italic">unbesetzt</span>}
+                          {' → '}
+                          {v.neu ?? <span className="italic text-amber-700">unbesetzt</span>}
+                          {v.abKw && v.abJahr ? ` (ab KW ${v.abKw}/${v.abJahr})` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {mengenVorschau.length > 0 && (
+                  <div className="mt-1.5">
+                    <div className="text-xs font-medium text-blue-800 mb-0.5">
+                      Mengenänderungen ({mengenVorschau.length}):
+                    </div>
+                    <ul className="list-disc list-inside text-blue-900 space-y-0.5">
+                      {mengenVorschau.map((v) => (
+                        <li key={v.id} className="text-xs">
+                          <strong>{v.tgName}</strong>{v.tgPlz ? ` (${v.tgPlz})` : ''}:{' '}
+                          {v.alt.toLocaleString('de-DE')} → {v.neu.toLocaleString('de-DE')} Stück
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <p className="text-xs text-blue-700 mt-1.5 italic">
+                  Die Übernahme erfolgt nach dem Monatswechsel einzeln zur Bestätigung in den
+                  jeweiligen Dialogen.
+                </p>
+              </div>
+            );
+          })()}
 
           {/* Gesamt-Kacheln */}
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-5">
@@ -1076,26 +1638,28 @@ function AbrechnungInhalt() {
             )}
           </div>
 
-          {/* Detailtabelle */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-            <table className="min-w-[1500px] w-full text-sm whitespace-nowrap">
-              <thead className="bg-gray-50 border-b border-gray-200">
+          {/* Detailtabelle — Kopfzeile bleibt beim vertikalen Scrollen sichtbar
+              (Container scrollt vertikal + horizontal, thead ist sticky). */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-auto max-h-[calc(100vh-240px)]">
+            <table className="min-w-[1650px] w-full text-sm whitespace-nowrap">
+              <thead className="border-b border-gray-200">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-600 sticky left-0 bg-gray-50 z-20 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Mitarbeiter</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600">Austragen</th>
-                  <th className="px-4 py-3 text-right font-medium text-amber-700" title="Gewichtszuschlag Anzeigenblatt (in Austragen enthalten)">Gew. AB</th>
-                  <th className="px-4 py-3 text-right font-medium text-amber-700" title="Gewichtszuschlag Beilagen (in Austragen enthalten)">Gew. Beil.</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600">Zusammentr.</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600">Zeiterfassung</th>
-                  <th className="px-4 py-3 text-right font-medium text-purple-700" title="Tätigkeits-Boni in Minuten je Ausgabe (z. B. Orga, Betreuung Zusammenträger)">Min-Boni</th>
-                  <th className="px-4 py-3 text-right font-medium text-emerald-700" title="Bonus Zeiterfassung Austragen — pauschal je vollständig online erfasstem Einsatz">Bonus Zeit</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600">Fix</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600">Fahrtkosten</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600" title="Erbrachte Leistung in dieser Periode (vor Lohnkonto-Bewegung)">Brutto</th>
-                  <th className="px-4 py-3 text-right font-medium text-amber-700" title="Verschiebung auf / Verrechnung vom Lohnkonto in dieser Periode">Lohnkonto</th>
-                  <th className="px-4 py-3 text-right font-medium text-indigo-700" title="Brutto, das an das Lohnbüro übermittelt wird (= Brutto − Verschiebung + Verrechnung)">An Lohnbüro</th>
-                  <th className="px-4 py-3 text-right font-medium text-red-600">Vorschuss</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600 pr-5">Auszahlung</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-600 sticky top-0 left-0 z-30 bg-gray-50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Mitarbeiter</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Austragen</th>
+                  <th className="px-4 py-3 text-right font-medium text-amber-700 sticky top-0 z-20 bg-gray-50" title="Gewichtszuschlag Anzeigenblatt (in Austragen enthalten)">Gew. AB</th>
+                  <th className="px-4 py-3 text-right font-medium text-amber-700 sticky top-0 z-20 bg-gray-50" title="Gewichtszuschlag Beilagen (in Austragen enthalten)">Gew. Beil.</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Zusammentr.</th>
+                  <th className="px-4 py-3 text-right font-medium text-teal-700 sticky top-0 z-20 bg-gray-50" title="Betrag aus der externen Anwendung (Summe Austragen + Zusammentragen + Vorarbeit). Ist ein Wert gesetzt, ersetzt er diese App-Positionen in Brutto / An Lohnbüro / Lohnübermittlung.">Wert externe<br />Anwendung</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Zeiterfassung</th>
+                  <th className="px-4 py-3 text-right font-medium text-purple-700 sticky top-0 z-20 bg-gray-50" title="Tätigkeits-Boni in Minuten je Ausgabe (z. B. Orga, Betreuung Zusammenträger)">Min-Boni</th>
+                  <th className="px-4 py-3 text-right font-medium text-emerald-700 sticky top-0 z-20 bg-gray-50" title="Bonus Zeiterfassung Austragen — pauschal je vollständig online erfasstem Einsatz">Bonus Zeit</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Fix</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Fahrtkosten</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50" title="Erbrachte Leistung in dieser Periode (vor Lohnkonto-Bewegung)">Brutto</th>
+                  <th className="px-4 py-3 text-right font-medium text-amber-700 sticky top-0 z-20 bg-gray-50" title="Verschiebung auf / Verrechnung vom Lohnkonto in dieser Periode">Lohnkonto</th>
+                  <th className="px-4 py-3 text-right font-medium text-indigo-700 sticky top-0 z-20 bg-gray-50" title="Brutto, das an das Lohnbüro übermittelt wird (= Brutto − Verschiebung + Verrechnung)">An Lohnbüro</th>
+                  <th className="px-4 py-3 text-right font-medium text-red-600 sticky top-0 z-20 bg-gray-50">Vorschuss</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 pr-5 sticky top-0 z-20 bg-gray-50">Auszahlung</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -1195,6 +1759,18 @@ function AbrechnungInhalt() {
                       <td className="px-4 py-3 text-right text-gray-700">
                         {er.zusammentragenGesamt > 0 ? eur(er.zusammentragenGesamt) : '—'}
                       </td>
+                      <ExternerWertZelle
+                        periodeId={selectedPeriode?.id ?? ''}
+                        mitarbeiterId={er.mitarbeiter.id}
+                        wert={er.externerWert}
+                        aktiv={er.externerWertAktiv}
+                        disabled={
+                          !selectedPeriode ||
+                          selectedPeriode.status !== 'offen' ||
+                          er.mitarbeiter.hatFestgehalt
+                        }
+                        onSaved={handleBerechnen}
+                      />
                       <td className="px-4 py-3 text-right text-gray-700">
                         {er.zeitLohn > 0 ? eur(er.zeitLohn) : '—'}
                       </td>
@@ -1225,7 +1801,17 @@ function AbrechnungInhalt() {
                         {er.fahrtkostenGesamt > 0 ? eur(er.fahrtkostenGesamt) : '—'}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-gray-900">
-                        {eur(er.gesamt)}
+                        <div className="flex items-center justify-end gap-1">
+                          {er.externerWertAktiv && (
+                            <span
+                              className="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-semibold bg-teal-100 text-teal-700 border border-teal-300"
+                              title={`Externer Wert aktiv: ${eur(er.externerWert ?? 0)} ersetzt Austragen + Zusammentragen + Vorarbeit (App-Berechnung dafür: ${eur(er.externerWertErsetzt ?? 0)})`}
+                            >
+                              ext
+                            </span>
+                          )}
+                          {eur(er.gesamt)}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-right text-amber-700 text-xs">
                         {er.lohnkontoVerschiebungPeriode > 0 && (
@@ -1270,7 +1856,7 @@ function AbrechnungInhalt() {
                     {/* Detail-Aufklappung */}
                     {expandedId === er.mitarbeiter.id && (
                       <tr key={`${er.mitarbeiter.id}-detail`}>
-                        <td colSpan={15} className="bg-gray-50 px-6 py-4">
+                        <td colSpan={16} className="bg-gray-50 px-6 py-4">
                           <DetailAnsicht
                             ergebnis={er}
                             periode={selectedPeriode}
@@ -1296,6 +1882,15 @@ function AbrechnungInhalt() {
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.zusammentragenGesamt, 0))}
+                  </td>
+                  <td className="px-4 py-3 text-right font-bold text-teal-700">
+                    {(() => {
+                      const summe = ergebnisse.reduce(
+                        (s, e) => s + (e.externerWertAktiv ? e.externerWert ?? 0 : 0),
+                        0
+                      );
+                      return summe > 0 ? eur(summe) : '—';
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.zeitLohn, 0))}
@@ -1367,14 +1962,18 @@ function AbrechnungInhalt() {
           teilgebiete={teilgebiete}
           mitarbeiter={mitarbeiter}
           abrechnungsperioden={abrechnungsperioden}
+          periode={selectedPeriode}
+          adminName={adminName}
           onClose={() => setZeigeWechselplanDialog(false)}
         />
       )}
 
-      {zeigeAnpassungDialog && (
+      {zeigeAnpassungDialog && selectedPeriode && (
         <StueckzahlAnpassungDialog
           anpassungen={stueckzahlAnpassungen}
           teilgebiete={teilgebiete}
+          periode={selectedPeriode}
+          adminName={adminName}
           onClose={() => setZeigeAnpassungDialog(false)}
         />
       )}
@@ -1396,12 +1995,16 @@ function WechselplanUebernahmeDialog({
   teilgebiete,
   mitarbeiter,
   abrechnungsperioden,
+  periode,
+  adminName,
   onClose,
 }: {
   wechselplaene: StandardAustraegerWechselPlan[];
   teilgebiete: Teilgebiet[];
   mitarbeiter: Mitarbeiter[];
   abrechnungsperioden: Abrechnungsperiode[];
+  periode: Abrechnungsperiode;
+  adminName: string;
   onClose: () => void;
 }) {
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
@@ -1414,6 +2017,64 @@ function WechselplanUebernahmeDialog({
     return na.localeCompare(nb, 'de', { numeric: true });
   });
 
+  /** Protokoll-Eintrag des umgesetzten Wechselplans schreiben (vor dem Löschen
+   *  des Plans). `neuerAustraegerId === null` ⇒ als unbesetzt übernommen. */
+  async function protokolliereWechsel(
+    p: StandardAustraegerWechselPlan,
+    tg: Teilgebiet,
+    neuerAustraegerId: string | null,
+  ) {
+    const bisher = tg.standardAustraegerId
+      ? maMap.get(tg.standardAustraegerId)
+      : undefined;
+    const neuer = neuerAustraegerId ? maMap.get(neuerAustraegerId) : undefined;
+    await protokolliereUmgesetzteAnpassung({
+      art: 'wechsel',
+      teilgebietId: tg.id,
+      teilgebietName: tg.name,
+      teilgebietPlz: tg.plz || undefined,
+      periodeId: periode.id,
+      periodeBezeichnung: periode.bezeichnung,
+      umsetzungJahr: periode.jahr,
+      umsetzungMonat: periode.monat,
+      umgesetztVon: adminName || undefined,
+      bisherigerAustraegerId: tg.standardAustraegerId ?? null,
+      bisherigerAustraegerName: bisher?.name ?? null,
+      letzteAusgabeKw: p.letzteAusgabeKw,
+      letzteAusgabeJahr: p.letzteAusgabeJahr,
+      neuerAustraegerId: neuerAustraegerId,
+      neuerAustraegerName: neuer?.name ?? null,
+      abAusgabeKw: p.abAusgabeKw,
+      abAusgabeJahr: p.abAusgabeJahr,
+      kommentar: p.kommentar,
+      externerLink: p.externerLink,
+    });
+  }
+
+  /** TG ohne geplanten Nachfolger als unbesetzt übernehmen: Standardausträger
+   *  am TG entfernen, Wechselplan protokollieren und löschen. */
+  async function handleUnbesetztUebernehmen(p: StandardAustraegerWechselPlan) {
+    const tg = tgMap.get(p.teilgebietId);
+    if (!tg) {
+      alert('Teilgebiet nicht mehr vorhanden — Eintrag wird verworfen.');
+      await loescheAustraegerwechselPlan(p.teilgebietId);
+      return;
+    }
+    if (!confirm(`„${tg.name}" als unbesetzt übernehmen? Der Standardausträger wird entfernt.`)) {
+      return;
+    }
+    setBusyId(p.id);
+    try {
+      await protokolliereWechsel(p, tg, null);
+      await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: null });
+      await loescheAustraegerwechselPlan(p.teilgebietId);
+    } catch (e: any) {
+      alert('Fehler beim Übernehmen: ' + (e.message ?? e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function handleUebernehmen(p: StandardAustraegerWechselPlan) {
     if (!p.neuerAustraegerId) return;
     const tg = tgMap.get(p.teilgebietId);
@@ -1424,6 +2085,7 @@ function WechselplanUebernahmeDialog({
     }
     setBusyId(p.id);
     try {
+      await protokolliereWechsel(p, tg, p.neuerAustraegerId);
       await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: p.neuerAustraegerId });
       // Behelfs-Springer-Einsätze (autoVomWechselplan) für den neuen Austräger
       // entfernen: Mit der Übernahme ist er offizieller Standardausträger und
@@ -1502,6 +2164,9 @@ function WechselplanUebernahmeDialog({
                     <tr key={p.id} className="hover:bg-gray-50">
                       <td className="px-3 py-2 font-medium text-gray-900">
                         {tg?.name ?? '— gelöscht —'}
+                        {!p.neuerAustraegerId && (
+                          <div className="text-[11px] font-semibold text-red-600">kein Nachfolger</div>
+                        )}
                         {p.kommentar && (
                           <div className="text-[10px] text-gray-500 truncate" title={p.kommentar}>
                             💬 {p.kommentar}
@@ -1529,7 +2194,17 @@ function WechselplanUebernahmeDialog({
                           >
                             {busyId === p.id ? '…' : '✓ Übernehmen'}
                           </button>
-                        ) : null}
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleUnbesetztUebernehmen(p)}
+                            disabled={busyId === p.id}
+                            className="text-xs bg-amber-600 text-white px-2.5 py-1 rounded hover:bg-amber-700 disabled:opacity-50 mr-1.5"
+                            title="Standardausträger am Teilgebiet entfernen (unbesetzt) und Wechselplan protokollieren"
+                          >
+                            {busyId === p.id ? '…' : '✓ Als unbesetzt übernehmen'}
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={async () => {
@@ -1568,10 +2243,14 @@ function WechselplanUebernahmeDialog({
 function StueckzahlAnpassungDialog({
   anpassungen,
   teilgebiete,
+  periode,
+  adminName,
   onClose,
 }: {
   anpassungen: import('../types').StueckzahlAnpassung[];
   teilgebiete: import('../types').Teilgebiet[];
+  periode: Abrechnungsperiode;
+  adminName: string;
   onClose: () => void;
 }) {
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
@@ -1594,6 +2273,22 @@ function StueckzahlAnpassungDialog({
     }
     setBusyId(w.id);
     try {
+      // Umgesetzte Mengenanpassung protokollieren (alte Stückzahl VOR dem
+      // Update festhalten).
+      await protokolliereUmgesetzteAnpassung({
+        art: 'menge',
+        teilgebietId: tg.id,
+        teilgebietName: tg.name,
+        teilgebietPlz: tg.plz || undefined,
+        periodeId: periode.id,
+        periodeBezeichnung: periode.bezeichnung,
+        umsetzungJahr: periode.jahr,
+        umsetzungMonat: periode.monat,
+        umgesetztVon: adminName || undefined,
+        alteStueckzahl: tg.stueckzahl,
+        neueStueckzahl: w.neueStueckzahl,
+        bemerkung: w.bemerkung,
+      });
       // Manueller Override-Flag mitschreiben, damit die automatische
       // Berechnung aus der Straßenliste den neuen Wert nicht wieder
       // überschreibt.

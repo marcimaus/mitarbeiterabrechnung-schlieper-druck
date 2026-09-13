@@ -1,0 +1,363 @@
+Abrechnung der Brutto/Netto-Bezüge für Mai 2024                                                                                                          P1A/P3F 24366/35560/60
+                                                                                                                                                                   10.06.2024 Blatt: 1
+Personal-Nr. Geburtsdatum StKl Faktor     Ki.Frbtr. Konfession Freibetrag jährl. 1 Freibetrag mtl. 1 DBA Midijob                             St.-Tg.
+                                                                                                                                                         VJ Url. üb. Url. Anspr. Url.Tg.gen. Resturlaub
+00060 240265                                                                                                                                  30
+                                                                                                                                                         Anw. Tage Urlaub Tage Krankh. Tg. Fehlz. Tage
+SV-Nummer                   Krankenkasse                                                                         KK % 8 PGRS BGRS          Um. SV-Tg.
+                                                                                                                                                         Anw. Std. Urlaub Std. Krankh. Std. Fehlz. Std.
+49240265E509 BUN Die Bundesknappsch                                                                              109 6100 1 30
+                                                                                                                                                                         Zeitlohn Std. Überstd. Bez. Std.
+                                                                                                                 Eintritt          Austritt
+
+                                                                                                                 011209
+
+                                                                                                                 Steuer-ID                    MFB 7
+
+         Schlieper-Druck GmbH*Schützenweg 18*37170 Uslar                                                         95358742062
+
+         *Pers.-Nr. 00060*    5*                                                   B/N                           Hinweise zur Abrechnung
+         *Abt.-Nr.                                                                P3F
+
+                                                                                                                 Kst.                                    6
+
+         Jacqueline Freyer
+         Konradstr. 26
+         37170 Uslar
+
+Brutto-Bezüge                                          www.datev.de/lohn-id                                      M8Ec3-vr2m5-2ygg3-pGKvC-yz84n
+
+Lohnart        Bezeichnung                                                                       Einheit 2       Menge 3                   Faktor 3 Prozentsatz St 4 SV4 GB5              Betrag
+
+     006 AUSHILFSLOHN                                                                                                                                       PPJ                    535,21
+
+Steuer/Sozialversicherung                                                                                                                                                                     Gesamt-Brutto
+
+St4            Steuer-Brutto                           Lohnsteuer      Kirchensteuer Solidaritätszuschlag                                                                                  535,21
+
+                                                                                                                                                                                   Steuerrechtliche Abzüge
+
+SV4        KV-Brutto           RV-Brutto               AV-Brutto       PV-Brutto  KV-Beitrag                               RV-Beitrag        AV-Beitrag     PV-Beitrag6            SV-rechtliche Abzüge
+
+L 53521                       53521                                                                                         1927                                                           19,27
+
+Verdienstbescheinigung                                                                                      Netto-Bezüge/Netto-Abzüge                                              Netto-Verdienst
+Gesamt-Brutto
+Steuer-Brutto               2.68137                    SV-Brutto       2.68137                              Nr.  Bezeichnung                                                        515,94
+Lohnsteuer                                             KV-Beitrag
+Kirchensteuer                                          RV-Beitrag                                                                                                                            Betrag
+Solidaritätszuschlag                                   AV-Beitrag
+Steuerfreie Bezüge                                     PV-Beitrag      9653
+P. verst. Zuk.sich.                                    VWL gesamt
+                                                       Kug-Auszahlung
+
+Pfändung Rest
+Darlehen Rest
+
+Bank Volksbank Solling Hardeg                                                                                    SV-AG-Anteil Zus. AG-Kosten                Gesamtkosten           Auszahlungsbetrag
+
+Konto DE91 2626 1693 0609 6280 00                                                                                14986                 1819                 70326                      515,94
+
+1 H = Hinzurechnungsbetrag                             4 L = Laufender Bezug, S = Sonstiger Bezug, F = Frei,               5 J = Bestandteil des Gesamt-Bruttos
+2 Std = Stunden, T = Tage, Km = Kilometer, St = Stück    E = Einmalbezug, P = Pauschalierung, A = Abfindung,               6 Z = Einschl. Beitragszuschlag zur PV für Kinderlose
+                                                         M = mehrjährige Versteuerung, N = Nachberechnung                  7 MFB = Mehrfachbeschäftigung
+  EUR = Euro, Tsd = Tausend Euro, Mio = Million Euro     V = Vorjahr, W = Entgeltguthaben                                  8 Maßgeblicher Beitragssatz zur KV inkl. Zusatzbeitrag
+3 Gegebenenfalls Netto-Lohn/Netto-Stundenlohn
+
+AFP Form.-Nr. LOGN15                                   - Dies ist eine Entgeltbescheinigung nach § 108 Abs. 3 Satz 1 der Gewerbeordnung -
+                                                                                                                                                           P1A/P3F 24366/35560/100
+
+Abrechnung der Brutto/Netto-Bezüge                                     für Mai 2024                                                                               10.06.2024 Blatt: 1
+
+Personal-Nr. Geburtsdatum StKl Faktor Ki.Frbtr. Konfession             Freibetrag jährl. 1 Freibetrag mtl. 1 DBA Midijob                       St.-Tg. VJ Url. üb. Url. Anspr. Url.Tg.gen. Resturlaub
+
+00100 300875 4                                         20                                                                                         30
+
+SV-Nummer                   Krankenkasse                                                          KK % 8 PGRS BGRS                             Um. SV-Tg.  Anw. Tage  Urlaub Tage Krankh. Tg. Fehlz. Tage
+
+10300875J509                                                                                                      000 0000 0 30
+
+                                                                                                                  Eintritt     Austritt                    Anw. Std. Urlaub Std. Krankh. Std. Fehlz. Std.
+
+                                                                                                                  011009
+
+                                                                                                                  Steuer-ID                    MFB 7                  Zeitlohn Std. Überstd. Bez. Std.
+
+         Schlieper-Druck GmbH*Schützenweg 18*37170 Uslar                                                          41859068375
+
+         *Pers.-Nr. 00100*                                                         B/N                            Hinweise zur Abrechnung
+         *Abt.-Nr.            7*                                                  P3F
+
+                                                                                                                  Kst.                                     6
+
+         Christina Johanning
+         Knobbenweg 9
+         37170 Uslar
+
+Brutto-Bezüge                                          www.datev.de/lohn-id                       ETsnp-UGZsB-aLWXM-y9FJi-TGr7r
+
+Lohnart        Bezeichnung                                                        Einheit 2                       Menge 3                      Faktor 3 Prozentsatz St 4 SV4 GB5                 Betrag
+
+     005 Gehalt                                                                                                                                               LLJ                   1.500,00
+                                                                                                                                                                                       112,00
+     873 Privatfahrten                                                                                                                                        LLJ                          6,72
+                                                                                                                                                                                       100,00
+     875 Whg/Arbeit p. St.                                                                                                                                    PFJ
+
+     901 BETR.AV.AG LFD.ST-FREI                                                                                                                               FFN
+
+Steuer/Sozialversicherung                                                                                                                                                                      Gesamt-Brutto
+
+St4            Steuer-Brutto                           Lohnsteuer      Kirchensteuer Solidaritätszuschlag                                                                                1.618,72
+
+L              1.61200                                   6941                                                                                                                       Steuerrechtliche Abzüge
+
+                                                                                                                                                                                              69,41
+
+SV4        KV-Brutto          RV-Brutto                    AV-Brutto   PV-Brutto  KV-Beitrag                                RV-Beitrag         AV-Beitrag             PV-Beitrag6   SV-rechtliche Abzüge
+
+Verdienstbescheinigung                                                                       Netto-Bezüge/Netto-Abzüge                                                                  Netto-Verdienst
+Gesamt-Brutto
+Steuer-Brutto               8.09360                    SV-Brutto                             Nr.                  Bezeichnung                                                        1.549,31
+Lohnsteuer                  8.06000                    KV-Beitrag
+Kirchensteuer                                          RV-Beitrag                            9074 Fahrtkosten                                                                                     Betrag
+Solidaritätszuschlag           34705                   AV-Beitrag
+Steuerfreie Bezüge                                     PV-Beitrag                            9994 Priv. Kfz-Nutzung                                                                         6,72-
+P. verst. Zuk.sich.            50000                   VWL gesamt                                                                                                                       112,00-
+                                                       Kug-Auszahlung
+                                                                                                                                                                                    Auszahlungsbetrag
+Pfändung Rest
+Darlehen Rest                                                                                                                                                                        1.430,59
+
+Bank Deutsche Kreditbank Berl                                                                     SV-AG-Anteil Zus. AG-Kosten                                 Gesamtkosten
+
+Konto DE07 1203 0000 1011 7734 45                                                                                                       7112               1.68984
+
+1 H = Hinzurechnungsbetrag                                 4 L = Laufender Bezug, S = Sonstiger Bezug, F = Frei,            5 J = Bestandteil des Gesamt-Bruttos
+2 Std = Stunden, T = Tage, Km = Kilometer, St = Stück        E = Einmalbezug, P = Pauschalierung, A = Abfindung,            6 Z = Einschl. Beitragszuschlag zur PV für Kinderlose
+                                                             M = mehrjährige Versteuerung, N = Nachberechnung               7 MFB = Mehrfachbeschäftigung
+  EUR = Euro, Tsd = Tausend Euro, Mio = Million Euro         V = Vorjahr, W = Entgeltguthaben                               8 Maßgeblicher Beitragssatz zur KV inkl. Zusatzbeitrag
+3 Gegebenenfalls Netto-Lohn/Netto-Stundenlohn
+
+AFP Form.-Nr. LOGN15                                       - Dies ist eine Entgeltbescheinigung nach § 108 Abs. 3 Satz 1 der Gewerbeordnung -
+Abrechnung der Brutto/Netto-Bezüge für Mai 2024                                                                                                      P1A/P3F 24366/35560/113
+                                                                                                                                                                  10.06.2024 Blatt: 1
+Personal-Nr. Geburtsdatum StKl Faktor           Ki.Frbtr. Konfession Freibetrag jährl. 1 Freibetrag mtl. 1 DBA Midijob
+                                                                                                                                               St.-Tg. VJ Url. üb. Url. Anspr. Url.Tg.gen. Resturlaub
+
+00113 300968 3                                         10                                                                                         30
+
+SV-Nummer                   Krankenkasse                                                          KK % 8 PGRS BGRS                             Um. SV-Tg.  Anw. Tage  Urlaub Tage Krankh. Tg. Fehlz. Tage
+
+10300968K012 EK TECHNIKER-KRANKENK                                                           1580101 1111 1 30
+
+                                                                                                                  Eintritt     Austritt                    Anw. Std. Urlaub Std. Krankh. Std. Fehlz. Std.
+
+                                                                                                                  010713
+
+                                                                                                                  Steuer-ID                    MFB 7                  Zeitlohn Std. Überstd. Bez. Std.
+
+         Schlieper-Druck GmbH*Schützenweg 18*37170 Uslar                                                          43238756198
+
+         *Pers.-Nr. 00113*           1*                                            B/N                            Hinweise zur Abrechnung
+         *Abt.-Nr.                                                                P3F
+
+                                                                                                                  Kst.                                     6
+
+                                                                                                                  - AN-PV-%-Satz 2 Kinder < 25 J.: 1.45%
+
+         Uwe Kreike
+         Lessingstr. 4
+         37170 Uslar
+
+Brutto-Bezüge                                          www.datev.de/lohn-id                       CSkAe-Rgbup-5Vr3S-oiNub-6j8cl
+
+Lohnart        Bezeichnung                                                        Einheit 2                       Menge 3                      Faktor 3 Prozentsatz St 4 SV4 GB5                 Betrag
+
+     001 GEHALT                                                                                                                                               LLJ                   2.756,00
+                                                                                                                                                                                         20,00
+     015 VWL AG-Anteil                                                                                                                                        LLJ                        85,80
+
+     041 Fahrgeld ST+SV frei                                                                                                                                  FFJ
+
+Steuer/Sozialversicherung                                                                                                                                                                      Gesamt-Brutto
+
+St4                   Steuer-Brutto                    Lohnsteuer      Kirchensteuer Solidaritätszuschlag                                                                                2.861,80
+
+L                    2.77600                             3450                                                                                                                       Steuerrechtliche Abzüge
+
+                                                                                                                                                                                              34,50
+
+SV4            KV-Brutto             RV-Brutto             AV-Brutto   PV-Brutto   KV-Beitrag                               RV-Beitrag         AV-Beitrag             PV-Beitrag6   SV-rechtliche Abzüge
+
+L 2.77600 2.77600 2.77600 2.77600                                                  21931                                    25817               3609                   4025               553,82
+
+Verdienstbescheinigung                                                                       Netto-Bezüge/Netto-Abzüge                                                                Netto-Verdienst
+
+Gesamt-Brutto               14.64170                   SV-Brutto       14.00660              Nr.                  Bezeichnung                                                       2.273,48
+                                                       KV-Beitrag       1.10654
+Steuer-Brutto               14.00660                   RV-Beitrag       1.30262              9998 VERMOEGENSBILD                                                                                 Betrag
+                                                       AV-Beitrag           18209
+                                                       PV-Beitrag           20309                                                                                                        40,00-
+                                                       VWL gesamt           20000
+Lohnsteuer                           18999             Kug-Auszahlung
+
+Kirchensteuer
+
+Solidaritätszuschlag
+
+Steuerfreie Bezüge                   63510
+
+P. verst. Zuk.sich.
+
+Pfändung Rest
+Darlehen Rest
+
+Bank Volksbank Solling Hardeg                                                                     SV-AG-Anteil Zus. AG-Kosten                                 Gesamtkosten          Auszahlungsbetrag
+
+Konto DE34 2626 1693 0051 6600 00                                                                 56076                                 7495               3.49751                   2.233,48
+
+1 H = Hinzurechnungsbetrag                                 4 L = Laufender Bezug, S = Sonstiger Bezug, F = Frei,            5 J = Bestandteil des Gesamt-Bruttos
+2 Std = Stunden, T = Tage, Km = Kilometer, St = Stück        E = Einmalbezug, P = Pauschalierung, A = Abfindung,            6 Z = Einschl. Beitragszuschlag zur PV für Kinderlose
+                                                             M = mehrjährige Versteuerung, N = Nachberechnung               7 MFB = Mehrfachbeschäftigung
+  EUR = Euro, Tsd = Tausend Euro, Mio = Million Euro         V = Vorjahr, W = Entgeltguthaben                               8 Maßgeblicher Beitragssatz zur KV inkl. Zusatzbeitrag
+3 Gegebenenfalls Netto-Lohn/Netto-Stundenlohn
+
+AFP Form.-Nr. LOGN15                                       - Dies ist eine Entgeltbescheinigung nach § 108 Abs. 3 Satz 1 der Gewerbeordnung -
+Abrechnung der Brutto/Netto-Bezüge für Mai 2024                                                                                                  P1A/P3F 24366/35560/187
+                                                                                                                                                              10.06.2024 Blatt: 1
+Personal-Nr. Geburtsdatum StKl Faktor     Ki.Frbtr. Konfession Freibetrag jährl. 1 Freibetrag mtl. 1 DBA Midijob
+                                                                                                                                           St.-Tg. VJ Url. üb. Url. Anspr. Url.Tg.gen. Resturlaub
+
+00187 050647                                                                                                                                  30
+
+SV-Nummer                  Krankenkasse                                                           KK % 8 PGRS BGRS                         Um. SV-Tg.  Anw. Tage  Urlaub Tage Krankh. Tg. Fehlz. Tage
+
+10050647S012 BUN Die Bundesknappsch                                                                           109 6500 1 30
+
+                                                                                                              Eintritt     Austritt                    Anw. Std. Urlaub Std. Krankh. Std. Fehlz. Std.
+
+                                                                                                              010721
+
+                                                                                                              Steuer-ID                         MFB 7             Zeitlohn Std. Überstd. Bez. Std.
+
+         Schlieper-Druck GmbH*Schützenweg 18*37170 Uslar                                                      93237610455
+
+         *Pers.-Nr. 00187*    5*                                                   B/N                        Hinweise zur Abrechnung
+         *Abt.-Nr.                                                                P3F
+
+                                                                                                              Kst.                                     6
+
+         Karl-Heinz Sage
+         Im Eichengrund 2
+         37170 Uslar
+
+Brutto-Bezüge                                          www.datev.de/lohn-id                       Ir7et-LZib5-p3nYY-IpCLC-rbuvs
+
+Lohnart    Bezeichnung                                                            Einheit 2                   Menge 3                      Faktor 3 Prozentsatz St 4 SV4 GB5           Betrag
+
+     006 AUSHILFSLOHN                                                                                                                                     PPJ                   161,33
+                                                                                                                                                                                 22,50
+     041 Fahrgeld ST+SV frei                                                                                                                              FFJ
+
+Steuer/Sozialversicherung                                                                                                                                                                  Gesamt-Brutto
+
+St4            Steuer-Brutto                           Lohnsteuer      Kirchensteuer Solidaritätszuschlag                                                                               183,83
+
+                                                                                                                                                                                Steuerrechtliche Abzüge
+
+SV4        KV-Brutto           RV-Brutto               AV-Brutto       PV-Brutto  KV-Beitrag                            RV-Beitrag         AV-Beitrag             PV-Beitrag6   SV-rechtliche Abzüge
+
+L 16133                       16133
+
+Verdienstbescheinigung                                                                       Netto-Bezüge/Netto-Abzüge                                                          Netto-Verdienst
+Gesamt-Brutto
+Steuer-Brutto                 51613                    SV-Brutto       40333                 Nr.              Bezeichnung                                                        183,83
+Lohnsteuer                    11280                    KV-Beitrag
+Kirchensteuer                                          RV-Beitrag                                                                                                                         Betrag
+Solidaritätszuschlag                                   AV-Beitrag
+Steuerfreie Bezüge                                     PV-Beitrag
+P. verst. Zuk.sich.                                    VWL gesamt
+                                                       Kug-Auszahlung
+Pfändung Rest
+Darlehen Rest
+
+Bank Kr Spk Northeim                                                                              SV-AG-Anteil Zus. AG-Kosten                             Gesamtkosten          Auszahlungsbetrag
+
+Konto DE54 2625 0001 0120 0332 20                                                                             4517                         549            23449                     183,83
+
+1 H = Hinzurechnungsbetrag                             4 L = Laufender Bezug, S = Sonstiger Bezug, F = Frei,            5 J = Bestandteil des Gesamt-Bruttos
+2 Std = Stunden, T = Tage, Km = Kilometer, St = Stück    E = Einmalbezug, P = Pauschalierung, A = Abfindung,            6 Z = Einschl. Beitragszuschlag zur PV für Kinderlose
+                                                         M = mehrjährige Versteuerung, N = Nachberechnung               7 MFB = Mehrfachbeschäftigung
+  EUR = Euro, Tsd = Tausend Euro, Mio = Million Euro     V = Vorjahr, W = Entgeltguthaben                               8 Maßgeblicher Beitragssatz zur KV inkl. Zusatzbeitrag
+3 Gegebenenfalls Netto-Lohn/Netto-Stundenlohn
+
+AFP Form.-Nr. LOGN15                                   - Dies ist eine Entgeltbescheinigung nach § 108 Abs. 3 Satz 1 der Gewerbeordnung -
+Abrechnung der Brutto/Netto-Bezüge für Mai 2024                                                                                                    P1A/P3F 24366/35560/193
+                                                                                                                                                                10.06.2024 Blatt: 1
+Personal-Nr. Geburtsdatum StKl Faktor     Ki.Frbtr. Konfession Freibetrag jährl. 1 Freibetrag mtl. 1 DBA Midijob
+                                                                                                                                             St.-Tg. VJ Url. üb. Url. Anspr. Url.Tg.gen. Resturlaub
+
+00193 211180                                                                                                                                  30
+
+SV-Nummer                  Krankenkasse                                                                          KK % 8 PGRS BGRS          Um. SV-Tg.    Anw. Tage  Urlaub Tage Krankh. Tg. Fehlz. Tage
+
+13211180R533 BUN Die Bundesknappsch                                                                              109 6500 1 30
+
+                                                                                                                 Eintritt          Austritt              Anw. Std. Urlaub Std. Krankh. Std. Fehlz. Std.
+
+                                                                                                                 010424
+
+                                                                                                                 Steuer-ID                    MFB 7                 Zeitlohn Std. Überstd. Bez. Std.
+
+         Schlieper-Druck GmbH*Schützenweg 18*37170 Uslar                                                         81352073961
+
+         *Pers.-Nr. 00193*    5*                                                   B/N                           Hinweise zur Abrechnung
+         *Abt.-Nr.                                                                P3F
+
+                                                                                                                 Kst.                                    6
+
+         Nadine Stricker
+         Konradstrasse 12
+         37170 Uslar
+
+Brutto-Bezüge                                          www.datev.de/lohn-id                                      JipZx-F55rj-Ps92a-DWym9-dTd3u
+
+Lohnart    Bezeichnung                                                                           Einheit 2       Menge 3                   Faktor 3 Prozentsatz St 4 SV4 GB5              Betrag
+
+     006 AUSHILFSLOHN                                                                                                                                       PPJ                    340,03
+
+Steuer/Sozialversicherung                                                                                                                                                                     Gesamt-Brutto
+
+St4            Steuer-Brutto                           Lohnsteuer      Kirchensteuer Solidaritätszuschlag                                                                                  340,03
+
+                                                                                                                                                                                   Steuerrechtliche Abzüge
+
+SV4        KV-Brutto           RV-Brutto               AV-Brutto       PV-Brutto  KV-Beitrag                               RV-Beitrag        AV-Beitrag             PV-Beitrag6    SV-rechtliche Abzüge
+
+L 34003                       34003
+
+Verdienstbescheinigung                                                                                      Netto-Bezüge/Netto-Abzüge                                              Netto-Verdienst
+Gesamt-Brutto
+Steuer-Brutto                 57582                    SV-Brutto       57582                                Nr.  Bezeichnung                                                        340,03
+Lohnsteuer                                             KV-Beitrag
+Kirchensteuer                                          RV-Beitrag                                                                                                                            Betrag
+Solidaritätszuschlag                                   AV-Beitrag
+Steuerfreie Bezüge                                     PV-Beitrag
+P. verst. Zuk.sich.                                    VWL gesamt
+                                                       Kug-Auszahlung
+Pfändung Rest
+Darlehen Rest
+
+Bank ING-DiBa Frankfurt am Ma                                                                                    SV-AG-Anteil Zus. AG-Kosten                Gesamtkosten           Auszahlungsbetrag
+
+Konto DE23 5001 0517 5410 2056 27                                                                                9520                  1156                 44679                      340,03
+
+1 H = Hinzurechnungsbetrag                             4 L = Laufender Bezug, S = Sonstiger Bezug, F = Frei,               5 J = Bestandteil des Gesamt-Bruttos
+2 Std = Stunden, T = Tage, Km = Kilometer, St = Stück    E = Einmalbezug, P = Pauschalierung, A = Abfindung,               6 Z = Einschl. Beitragszuschlag zur PV für Kinderlose
+                                                         M = mehrjährige Versteuerung, N = Nachberechnung                  7 MFB = Mehrfachbeschäftigung
+  EUR = Euro, Tsd = Tausend Euro, Mio = Million Euro     V = Vorjahr, W = Entgeltguthaben                                  8 Maßgeblicher Beitragssatz zur KV inkl. Zusatzbeitrag
+3 Gegebenenfalls Netto-Lohn/Netto-Stundenlohn
+
+AFP Form.-Nr. LOGN15                                   - Dies ist eine Entgeltbescheinigung nach § 108 Abs. 3 Satz 1 der Gewerbeordnung -
+

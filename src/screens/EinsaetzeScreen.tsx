@@ -147,6 +147,28 @@ function EinsaetzeInhalt() {
 
   const selectedAusgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
 
+  // Perioden-effektiver Springer-Standardzuschlag — exakt wie effParams in
+  // berechneAbrechnungen: abgeschlossene Periode → paramSnapshot, aktiver
+  // Monatswechsel-Snapshot → dessen paramSnapshot, sonst der Live-Parameter.
+  // So zeigt das Badge in der Liste den Prozentsatz, der tatsächlich
+  // verrechnet wird, auch wenn der globale Parameter zwischenzeitlich
+  // geändert wurde.
+  const effSpringerStandard = useMemo(() => {
+    const live = parameter?.springerZuschlagProzent ?? 0;
+    if (!selectedAusgabe) return live;
+    const periode = abrechnungsperioden.find(
+      (p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen?.includes(selectedAusgabe.kw)
+    );
+    if (!periode) return live;
+    if (periode.status === 'abgeschlossen') {
+      return periode.paramSnapshot?.springerZuschlagProzent ?? live;
+    }
+    if (periode.monatswechselSnapshot?.paramSnapshot) {
+      return periode.monatswechselSnapshot.paramSnapshot.springerZuschlagProzent ?? live;
+    }
+    return live;
+  }, [selectedAusgabe, abrechnungsperioden, parameter]);
+
   // Auslagestellen sind keine austräger-relevanten Gebiete und werden in
   // der Einsätze-Liste ausgeblendet — sie brauchen weder Standard- noch
   // Springer-Einsatz.
@@ -637,9 +659,17 @@ function EinsaetzeInhalt() {
                       ) : einsatz.typ === 'springer' ? (
                         <span className="font-medium text-blue-700">
                           {springerMA?.name ?? '?'}
-                          {einsatz.springerZuschlagProzent != null && (
-                            <span className="text-xs text-blue-400 ml-1">+{einsatz.springerZuschlagProzent}%</span>
-                          )}
+                          {/* Effektiv angewandter Zuschlag: expliziter Wert, sonst
+                              Parameter-Standard (genau wie in berechneAustraegerLohn). */}
+                          {(() => {
+                            const istStandard = einsatz.springerZuschlagProzent == null;
+                            const eff = einsatz.springerZuschlagProzent ?? effSpringerStandard;
+                            return (
+                              <span className="text-xs text-blue-400 ml-1">
+                                +{eff}%{istStandard ? ' (Std.)' : ''}
+                              </span>
+                            );
+                          })()}
                         </span>
                       ) : (
                         <span className="text-gray-400 text-xs">—</span>

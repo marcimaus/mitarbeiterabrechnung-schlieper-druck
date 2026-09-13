@@ -2,9 +2,12 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import ZeitAuswertungDruck from '../components/ZeitAuswertungDruck';
+import ZeitAuswertungAlleMaDruck, { type AuswertungFilter } from '../components/ZeitAuswertungAlleMaDruck';
+import StatistikMeldung from '../components/StatistikMeldung';
 import {
-  ladeMonatsarbeitszeiten,
-  ladeAlleMonatsarbeitszeiten,
+  ladeArbeitszeitenZeitraum,
+  ladeAlleArbeitszeitenZeitraum,
   berechneNettoMinuten,
   formatierZeit,
   formatierDatum,
@@ -16,11 +19,38 @@ import { MONATSNAMEN, donnerstagDerKW, kwLabel } from '../lib/kalender';
 import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
 import { istEinsatzbereit, effektiverStandardAustraegerId } from '../utils';
-import type { Arbeitszeit, Fahrt, ArbeitszeitsTyp, AuditEintrag, Rolle, Ausgabe } from '../types';
+import type { Arbeitszeit, Fahrt, ArbeitszeitsTyp, AuditEintrag, Rolle, Ausgabe, Einsatz, Teilgebiet, Mitarbeiter } from '../types';
 import { TYP_LABELS, ROLLEN_LABELS } from '../types';
 
 const ALLE_TYPEN: ArbeitszeitsTyp[] = ['austragen', 'zusammentragen', 'vorarbeit', 'sonstige'];
 const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
+
+// Sentinel 0 = „Alle" in den Monat-/Jahr-Selektoren (keine Einschränkung).
+const ALLE = 0;
+
+/** Liegt (y, m) im gewählten Zeitraum? selJahr/selMonat === 0 → keine
+ *  Einschränkung auf dieser Achse. m ist 1-basiert (1 = Januar). */
+function imZeitraum(selJahr: number, selMonat: number, y: number, m: number): boolean {
+  if (selJahr !== ALLE && y !== selJahr) return false;
+  if (selMonat !== ALLE && m !== selMonat) return false;
+  return true;
+}
+
+/** Zeitfenster [von, bis) für die Firestore-Abfrage. Bei „alle Jahre" ein
+ *  sehr weites Fenster; die Monats-Einschränkung erfolgt dann clientseitig. */
+function zeitfenster(selJahr: number, selMonat: number): [number, number] {
+  if (selJahr === ALLE) return [0, new Date(2999, 0, 1).getTime()];
+  if (selMonat === ALLE) return [new Date(selJahr, 0, 1).getTime(), new Date(selJahr + 1, 0, 1).getTime()];
+  return [new Date(selJahr, selMonat - 1, 1).getTime(), new Date(selJahr, selMonat, 1).getTime()];
+}
+
+/** Anzeigetext für den gewählten Zeitraum. */
+function zeitraumLabel(selJahr: number, selMonat: number): string {
+  const monatTxt = selMonat === ALLE ? 'Alle Monate' : MONATSNAMEN[selMonat - 1];
+  const jahrTxt = selJahr === ALLE ? 'alle Jahre' : String(selJahr);
+  if (selJahr === ALLE && selMonat === ALLE) return 'Alle Zeiträume';
+  return `${monatTxt} ${jahrTxt}`;
+}
 
 export default function ZeitübersichtScreen() {
   return (
@@ -69,6 +99,9 @@ function ZeitübersichtInhalt() {
   const isAdmin = userRole === 'admin';
   const istMitarbeiter = userRole === 'mitarbeiter';
   const heute = new Date();
+  // Reiter-Auswahl: „Übersicht" (Standard), „Rest- & Fehlmengen" (firmenweit,
+  // nur Nicht-Mitarbeiter) und „Statistikmeldung" (nur Admin).
+  const [tab, setTab] = useState<'uebersicht' | 'restmengen' | 'statistik'>('uebersicht');
   // Mitarbeiter sehen NUR ihre eigenen Daten — selectedMaId ist auf den
   // eingeloggten MA fixiert; keine Auswahlliste, kein Wechsel möglich.
   const [selectedMaId, setSelectedMaId] = useState<string>(
@@ -81,9 +114,13 @@ function ZeitübersichtInhalt() {
   const [loading, setLoading] = useState(false);
   const [editSession, setEditSession] = useState<Arbeitszeit | null>(null);
   const [showNeueZeit, setShowNeueZeit] = useState(false);
+  const [showAuswertung, setShowAuswertung] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [restmengen, setRestmengen] = useState<RestmengeMeldung[]>([]);
+  /** Alle Einsätze des gewählten Monats (über alle TG/MA) — Basis für die
+   *  TG-bezogene Zeiten- und Rest-/Fehlmengen-Übersicht. */
+  const [monatsEinsaetze, setMonatsEinsaetze] = useState<Einsatz[]>([]);
   /** Pro (TG, Ausgabe) im gewählten Monat der Erfassungsstatus für den
    *  aktuell selektierten MA als Austräger (Standard oder Springer). */
   const [erfassungStatusListe, setErfassungStatusListe] = useState<ErfassungEintrag[]>([]);
@@ -113,19 +150,21 @@ function ZeitübersichtInhalt() {
     (async () => {
       const relevante = ausgaben.filter((a) => {
         const d = donnerstagDerKW(a.kw, a.jahr);
-        return d.getUTCFullYear() === jahr && d.getUTCMonth() + 1 === monat;
+        return imZeitraum(jahr, monat, d.getUTCFullYear(), d.getUTCMonth() + 1);
       });
       if (relevante.length === 0) {
-        if (!cancelled) setRestmengen([]);
+        if (!cancelled) { setRestmengen([]); setMonatsEinsaetze([]); }
         return;
       }
       try {
         const listen = await Promise.all(relevante.map((a) => ladeEinsaetze(a.id)));
         if (cancelled) return;
+        const alleEins: Einsatz[] = [];
         const result: RestmengeMeldung[] = [];
         for (let i = 0; i < relevante.length; i++) {
           const a = relevante[i];
           for (const e of listen[i]) {
+            alleEins.push(e);
             const rest = e.restmenge ?? 0;
             const fehl = e.fehlmenge ?? 0;
             const komm = e.meldungKommentar;
@@ -147,6 +186,7 @@ function ZeitübersichtInhalt() {
           }
         }
         setRestmengen(result);
+        setMonatsEinsaetze(alleEins);
       } catch (err) {
         console.error('Fehler beim Laden der Restmengen:', err);
       }
@@ -168,7 +208,7 @@ function ZeitübersichtInhalt() {
     (async () => {
       const relevante = ausgaben.filter((a) => {
         const d = donnerstagDerKW(a.kw, a.jahr);
-        return d.getUTCFullYear() === jahr && d.getUTCMonth() + 1 === monat;
+        return imZeitraum(jahr, monat, d.getUTCFullYear(), d.getUTCMonth() + 1);
       });
       if (relevante.length === 0) {
         if (!cancelled) setErfassungStatusListe([]);
@@ -235,6 +275,13 @@ function ZeitübersichtInhalt() {
   const [filterTyp, setFilterTyp] = useState<ArbeitszeitsTyp | ''>('');
   // Filter „Mit/Ohne Zeiten im Zeitraum" für die Alle-MA-Übersicht
   const [filterZeiten, setFilterZeiten] = useState<'' | 'mit' | 'ohne'>('');
+  // Teilgebiet-Filter (Alle-MA-Übersicht): schränkt Rest-/Fehlmengen und
+  // Zeiten auf ein einzelnes Teilgebiet ein. '' = alle Teilgebiete.
+  const [filterTgId, setFilterTgId] = useState<string>('');
+  // Rest-/Fehlmengen-Filter: '' = alle, sonst hat/hat keine Rest- bzw. Fehlmenge.
+  const [filterRest, setFilterRest] = useState<'' | 'mitRest' | 'ohneRest' | 'mitFehl' | 'ohneFehl'>('');
+  // Mitarbeiter-Suche (Name und/oder Nummer) — nur im Reiter „Rest- & Fehlmengen".
+  const [filterMaRest, setFilterMaRest] = useState('');
   // Sessions ALLER Mitarbeiter im Zeitraum — nur geladen, wenn kein MA
   // ausgewählt ist und nicht Mitarbeiter-Login.
   const [alleSessions, setAlleSessions] = useState<Arbeitszeit[]>([]);
@@ -258,14 +305,20 @@ function ZeitübersichtInhalt() {
   useEffect(() => {
     if (!selectedMaId) return;
     setLoading(true);
+    const [von, bis] = zeitfenster(jahr, monat);
     Promise.all([
-      ladeMonatsarbeitszeiten(selectedMaId, jahr, monat),
+      ladeArbeitszeitenZeitraum(selectedMaId, von, bis),
       ladeFahrten({ mitarbeiterId: selectedMaId }),
     ]).then(([sess, fList]) => {
-      setSessions(sess);
+      // Bei „alle Jahre" + konkretem Monat schränkt das Zeitfenster den Monat
+      // nicht ein → clientseitig nachfiltern (no-op in allen anderen Fällen).
+      setSessions(sess.filter((s) => {
+        const d = new Date(s.startTime);
+        return imZeitraum(jahr, monat, d.getFullYear(), d.getMonth() + 1);
+      }));
       const monatsFahrten = fList.filter((f) => {
         const d = new Date(f.datum);
-        return d.getFullYear() === jahr && d.getMonth() + 1 === monat;
+        return imZeitraum(jahr, monat, d.getFullYear(), d.getMonth() + 1);
       });
       setFahrten(monatsFahrten);
     }).catch((err) => {
@@ -275,15 +328,19 @@ function ZeitübersichtInhalt() {
     });
   }, [selectedMaId, monat, jahr, reloadKey]);
 
-  // Alle-MA-Modus: alle Arbeitszeiten des gewählten Monats laden
+  // Alle-MA-Modus: alle Arbeitszeiten des gewählten Zeitraums laden
   useEffect(() => {
     if (selectedMaId || istMitarbeiter) {
       setAlleSessions([]);
       return;
     }
     setLoadingAlle(true);
-    ladeAlleMonatsarbeitszeiten(jahr, monat)
-      .then(setAlleSessions)
+    const [von, bis] = zeitfenster(jahr, monat);
+    ladeAlleArbeitszeitenZeitraum(von, bis)
+      .then((list) => setAlleSessions(list.filter((s) => {
+        const d = new Date(s.startTime);
+        return imZeitraum(jahr, monat, d.getFullYear(), d.getMonth() + 1);
+      })))
       .catch((err) => console.error('Fehler beim Laden aller Zeiten:', err))
       .finally(() => setLoadingAlle(false));
   }, [selectedMaId, jahr, monat, reloadKey, istMitarbeiter]);
@@ -356,10 +413,116 @@ function ZeitübersichtInhalt() {
     return arr;
   })();
 
+  // ---- Druck „alle MA" -----------------------------------------
+  // Spiegelt die Filterlogik der Alle-MA-Übersicht für den Druck:
+  //   - Suchtext + Rolle wirken bereits in suchKandidaten
+  //   - filterTyp schränkt die Sessions ein
+  //   - filterZeiten / filterRest schränken die MA-Liste ein
+  //   - filterTgId schränkt Rest-/Fehl-Aggregation für den MA-Filter ein
+  const alleSessionsGefiltert = filterTyp
+    ? alleSessions.filter((s) => s.typ === filterTyp)
+    : alleSessions;
+  const minutenJeMaDruck = (() => {
+    const m = new Map<string, number>();
+    for (const s of alleSessionsGefiltert) {
+      if (s.status !== 'abgeschlossen') continue;
+      m.set(s.mitarbeiterId, (m.get(s.mitarbeiterId) ?? 0) + berechneNettoMinuten(s));
+    }
+    return m;
+  })();
+  const restmengeJeMaDruck = (() => {
+    const liste = filterTgId
+      ? restmengen.filter((r) => r.teilgebietId === filterTgId)
+      : restmengen;
+    const m = new Map<string, { summe: number; fehl: number }>();
+    for (const r of liste) {
+      const cur = m.get(r.mitarbeiterId) ?? { summe: 0, fehl: 0 };
+      cur.summe += r.restmenge;
+      cur.fehl += r.fehlmenge;
+      m.set(r.mitarbeiterId, cur);
+    }
+    return m;
+  })();
+  let druckMaListe = suchKandidaten;
+  if (filterZeiten === 'mit') {
+    druckMaListe = druckMaListe.filter((m) => (minutenJeMaDruck.get(m.id) ?? 0) > 0);
+  } else if (filterZeiten === 'ohne') {
+    druckMaListe = druckMaListe.filter((m) => (minutenJeMaDruck.get(m.id) ?? 0) === 0);
+  }
+  if (filterRest) {
+    druckMaListe = druckMaListe.filter((m) => {
+      const r = restmengeJeMaDruck.get(m.id);
+      switch (filterRest) {
+        case 'mitRest': return (r?.summe ?? 0) > 0;
+        case 'ohneRest': return (r?.summe ?? 0) === 0;
+        case 'mitFehl': return (r?.fehl ?? 0) > 0;
+        case 'ohneFehl': return (r?.fehl ?? 0) === 0;
+        default: return true;
+      }
+    });
+  }
+  const druckTgName = filterTgId
+    ? (teilgebiete.find((t) => t.id === filterTgId)?.name ?? '')
+    : '';
+  const auswertungFilter: AuswertungFilter = {
+    suchText,
+    rolle: filterRolle,
+    typ: filterTyp,
+    zeiten: filterZeiten,
+    teilgebiet: druckTgName,
+    rest: filterRest,
+  };
+
   return (
     <div className="p-6">
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Zeitübersicht</h1>
+      <h1 className="text-2xl font-bold text-gray-900 mb-6">Zeitenübersicht und Restmengen</h1>
 
+      {/* Reiter — „Rest- & Fehlmengen" für alle Nicht-Mitarbeiter,
+          „Statistikmeldung" nur für Admin. Mitarbeiter sehen keine Reiter. */}
+      {!istMitarbeiter && (
+        <div className="flex gap-1 mb-6 border-b border-gray-200">
+          {([
+            ['uebersicht', '📊 Übersicht'],
+            ['restmengen', '📦 Rest- & Fehlmengen'],
+            ...(isAdmin ? [['statistik', '📈 Statistikmeldung']] : []),
+          ] as Array<['uebersicht' | 'restmengen' | 'statistik', string]>).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 transition-colors ${
+                tab === key
+                  ? 'border-blue-600 text-blue-700'
+                  : 'border-transparent text-gray-500 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isAdmin && tab === 'statistik' ? (
+        <StatistikMeldung />
+      ) : !istMitarbeiter && tab === 'restmengen' ? (
+        <RestmengenReiter
+          restmengen={restmengen}
+          monatsEinsaetze={monatsEinsaetze}
+          teilgebiete={teilgebiete}
+          mitarbeiter={mitarbeiter}
+          filterTgId={filterTgId}
+          setFilterTgId={setFilterTgId}
+          filterRest={filterRest}
+          setFilterRest={setFilterRest}
+          filterMaRest={filterMaRest}
+          setFilterMaRest={setFilterMaRest}
+          monat={monat}
+          setMonat={setMonat}
+          jahr={jahr}
+          setJahr={setJahr}
+          jahre={jahre}
+        />
+      ) : (
+      <>
       {/* Filter */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
         <div className="flex flex-wrap gap-3 items-center">
@@ -431,22 +594,74 @@ function ZeitübersichtInhalt() {
               <option value="ohne">nur ohne Zeiten</option>
             </select>
           )}
-          <select value={monat} onChange={(e) => setMonat(Number(e.target.value))} className={selectClass}>
+          {/* Teilgebiet- und Rest-/Fehlmengen-Filter — nur in der Alle-MA-
+              Übersicht sinnvoll (firmenweite Sicht je TG / je Meldungsart). */}
+          {!selectedMaId && !istMitarbeiter && (
+            <>
+              <select
+                value={filterTgId}
+                onChange={(e) => setFilterTgId(e.target.value)}
+                className={selectClass}
+                title="Auf ein Teilgebiet einschränken"
+              >
+                <option value="">Alle Teilgebiete</option>
+                {teilgebiete
+                  .filter((t) => t.isActive && !t.istAuslagestelle)
+                  .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }))
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}{t.plz ? ` (${t.plz})` : ''}
+                    </option>
+                  ))}
+              </select>
+              <select
+                value={filterRest}
+                onChange={(e) => setFilterRest(e.target.value as typeof filterRest)}
+                className={selectClass}
+                title="Auf Rest- bzw. Fehlmengen-Meldungen einschränken"
+              >
+                <option value="">Rest/Fehl: alle</option>
+                <option value="mitRest">nur mit Restmenge</option>
+                <option value="ohneRest">ohne Restmenge</option>
+                <option value="mitFehl">nur mit Fehlmenge</option>
+                <option value="ohneFehl">ohne Fehlmenge</option>
+              </select>
+            </>
+          )}
+          <select value={monat} onChange={(e) => setMonat(Number(e.target.value))} className={selectClass} title="Monat (oder alle)">
+            <option value={ALLE}>Alle Monate</option>
             {MONATSNAMEN.map((name, i) => (
               <option key={i + 1} value={i + 1}>{name}</option>
             ))}
           </select>
-          <select value={jahr} onChange={(e) => setJahr(Number(e.target.value))} className={selectClass}>
+          <select value={jahr} onChange={(e) => setJahr(Number(e.target.value))} className={selectClass} title="Jahr (oder alle)">
+            <option value={ALLE}>Alle Jahre</option>
             {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
           </select>
-          {!istMitarbeiter && (
+          <div className="ml-auto flex items-center gap-2">
             <button
-              onClick={() => setShowNeueZeit(true)}
-              className="ml-auto bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+              onClick={() => setShowAuswertung(true)}
+              disabled={(monat === ALLE || jahr === ALLE) || (istMitarbeiter && !selectedMaId)}
+              title={
+                (monat === ALLE || jahr === ALLE)
+                  ? 'Druckauswertung nur für einen konkreten Monat möglich — bitte Monat und Jahr wählen'
+                  : selectedMaId
+                    ? 'Druckbare Auswertung der Arbeitszeiten und des Zusammentragens für den gewählten Monat'
+                    : 'Druckbare Auswertung aller Mitarbeiter für den gewählten Monat (Anlage zur Lohnabrechnung) — aktive Filter werden auf dem Ausdruck dokumentiert'
+              }
+              className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              + Neue Zeit erfassen
+              🖨️ Auswertung{!selectedMaId && !istMitarbeiter ? ' (alle MA)' : ''}
             </button>
-          )}
+            {!istMitarbeiter && (
+              <button
+                onClick={() => setShowNeueZeit(true)}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+              >
+                + Neue Zeit erfassen
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -464,11 +679,16 @@ function ZeitübersichtInhalt() {
           arr.push(s);
           zeitenJeMa.set(s.mitarbeiterId, arr);
         }
+        // Rest-/Fehlmengen ggf. auf das gewählte Teilgebiet einschränken.
+        const restmengenGefiltert = filterTgId
+          ? restmengen.filter((r) => r.teilgebietId === filterTgId)
+          : restmengen;
         // Restmengen pro MA aggregieren (aus Selbstmeldung / QR-Code).
-        const restmengeJeMa = new Map<string, { summe: number; count: number }>();
-        for (const r of restmengen) {
-          const cur = restmengeJeMa.get(r.mitarbeiterId) ?? { summe: 0, count: 0 };
+        const restmengeJeMa = new Map<string, { summe: number; fehl: number; count: number }>();
+        for (const r of restmengenGefiltert) {
+          const cur = restmengeJeMa.get(r.mitarbeiterId) ?? { summe: 0, fehl: 0, count: 0 };
           cur.summe += r.restmenge;
+          cur.fehl += r.fehlmenge;
           cur.count += 1;
           restmengeJeMa.set(r.mitarbeiterId, cur);
         }
@@ -478,6 +698,19 @@ function ZeitübersichtInhalt() {
           liste = liste.filter((m) => (minutenJeMa.get(m.id) ?? 0) > 0);
         } else if (filterZeiten === 'ohne') {
           liste = liste.filter((m) => (minutenJeMa.get(m.id) ?? 0) === 0);
+        }
+        // Rest-/Fehlmengen-Filter auf die MA-Liste anwenden (hat/hat keine).
+        if (filterRest) {
+          liste = liste.filter((m) => {
+            const r = restmengeJeMa.get(m.id);
+            switch (filterRest) {
+              case 'mitRest': return (r?.summe ?? 0) > 0;
+              case 'ohneRest': return (r?.summe ?? 0) === 0;
+              case 'mitFehl': return (r?.fehl ?? 0) > 0;
+              case 'ohneFehl': return (r?.fehl ?? 0) === 0;
+              default: return true;
+            }
+          });
         }
         // Sortierung: MA mit Zeiten zuerst (absteigend), dann Name
         liste = [...liste].sort((a, b) => {
@@ -507,7 +740,7 @@ function ZeitübersichtInhalt() {
               />
               <SummaryCard
                 label="Zeitraum"
-                value={`${MONATSNAMEN[monat - 1]} ${jahr}`}
+                value={zeitraumLabel(jahr, monat)}
               />
             </div>
 
@@ -555,6 +788,19 @@ function ZeitübersichtInhalt() {
                             </div>
                           </div>
                           <div className="text-right shrink-0 flex items-start gap-4">
+                            {rest && rest.fehl > 0 && (
+                              <div
+                                className="text-right"
+                                title="Σ Fehlmenge — Austräger hat zu wenige Exemplare erhalten"
+                              >
+                                <div className="text-xs font-semibold text-red-700 whitespace-nowrap">
+                                  ⚠ {rest.fehl.toLocaleString('de-DE')}
+                                </div>
+                                <div className="text-[10px] text-red-600">
+                                  Fehlmenge
+                                </div>
+                              </div>
+                            )}
                             {rest && rest.summe > 0 && (
                               <div
                                 className="text-right"
@@ -589,6 +835,12 @@ function ZeitübersichtInhalt() {
                   })}
                 </ul>
               )}
+            </div>
+
+            {/* Firmenweite Rest- & Fehlmengen: eigener Reiter „Rest- & Fehlmengen". */}
+            <div className="text-xs text-gray-400 italic">
+              Firmenweite Rest- &amp; Fehlmengen je Teilgebiet stehen jetzt im eigenen
+              Reiter „📦 Rest- &amp; Fehlmengen" (oben).
             </div>
           </div>
         );
@@ -662,7 +914,7 @@ function ZeitübersichtInhalt() {
           {/* Sessions-Tabelle */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mb-6">
             <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 font-medium text-sm text-gray-600">
-              Arbeitstage — {MONATSNAMEN[monat - 1]} {jahr}
+              Arbeitstage — {zeitraumLabel(jahr, monat)}
             </div>
             {(() => {
               const angezeigteSessions = filterTyp
@@ -900,6 +1152,33 @@ function ZeitübersichtInhalt() {
           />
         )}
       </Modal>
+
+      {showAuswertung && selectedMaId && ma && (
+        <ZeitAuswertungDruck
+          ma={ma}
+          monat={monat}
+          jahr={jahr}
+          periode={abrechnungsperioden.find((p) => p.jahr === jahr && p.monat === monat)}
+          sessions={sessions}
+          teilgebiete={teilgebiete}
+          ausgaben={ausgaben}
+          onClose={() => setShowAuswertung(false)}
+        />
+      )}
+
+      {showAuswertung && !selectedMaId && !istMitarbeiter && monat !== ALLE && jahr !== ALLE && (
+        <ZeitAuswertungAlleMaDruck
+          monat={monat}
+          jahr={jahr}
+          periode={abrechnungsperioden.find((p) => p.jahr === jahr && p.monat === monat)}
+          mitarbeiter={druckMaListe}
+          sessions={alleSessionsGefiltert}
+          filter={auswertungFilter}
+          onClose={() => setShowAuswertung(false)}
+        />
+      )}
+      </>
+      )}
     </div>
   );
 }
@@ -1171,6 +1450,369 @@ function RestmengenAustraegerÜbersicht({
             })}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+// ---- Reiter: Rest- & Fehlmengen (firmenweit, mit Filtern) --
+//
+// Eigener Reiter, damit die firmenweite Rest-/Fehlmengen-Tabelle nicht mehr
+// unter der Mitarbeiterliste übersehen wird. Filter: Teilgebiet, Mitarbeiter
+// (Name und/oder Nummer), Jahr/Monat und Rest-/Fehlmengen-Art.
+
+function RestmengenReiter({
+  restmengen,
+  monatsEinsaetze,
+  teilgebiete,
+  mitarbeiter,
+  filterTgId,
+  setFilterTgId,
+  filterRest,
+  setFilterRest,
+  filterMaRest,
+  setFilterMaRest,
+  monat,
+  setMonat,
+  jahr,
+  setJahr,
+  jahre,
+}: {
+  restmengen: RestmengeMeldung[];
+  monatsEinsaetze: Einsatz[];
+  teilgebiete: Teilgebiet[];
+  mitarbeiter: Mitarbeiter[];
+  filterTgId: string;
+  setFilterTgId: (v: string) => void;
+  filterRest: '' | 'mitRest' | 'ohneRest' | 'mitFehl' | 'ohneFehl';
+  setFilterRest: (v: '' | 'mitRest' | 'ohneRest' | 'mitFehl' | 'ohneFehl') => void;
+  filterMaRest: string;
+  setFilterMaRest: (v: string) => void;
+  monat: number;
+  setMonat: (v: number) => void;
+  jahr: number;
+  setJahr: (v: number) => void;
+  jahre: number[];
+}) {
+  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+  const maMatch = (id: string | null) => {
+    if (!filterMaRest.trim()) return true;
+    if (!id) return false;
+    const ma = maMap.get(id);
+    if (!ma) return false;
+    const s = filterMaRest.toLowerCase();
+    return ma.name.toLowerCase().includes(s) || ma.nummer.toLowerCase().includes(s);
+  };
+
+  const meldungenGefiltert = restmengen
+    .filter((r) => !filterTgId || r.teilgebietId === filterTgId)
+    .filter((r) => maMatch(r.mitarbeiterId));
+  const einsaetzeGefiltert = monatsEinsaetze
+    .filter((e) => !filterTgId || e.teilgebietId === filterTgId)
+    .filter((e) => maMatch(e.mitarbeiterId));
+
+  return (
+    <div className="space-y-4">
+      {/* Filter */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+        <div className="flex flex-wrap gap-3 items-center">
+          <select
+            value={filterTgId}
+            onChange={(e) => setFilterTgId(e.target.value)}
+            className={selectClass}
+            title="Auf ein Teilgebiet einschränken"
+          >
+            <option value="">Alle Teilgebiete</option>
+            {teilgebiete
+              .filter((t) => t.isActive && !t.istAuslagestelle)
+              .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }))
+              .map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}{t.plz ? ` (${t.plz})` : ''}
+                </option>
+              ))}
+          </select>
+          <input
+            type="text"
+            placeholder="Mitarbeiter (Name oder Nummer)…"
+            value={filterMaRest}
+            onChange={(e) => setFilterMaRest(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
+            title="Volltextsuche über Mitarbeitername und -nummer"
+          />
+          <select
+            value={monat}
+            onChange={(e) => setMonat(Number(e.target.value))}
+            className={selectClass}
+            title="Monat (oder alle)"
+          >
+            <option value={ALLE}>Alle Monate</option>
+            {MONATSNAMEN.map((name, i) => (
+              <option key={i + 1} value={i + 1}>{name}</option>
+            ))}
+          </select>
+          <select
+            value={jahr}
+            onChange={(e) => setJahr(Number(e.target.value))}
+            className={selectClass}
+            title="Jahr (oder alle)"
+          >
+            <option value={ALLE}>Alle Jahre</option>
+            {jahre.map((j) => <option key={j} value={j}>{j}</option>)}
+          </select>
+          <select
+            value={filterRest}
+            onChange={(e) => setFilterRest(e.target.value as typeof filterRest)}
+            className={selectClass}
+            title="Auf Rest- bzw. Fehlmengen-Meldungen einschränken"
+          >
+            <option value="">Rest/Fehl: alle</option>
+            <option value="mitRest">nur mit Restmenge</option>
+            <option value="ohneRest">ohne Restmenge</option>
+            <option value="mitFehl">nur mit Fehlmenge</option>
+            <option value="ohneFehl">ohne Fehlmenge</option>
+          </select>
+          {(filterTgId || filterMaRest || filterRest) && (
+            <button
+              type="button"
+              onClick={() => { setFilterTgId(''); setFilterMaRest(''); setFilterRest(''); }}
+              className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+            >
+              ✕ Filter zurücksetzen
+            </button>
+          )}
+        </div>
+      </div>
+
+      {meldungenGefiltert.length === 0 &&
+      einsaetzeGefiltert.filter((e) => e.arbeitszeit).length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 py-10 text-center text-sm text-gray-500">
+          Keine Rest-/Fehlmengen-Meldungen für den gewählten Zeitraum und Filter.
+        </div>
+      ) : (
+        <AlleRestmengenÜbersicht
+          meldungen={meldungenGefiltert}
+          monatsEinsaetze={einsaetzeGefiltert}
+          teilgebiete={teilgebiete}
+          mitarbeiter={mitarbeiter}
+          filterRest={filterRest}
+          filterTgId={filterTgId}
+          monat={monat}
+          jahr={jahr}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---- Firmenweite Rest-/Fehlmengen je Teilgebiet (alle MA) --
+
+/** Netto-Minuten einer selbstgemeldeten Austräger-Arbeitszeit (von/bis/Pause). */
+function nettoMinutenAz(az: { von: string; bis: string; pausenMinuten?: number }): number {
+  const [vH, vM] = az.von.split(':').map(Number);
+  const [bH, bM] = az.bis.split(':').map(Number);
+  if (![vH, vM, bH, bM].every(Number.isFinite)) return 0;
+  return Math.max(0, (bH * 60 + bM) - (vH * 60 + vM) - (az.pausenMinuten ?? 0));
+}
+
+/**
+ * Firmenweite Übersicht über alle Rest- & Fehlmengen-Meldungen des Monats —
+ * über alle Mitarbeiter, optional auf ein Teilgebiet eingeschränkt. Ist ein
+ * Teilgebiet gewählt, werden zusätzlich alle erfassten Zeiten dieses TG
+ * angezeigt (Anforderung: „alle Zeiten sowie Rest-/Fehlmengen je TG").
+ */
+function AlleRestmengenÜbersicht({
+  meldungen,
+  monatsEinsaetze,
+  teilgebiete,
+  mitarbeiter,
+  filterRest,
+  filterTgId,
+  monat,
+  jahr,
+}: {
+  meldungen: RestmengeMeldung[];
+  monatsEinsaetze: Einsatz[];
+  teilgebiete: Teilgebiet[];
+  mitarbeiter: Mitarbeiter[];
+  filterRest: '' | 'mitRest' | 'ohneRest' | 'mitFehl' | 'ohneFehl';
+  filterTgId: string;
+  monat: number;
+  jahr: number;
+}) {
+  const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
+  const maMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+  const maName = (id: string) => maMap.get(id)?.name ?? '— unbekannt —';
+
+  const gefiltert = meldungen.filter((m) => {
+    switch (filterRest) {
+      case 'mitRest': return m.restmenge > 0;
+      case 'ohneRest': return m.restmenge === 0;
+      case 'mitFehl': return m.fehlmenge > 0;
+      case 'ohneFehl': return m.fehlmenge === 0;
+      default: return true;
+    }
+  });
+
+  // Zeiten je TG nur anzeigen, wenn ein einzelnes TG gewählt ist.
+  const zeitenEintraege = filterTgId
+    ? monatsEinsaetze
+        .filter((e) => e.arbeitszeit)
+        .sort((a, b) => (b.jahr - a.jahr) || (b.kw - a.kw))
+    : [];
+
+  if (gefiltert.length === 0 && zeitenEintraege.length === 0) return null;
+
+  const summeRest = gefiltert.reduce((s, m) => s + m.restmenge, 0);
+  const summeFehl = gefiltert.reduce((s, m) => s + m.fehlmenge, 0);
+  const tgCount = new Set(gefiltert.map((m) => m.teilgebietId)).size;
+
+  const sortiert = [...gefiltert].sort((a, b) => {
+    const af = a.fehlmenge > 0 ? 1 : 0;
+    const bf = b.fehlmenge > 0 ? 1 : 0;
+    if (af !== bf) return bf - af;
+    if (b.jahr !== a.jahr) return b.jahr - a.jahr;
+    if (b.kw !== a.kw) return b.kw - a.kw;
+    const tgA = tgMap.get(a.teilgebietId)?.name ?? '';
+    const tgB = tgMap.get(b.teilgebietId)?.name ?? '';
+    return tgA.localeCompare(tgB, 'de', { numeric: true });
+  });
+
+  const tgLabel = filterTgId
+    ? (tgMap.get(filterTgId)?.name ?? '— gelöscht —')
+    : 'alle Teilgebiete';
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-200 bg-amber-50 flex items-center gap-2 flex-wrap">
+        <span className="text-amber-700">📦</span>
+        <span className="font-medium text-sm text-amber-900">
+          Rest- &amp; Fehlmengen — {tgLabel}
+        </span>
+        <span className="text-xs text-amber-700">
+          {zeitraumLabel(jahr, monat)}
+        </span>
+        <span className="text-xs text-amber-700 ml-auto">
+          {summeFehl > 0 && (
+            <span className="text-red-700 font-semibold mr-2">
+              ⚠ Σ Fehl: {summeFehl.toLocaleString('de-DE')}
+            </span>
+          )}
+          Σ Rest: {summeRest.toLocaleString('de-DE')} Stk · {gefiltert.length} Meldung
+          {gefiltert.length === 1 ? '' : 'en'}
+          {!filterTgId && ` · ${tgCount} TG`}
+        </span>
+      </div>
+
+      {sortiert.length === 0 ? (
+        <div className="px-4 py-6 text-center text-sm text-gray-400">
+          Keine Rest-/Fehlmengen-Meldungen passend zum Filter.
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-100">
+            <tr>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">KW/Jahr</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">Teilgebiet</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">Mitarbeiter</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Fehlmenge</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Restmenge</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Anteil</th>
+              <th className="text-left px-4 py-2 font-medium text-gray-600">Kommentar</th>
+              <th className="text-right px-4 py-2 font-medium text-gray-600">Gemeldet</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {sortiert.map((m) => {
+              const tg = tgMap.get(m.teilgebietId);
+              const anteil = tg && tg.stueckzahl > 0 && m.restmenge > 0
+                ? (m.restmenge / tg.stueckzahl) * 100
+                : null;
+              const hatFehl = m.fehlmenge > 0;
+              return (
+                <tr key={m.einsatzId} className={`align-top ${hatFehl ? 'bg-red-50/60 hover:bg-red-100/60' : 'hover:bg-gray-50'}`}>
+                  <td className="px-4 py-2 text-gray-700 font-mono text-xs whitespace-nowrap">
+                    {hatFehl && <span className="mr-1 text-red-600">⚠</span>}
+                    {kwLabel(m.kw, m.jahr)}
+                  </td>
+                  <td className="px-4 py-2 text-gray-700">
+                    {tg?.name ?? <span className="text-gray-400 italic">— gelöscht —</span>}
+                    {tg?.plz && <span className="ml-1 text-xs text-gray-400">({tg.plz})</span>}
+                  </td>
+                  <td className="px-4 py-2 text-gray-700">{maName(m.mitarbeiterId)}</td>
+                  <td className={`px-4 py-2 text-right font-mono text-xs ${hatFehl ? 'font-bold text-red-700' : 'text-gray-300'}`}>
+                    {hatFehl ? m.fehlmenge.toLocaleString('de-DE') : '—'}
+                  </td>
+                  <td className={`px-4 py-2 text-right font-mono text-xs ${m.restmenge > 0 ? 'font-semibold text-amber-700' : 'text-gray-300'}`}>
+                    {m.restmenge > 0 ? m.restmenge.toLocaleString('de-DE') : '—'}
+                  </td>
+                  <td className={`px-4 py-2 text-right font-mono text-xs ${
+                    anteil != null && anteil >= 5 ? 'text-red-700 font-semibold'
+                      : anteil != null && anteil >= 2 ? 'text-amber-700'
+                      : 'text-gray-500'
+                  }`}>
+                    {anteil != null ? `${anteil.toFixed(1).replace('.', ',')} %` : '—'}
+                  </td>
+                  <td className="px-4 py-2 text-gray-700 text-xs">
+                    {m.kommentar
+                      ? <span className="italic">„{m.kommentar}"</span>
+                      : <span className="text-gray-300">—</span>}
+                  </td>
+                  <td className="px-4 py-2 text-right text-xs text-gray-500 whitespace-nowrap">
+                    {m.eingereichtAm
+                      ? new Date(m.eingereichtAm).toLocaleDateString('de-DE')
+                      : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+
+      {/* Zeiten des gewählten Teilgebiets (nur bei TG-Auswahl) */}
+      {filterTgId && zeitenEintraege.length > 0 && (
+        <div className="border-t border-gray-200">
+          <div className="px-4 py-2 bg-gray-50 text-xs font-medium text-gray-600">
+            🕒 Erfasste Zeiten in diesem Teilgebiet ({zeitenEintraege.length})
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b border-gray-100">
+              <tr>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">KW/Jahr</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Mitarbeiter</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Datum</th>
+                <th className="text-left px-4 py-2 font-medium text-gray-600">Von–Bis</th>
+                <th className="text-right px-4 py-2 font-medium text-gray-600">Netto</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {zeitenEintraege.map((e) => {
+                const az = e.arbeitszeit!;
+                return (
+                  <tr key={`zeit-${e.id}`} className="hover:bg-gray-50">
+                    <td className="px-4 py-2 text-gray-700 font-mono text-xs whitespace-nowrap">
+                      {kwLabel(e.kw, e.jahr)}
+                    </td>
+                    <td className="px-4 py-2 text-gray-700">
+                      {e.mitarbeiterId ? maName(e.mitarbeiterId) : '— Ausfall —'}
+                    </td>
+                    <td className="px-4 py-2 text-gray-700 text-xs">
+                      {az.datum ? new Date(az.datum + 'T00:00:00').toLocaleDateString('de-DE') : '—'}
+                    </td>
+                    <td className="px-4 py-2 text-gray-700 text-xs">
+                      {az.von}–{az.bis}
+                      {az.pausenMinuten ? <span className="text-gray-400"> (−{az.pausenMinuten} min)</span> : null}
+                    </td>
+                    <td className="px-4 py-2 text-right font-medium text-gray-800">
+                      {formatierDauer(nettoMinutenAz(az))}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
