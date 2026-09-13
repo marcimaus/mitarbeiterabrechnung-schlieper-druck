@@ -32,6 +32,7 @@ import {
   ladeEinsaetzeFuerTeilgebiet,
   ladeEinsaetzeFuerJahre,
   loescheEinsatz,
+  schreibeAuditLog,
 } from '../lib/db';
 import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
@@ -2049,6 +2050,23 @@ function WechselplanUebernahmeDialog({
       kommentar: p.kommentar,
       externerLink: p.externerLink,
     });
+    await schreibeAuditLog({
+      adminName: adminName || 'Unbekannt',
+      bereich: 'dauerhafter-wechsel',
+      aktion: 'geaendert',
+      teilgebietId: tg.id,
+      teilgebietName: tg.name,
+      mitarbeiterId: neuerAustraegerId,
+      mitarbeiterName: neuer?.name ?? null,
+      jahr: p.abAusgabeJahr ?? p.letzteAusgabeJahr,
+      kwVon: p.abAusgabeKw ?? p.letzteAusgabeKw,
+      kwBis: p.abAusgabeKw ?? p.letzteAusgabeKw,
+      beschreibung:
+        `Wechselplan beim Monatswechsel umgesetzt: Standardausträger ${
+          bisher?.name ?? '— (unbesetzt)'
+        } → ${neuer?.name ?? '— (unbesetzt)'} (Periode ${periode.bezeichnung})` +
+        (p.kommentar ? `; Kommentar: "${p.kommentar}"` : ''),
+    });
   }
 
   /** TG ohne geplanten Nachfolger als unbesetzt übernehmen: Standardausträger
@@ -2210,6 +2228,22 @@ function WechselplanUebernahmeDialog({
                           onClick={async () => {
                             if (!confirm('Diesen geplanten Wechsel verwerfen?')) return;
                             await loescheAustraegerwechselPlan(p.teilgebietId);
+                            await schreibeAuditLog({
+                              adminName: adminName || 'Unbekannt',
+                              bereich: 'dauerhafter-wechsel',
+                              aktion: 'geloescht',
+                              teilgebietId: p.teilgebietId,
+                              teilgebietName: tg?.name ?? p.teilgebietId,
+                              mitarbeiterId: p.neuerAustraegerId ?? null,
+                              mitarbeiterName: neuer?.name ?? null,
+                              jahr: p.abAusgabeJahr ?? p.letzteAusgabeJahr,
+                              kwVon: p.abAusgabeKw ?? p.letzteAusgabeKw,
+                              kwBis: p.abAusgabeKw ?? p.letzteAusgabeKw,
+                              beschreibung:
+                                `Wechselplan beim Monatswechsel verworfen (nicht übernommen) — geplanter neuer Standardausträger: ${
+                                  neuer?.name ?? '— (kein Nachfolger)'
+                                }` + (p.kommentar ? `; Kommentar war: "${p.kommentar}"` : ''),
+                            });
                           }}
                           className="text-xs text-red-500 hover:text-red-700"
                           title="Wechselplan verwerfen"
@@ -2297,6 +2331,19 @@ function StueckzahlAnpassungDialog({
         stueckzahlManuell: true,
       });
       await loescheStueckzahlAnpassung(w.id);
+      await schreibeAuditLog({
+        adminName: adminName || 'Unbekannt',
+        bereich: 'teilgebiets-anpassung',
+        aktion: 'geaendert',
+        teilgebietId: tg.id,
+        teilgebietName: tg.name,
+        mitarbeiterId: null,
+        mitarbeiterName: null,
+        jahr: periode.jahr,
+        beschreibung:
+          `Stückzahl-Anpassung beim Monatswechsel umgesetzt: ${tg.stueckzahl} → ${w.neueStueckzahl} Stk (Periode ${periode.bezeichnung})` +
+          (w.bemerkung ? `; Bemerkung: "${w.bemerkung}"` : ''),
+      });
     } catch (e: any) {
       alert('Fehler beim Übernehmen: ' + (e.message ?? e));
     } finally {
@@ -2368,6 +2415,19 @@ function StueckzahlAnpassungDialog({
                           onClick={async () => {
                             if (!confirm('Diese vorbereitete Anpassung verwerfen?')) return;
                             await loescheStueckzahlAnpassung(w.id);
+                            await schreibeAuditLog({
+                              adminName: adminName || 'Unbekannt',
+                              bereich: 'teilgebiets-anpassung',
+                              aktion: 'geloescht',
+                              teilgebietId: w.teilgebietId,
+                              teilgebietName: tg?.name ?? w.teilgebietId,
+                              mitarbeiterId: null,
+                              mitarbeiterName: null,
+                              jahr: periode.jahr,
+                              beschreibung:
+                                `Vorgemerkte Stückzahl-Anpassung beim Monatswechsel verworfen (neue Stückzahl war: ${w.neueStueckzahl} Stk)` +
+                                (w.bemerkung ? `; Bemerkung war: "${w.bemerkung}"` : ''),
+                            });
                           }}
                           className="text-xs text-red-500 hover:text-red-700"
                           title="Anpassung verwerfen"

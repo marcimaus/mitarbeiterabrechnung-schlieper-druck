@@ -1378,16 +1378,36 @@ export interface VerdienstbescheinigungWert {
   ueberpruefAm?: number;
 }
 
-// ---- Audit-Log (unveränderlich) ----------------------------
+// ---- Änderungsprotokoll (unveränderlich, append-only) ------
+//
+// Protokolliert jede Neuanlage/Änderung/Löschung in den Bereichen
+// „Austräger-Ausfälle", „Planung dauerhafter Ausfälle" (Standard-Wechsel,
+// inkl. der beim Monatswechsel tatsächlich umgesetzten Wechsel) und
+// „Teilgebietsanpassung vorbereiten" (Stückzahl-Anpassungen, inkl. der
+// beim Monatswechsel tatsächlich übernommenen Werte), damit bei
+// Reklamationen durch Mitarbeiter nachvollziehbar bleibt, wann wer was
+// geändert hat. Append-only in Collection `auditlog` — Einträge werden
+// nie verändert oder gelöscht.
 
 export interface AuditLog {
   id: string;
+  /** Date.now() zum Zeitpunkt der Änderung. */
   zeitstempel: number;
+  /** Name des angemeldeten Admin/Abrechnung-Benutzers (adminName aus AppContext). */
   adminName: string;
-  entitaet: string;            // z.B. 'mitarbeiter', 'einsatz'
-  entitaetId: string;
-  aktion: string;              // z.B. 'erstellt', 'bearbeitet', 'gelöscht'
-  details?: string;
+  bereich: 'austraeger-ausfall' | 'dauerhafter-wechsel' | 'teilgebiets-anpassung';
+  aktion: 'erstellt' | 'geaendert' | 'geloescht';
+  teilgebietId: string;
+  /** Snapshot — Teilgebiet kann später umbenannt/gelöscht werden. */
+  teilgebietName: string;
+  mitarbeiterId?: string | null;
+  /** Snapshot — Mitarbeiter kann später umbenannt werden. */
+  mitarbeiterName?: string | null;
+  jahr?: number;
+  kwVon?: number;
+  kwBis?: number;
+  /** Menschenlesbare Zusammenfassung der Änderung (inkl. alt → neu, falls zutreffend). */
+  beschreibung: string;
 }
 
 // ---- Hilfsfunktionen / Utils-Typen -------------------------

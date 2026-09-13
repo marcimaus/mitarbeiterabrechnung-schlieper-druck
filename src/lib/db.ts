@@ -1763,12 +1763,23 @@ export async function weiseLohnbueroNameRohZu(
   return { abrechnungen: snapA.size, anmeldungen: snapM.size };
 }
 
-// ---- Audit-Log (nur schreiben, nicht ändern) ---------------
+// ---- Änderungsprotokoll (nur schreiben, nie ändern/löschen) -
 
 export async function schreibeAuditLog(
-  data: Omit<AuditLog, 'id'>
+  data: Omit<AuditLog, 'id' | 'zeitstempel'>
 ): Promise<void> {
-  await addDoc(collection(db, 'auditlog'), data);
+  await addDoc(collection(db, 'auditlog'), {
+    ...stripUndef(data as Record<string, unknown>),
+    zeitstempel: now(),
+  });
+}
+
+/** Live-Listener über das komplette Änderungsprotokoll, neueste zuerst. */
+export function auditLogListener(cb: (list: AuditLog[]) => void): Unsubscribe {
+  const q = query(collection(db, 'auditlog'), orderBy('zeitstempel', 'desc'));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLog)));
+  });
 }
 
 // ---- Statistik (Seitenzahl & Beilagensumme je KW/Jahr) -----

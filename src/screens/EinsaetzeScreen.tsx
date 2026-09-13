@@ -7,7 +7,7 @@ import ZettelchenDruck from '../components/ZettelchenDruck';
 import KontrolleGewichteDruck from '../components/KontrolleGewichteDruck';
 import UebersichtDruck from '../components/UebersichtDruck';
 import AuslieferungsmemoVerwaltung from '../components/AuslieferungsmemoVerwaltung';
-import { ladeAusgaben, ladeEinsaetze, setzeEinsatz, loescheEinsatz, ladeBeilagen } from '../lib/db';
+import { ladeAusgaben, ladeEinsaetze, setzeEinsatz, loescheEinsatz, ladeBeilagen, schreibeAuditLog } from '../lib/db';
 import { getCurrentKW } from '../lib/kalender';
 import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage } from '../types';
 import { kwLabel, MONATSNAMEN } from '../lib/kalender';
@@ -47,7 +47,7 @@ export default function EinsaetzeScreen() {
 }
 
 function EinsaetzeInhalt() {
-  const { teilgebiete, mitarbeiter, touren, parameter, abrechnungsperioden } = useApp();
+  const { teilgebiete, mitarbeiter, touren, parameter, abrechnungsperioden, adminName } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [selectedAusgabeId, setSelectedAusgabeId] = useState<string>('');
   // Eingrenzung der Ausgaben-Auswahl nach Abrechnungsperiode (Jahr/Monat).
@@ -182,6 +182,17 @@ function EinsaetzeInhalt() {
     [mitarbeiter]
   );
 
+  /** Menschenlesbare Kurzbeschreibung des bisherigen Zustands — fürs Änderungsprotokoll. */
+  const beschreibeEinsatz = useCallback(
+    (e: Einsatz | undefined): string => {
+      if (!e) return 'Standard';
+      if (e.typ === 'springer') return `Springer: ${getMitarbeiter(e.mitarbeiterId)?.name ?? e.mitarbeiterId}`;
+      if (e.typ === 'ungeklärt') return 'ungeklärt';
+      return e.typ;
+    },
+    [getMitarbeiter]
+  );
+
   const getTour = useCallback(
     (tourId: string | null) => (tourId ? touren.find((t) => t.id === tourId) : undefined),
     [touren]
@@ -189,6 +200,7 @@ function EinsaetzeInhalt() {
 
   async function handleSetzeUngeklaert(tg: Teilgebiet) {
     if (!selectedAusgabe) return;
+    const vorher = einsaetze[tg.id];
     await setzeEinsatz({
       ausgabeId: selectedAusgabe.id,
       kw: selectedAusgabe.kw,
@@ -196,6 +208,19 @@ function EinsaetzeInhalt() {
       teilgebietId: tg.id,
       mitarbeiterId: null,
       typ: 'ungeklärt',
+    });
+    await schreibeAuditLog({
+      adminName: adminName || 'Unbekannt',
+      bereich: 'austraeger-ausfall',
+      aktion: vorher ? 'geaendert' : 'erstellt',
+      teilgebietId: tg.id,
+      teilgebietName: tg.name,
+      mitarbeiterId: null,
+      mitarbeiterName: null,
+      jahr: selectedAusgabe.jahr,
+      kwVon: selectedAusgabe.kw,
+      kwBis: selectedAusgabe.kw,
+      beschreibung: `Als „ungeklärt" markiert (zuvor: ${beschreibeEinsatz(vorher)}) — Einsätze-Screen`,
     });
     const updated = await ladeEinsaetze(selectedAusgabe.id);
     const map: EinsatzMap = {};
@@ -220,6 +245,26 @@ function EinsaetzeInhalt() {
     if (!confirm(warnText)) return;
 
     await loescheEinsatz(e.id);
+    const geloeschterMitarbeiterName = e.mitarbeiterId
+      ? getMitarbeiter(e.mitarbeiterId)?.name ?? e.mitarbeiterId
+      : null;
+    await schreibeAuditLog({
+      adminName: adminName || 'Unbekannt',
+      bereich: 'austraeger-ausfall',
+      aktion: 'geloescht',
+      teilgebietId: tg.id,
+      teilgebietName: tg.name,
+      mitarbeiterId: e.mitarbeiterId ?? null,
+      mitarbeiterName: geloeschterMitarbeiterName,
+      jahr: e.jahr,
+      kwVon: e.kw,
+      kwBis: e.kw,
+      beschreibung:
+        `Eintrag gelöscht, zurückgesetzt auf Standardausträger (war: ${beschreibeEinsatz(e)})` +
+        (e.kommentar?.trim() ? `, Kommentar war: "${e.kommentar.trim()}"` : '') +
+        (e.externerLink?.trim() ? `, Link war: ${e.externerLink.trim()}` : '') +
+        ' — Einsätze-Screen',
+    });
     setEinsaetze((prev) => {
       const next = { ...prev };
       delete next[tg.id];
@@ -243,6 +288,7 @@ function EinsaetzeInhalt() {
 
   async function handleSpringerSpeichern() {
     if (!springerDialog || !selectedAusgabe || !springerMitarbeiterId) return;
+    const vorher = einsaetze[springerDialog.id];
     await setzeEinsatz({
       ausgabeId: selectedAusgabe.id,
       kw: selectedAusgabe.kw,
@@ -251,6 +297,22 @@ function EinsaetzeInhalt() {
       mitarbeiterId: springerMitarbeiterId,
       typ: 'springer',
       springerZuschlagProzent: springerZuschlag ? parseFloat(springerZuschlag) : undefined,
+    });
+    const neuerName = getMitarbeiter(springerMitarbeiterId)?.name ?? springerMitarbeiterId;
+    await schreibeAuditLog({
+      adminName: adminName || 'Unbekannt',
+      bereich: 'austraeger-ausfall',
+      aktion: vorher ? 'geaendert' : 'erstellt',
+      teilgebietId: springerDialog.id,
+      teilgebietName: springerDialog.name,
+      mitarbeiterId: springerMitarbeiterId,
+      mitarbeiterName: neuerName,
+      jahr: selectedAusgabe.jahr,
+      kwVon: selectedAusgabe.kw,
+      kwBis: selectedAusgabe.kw,
+      beschreibung: `Springer gesetzt: ${neuerName}${
+        springerZuschlag ? ` (+${springerZuschlag}%)` : ''
+      } (zuvor: ${beschreibeEinsatz(vorher)}) — Einsätze-Screen`,
     });
     const updated = await ladeEinsaetze(selectedAusgabe.id);
     const map: EinsatzMap = {};
@@ -584,7 +646,7 @@ function EinsaetzeInhalt() {
       ) : !selectedAusgabe ? (
         <div className="text-center py-12 text-gray-400">Keine Ausgabe ausgewählt</div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import AenderungsProtokollModal from '../components/AenderungsProtokollModal';
 import { bestaetigeMonatswechselEinmalProSession } from '../utils';
 import {
   erstelleTeilgebiet,
@@ -11,6 +12,8 @@ import {
   loescheStueckzahlAnpassung,
   einsaetzeJahrListener,
   umgesetzteAnpassungenListener,
+  schreibeAuditLog,
+  auditLogListener,
 } from '../lib/db';
 import {
   austraegerwechselPlanListener,
@@ -25,6 +28,7 @@ import type {
   StandardAustraegerWechselPlan,
   Einsatz,
   UmgesetzteAnpassung,
+  AuditLog,
 } from '../types';
 import { Link } from 'react-router-dom';
 
@@ -105,6 +109,14 @@ function TeilgebieteInhalt() {
     const jahr = new Date().getFullYear();
     return einsaetzeJahrListener(jahr, setEinsaetzeAktJahr);
   }, []);
+  // Änderungsprotokoll für Teilgebietsanpassungen (Stückzahl) — Vormerken,
+  // Verwerfen und die beim Monatswechsel tatsächlich umgesetzten Werte.
+  const [auditLog, setAuditLog] = useState<AuditLog[]>([]);
+  useEffect(() => auditLogListener(setAuditLog), []);
+  const anpassungsProtokoll = useMemo(
+    () => auditLog.filter((a) => a.bereich === 'teilgebiets-anpassung'),
+    [auditLog],
+  );
 
   // Zeitwert (Stunden) aus Wegstrecke + Stückzahl
   const zeitwertStunden = (tg: Teilgebiet): number => {
@@ -285,6 +297,7 @@ function TeilgebieteInhalt() {
           stueckzahlAnpassungen={stueckzahlAnpassungen}
           adminName={adminName}
           isAdmin={isAdmin}
+          protokoll={anpassungsProtokoll}
         />
       )}
 
@@ -2086,17 +2099,21 @@ function TeilgebietsanpassungReiter({
   stueckzahlAnpassungen,
   adminName,
   isAdmin,
+  protokoll,
 }: {
   teilgebiete: Teilgebiet[];
   stueckzahlAnpassungen: StueckzahlAnpassung[];
   adminName: string;
   isAdmin: boolean;
+  /** Änderungsprotokoll (Bereich `teilgebiets-anpassung`), neueste zuerst. */
+  protokoll: AuditLog[];
 }) {
   const [tgId, setTgId] = useState('');
   const [neueStueckzahl, setNeueStueckzahl] = useState('');
   const [bemerkung, setBemerkung] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [protokollOffen, setProtokollOffen] = useState(false);
 
   const aktiveTg = [...teilgebiete]
     .filter((t) => t.isActive && !t.istAuslagestelle)
@@ -2131,6 +2148,18 @@ function TeilgebietsanpassungReiter({
         bemerkung: bemerkung.trim() || undefined,
         erstelltVon: adminName || undefined,
       });
+      await schreibeAuditLog({
+        adminName: adminName || 'Unbekannt',
+        bereich: 'teilgebiets-anpassung',
+        aktion: 'erstellt',
+        teilgebietId: tgId,
+        teilgebietName: aktuellesTg?.name ?? tgId,
+        mitarbeiterId: null,
+        mitarbeiterName: null,
+        beschreibung:
+          `Stückzahl-Anpassung vorgemerkt: ${aktuellesTg?.stueckzahl ?? '?'} → ${n} Stk` +
+          (bemerkung.trim() ? `; Bemerkung: "${bemerkung.trim()}"` : ''),
+      });
       reset();
     } catch (e) {
       console.error(e);
@@ -2143,6 +2172,19 @@ function TeilgebietsanpassungReiter({
   async function handleEntfernen(w: StueckzahlAnpassung) {
     if (!confirm('Diese vorbereitete Anpassung wirklich entfernen?')) return;
     await loescheStueckzahlAnpassung(w.id);
+    const tg = tgMap.get(w.teilgebietId);
+    await schreibeAuditLog({
+      adminName: adminName || 'Unbekannt',
+      bereich: 'teilgebiets-anpassung',
+      aktion: 'geloescht',
+      teilgebietId: w.teilgebietId,
+      teilgebietName: tg?.name ?? w.teilgebietId,
+      mitarbeiterId: null,
+      mitarbeiterName: null,
+      beschreibung:
+        `Vorgemerkte Stückzahl-Anpassung verworfen (neue Stückzahl war: ${w.neueStueckzahl} Stk)` +
+        (w.bemerkung ? `; Bemerkung war: "${w.bemerkung}"` : ''),
+    });
   }
 
   const sortiert = [...stueckzahlAnpassungen].sort((a, b) => {
@@ -2155,14 +2197,32 @@ function TeilgebietsanpassungReiter({
 
   return (
     <div className="space-y-8">
-      <div className="text-sm text-gray-600">
-        Liste vorbereiteter Stückzahl-Anpassungen pro Teilgebiet. Beim Klick
-        auf „Monatswechsel" in der Abrechnung werden die Vorschläge zur
-        Einzel-Bestätigung angeboten — der neue Wert wird dann als Stückzahl
-        des Teilgebiets eingetragen (mit manuellem Override, damit die
-        automatische Berechnung aus der Straßenliste nicht erneut überschreibt),
-        der Eintrag verschwindet aus dieser Liste.
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-sm text-gray-600">
+          Liste vorbereiteter Stückzahl-Anpassungen pro Teilgebiet. Beim Klick
+          auf „Monatswechsel" in der Abrechnung werden die Vorschläge zur
+          Einzel-Bestätigung angeboten — der neue Wert wird dann als Stückzahl
+          des Teilgebiets eingetragen (mit manuellem Override, damit die
+          automatische Berechnung aus der Straßenliste nicht erneut überschreibt),
+          der Eintrag verschwindet aus dieser Liste.
+        </div>
+        <button
+          type="button"
+          onClick={() => setProtokollOffen(true)}
+          className="shrink-0 text-xs text-gray-500 hover:text-blue-700 underline whitespace-nowrap"
+          title="Änderungsprotokoll dieses Bereichs ansehen (Vormerken, Verwerfen, Monatswechsel-Umsetzung)"
+        >
+          📋 Protokoll
+        </button>
       </div>
+
+      {protokollOffen && (
+        <AenderungsProtokollModal
+          bereich="teilgebiets-anpassung"
+          eintraege={protokoll}
+          onClose={() => setProtokollOffen(false)}
+        />
+      )}
 
       {/* Eingabe */}
       {isAdmin && (

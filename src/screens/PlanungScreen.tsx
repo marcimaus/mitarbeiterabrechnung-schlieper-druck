@@ -19,6 +19,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import AenderungsProtokollModal from '../components/AenderungsProtokollModal';
 import {
   alleKWsImJahr,
   getCurrentKW,
@@ -212,8 +213,9 @@ import {
   type Mitarbeiter,
   type Teilgebiet,
   type Ausgabe,
+  type AuditLog,
 } from '../types';
-import { ausgabenListener, ladeBeilagen } from '../lib/db';
+import { ausgabenListener, ladeBeilagen, schreibeAuditLog, auditLogListener } from '../lib/db';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 import type { Beilage } from '../types';
 
@@ -297,6 +299,12 @@ function PlanungContent() {
   const [urlaube, setUrlaube] = useState<UrlaubsEintrag[]>([]);
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [wechselplan, setWechselplan] = useState<StandardAustraegerWechselPlan[]>([]);
+  // Änderungsprotokoll für Ausfälle + Standard-Wechsel (Nachvollziehbarkeit
+  // bei Reklamationen). Jahresübergreifend geladen — kein Filter.
+  const [auditLog, setAuditLog] = useState<AuditLog[]>([]);
+  const [protokollModal, setProtokollModal] = useState<
+    'austraeger-ausfall' | 'dauerhafter-wechsel' | null
+  >(null);
 
   // Vereinheitlichte Liste der Wechsel-Sektion: enthält ALLE Zeilen,
   // die in „🔁 Standard-Wechsel" angezeigt werden — sowohl persistierte
@@ -347,7 +355,8 @@ function PlanungContent() {
     const u6 = urlaubsListener(jahr, setUrlaube);
     // Wechselplan ist jahresübergreifend — kein Filter.
     const u7 = austraegerwechselPlanListener(setWechselplan);
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
+    const u8 = auditLogListener(setAuditLog);
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
   }, [jahr]);
 
   // Beilagen einmal global laden — wird für die Soll-Zeit-Berechnung
@@ -1268,6 +1277,16 @@ function PlanungContent() {
             title="⚠ Austräger-Ausfälle / Springer"
             isOpen={openSections.ausfaelle}
             onToggle={() => toggleSection('ausfaelle')}
+            extra={
+              <button
+                type="button"
+                onClick={() => setProtokollModal('austraeger-ausfall')}
+                className="text-[11px] text-gray-500 hover:text-blue-700 underline"
+                title="Änderungsprotokoll dieses Bereichs ansehen"
+              >
+                📋 Protokoll
+              </button>
+            }
           />
           {openSections.ausfaelle && (
             <>
@@ -1343,6 +1362,16 @@ function PlanungContent() {
             title="🔁 Teilgebiet dauerhaft unbesetzt / Standard-Wechsel"
             isOpen={openSections.wechsel}
             onToggle={() => toggleSection('wechsel')}
+            extra={
+              <button
+                type="button"
+                onClick={() => setProtokollModal('dauerhafter-wechsel')}
+                className="text-[11px] text-gray-500 hover:text-blue-700 underline"
+                title="Änderungsprotokoll dieses Bereichs ansehen"
+              >
+                📋 Protokoll
+              </button>
+            }
           />
           {/* Eigene „Action-Zeile": Dropdown liegt in der sticky linken
               Label-Spalte und bleibt damit beim Scrollen sichtbar. Auch
@@ -1519,6 +1548,29 @@ function PlanungContent() {
                                 for (const e of autoSpringer) {
                                   await loescheEinsatz(e.id);
                                 }
+                                const geloeschterMitarbeiterName = plan.neuerAustraegerId
+                                  ? mitarbeiterById.get(plan.neuerAustraegerId)?.name ?? plan.neuerAustraegerId
+                                  : null;
+                                await schreibeAuditLog({
+                                  adminName: adminName || 'Unbekannt',
+                                  bereich: 'dauerhafter-wechsel',
+                                  aktion: 'geloescht',
+                                  teilgebietId: plan.teilgebietId,
+                                  teilgebietName: tg.name,
+                                  mitarbeiterId: plan.neuerAustraegerId ?? null,
+                                  mitarbeiterName: geloeschterMitarbeiterName,
+                                  jahr,
+                                  kwVon: plan.abAusgabeKw ?? plan.letzteAusgabeKw ?? undefined,
+                                  kwBis: plan.abAusgabeKw ?? plan.letzteAusgabeKw ?? undefined,
+                                  beschreibung:
+                                    `Wechselplan gelöscht (letzte Ausgabe: ${
+                                      plan.letzteAusgabeJahr != null && plan.letzteAusgabeKw != null
+                                        ? `KW ${plan.letzteAusgabeKw}/${plan.letzteAusgabeJahr}`
+                                        : '—'
+                                    }, neuer Austräger: ${geloeschterMitarbeiterName ?? '— (noch unbekannt)'}` +
+                                    (plan.kommentar ? `, Kommentar war: "${plan.kommentar}"` : '') +
+                                    ')',
+                                });
                               }}
                               className="text-[11px] text-gray-300 hover:text-red-500 leading-none px-1"
                               title="Wechselplan löschen"
@@ -1570,6 +1622,7 @@ function PlanungContent() {
           jahr={jahr}
           abrechnungsperioden={abrechnungsperioden}
           istAdmin={istAdmin}
+          adminName={adminName || 'Unbekannt'}
           onClose={() => setWechselModal(null)}
         />
       )}
@@ -1612,7 +1665,17 @@ function PlanungContent() {
              wir das Modal als „Springer-Übernahme" an — die Texte
              sprechen dann nicht von Ausfall, sondern von Springer-Vertretung. */
           istWechselKontext={ausfallModal.teilgebietId ? wechselTgIds.has(ausfallModal.teilgebietId) : false}
+          adminName={adminName || 'Unbekannt'}
           onClose={() => setAusfallModal(null)}
+        />
+      )}
+
+      {/* ---- Änderungsprotokoll-Modal ---- */}
+      {protokollModal && (
+        <AenderungsProtokollModal
+          bereich={protokollModal}
+          eintraege={auditLog.filter((a) => a.bereich === protokollModal)}
+          onClose={() => setProtokollModal(null)}
         />
       )}
     </div>
@@ -2795,6 +2858,16 @@ function AusfallChip({
 // Ausfall-Modal
 // ============================================================
 
+/**
+ * Baut einen „alt → neu"-Textbaustein für das Änderungsprotokoll — nur
+ * wenn sich der Wert tatsächlich geändert hat. Für Neuanlagen (oldVal
+ * undefined/kein Vergleich gewünscht) stattdessen `beschreibeNeu` nutzen.
+ */
+function protokollDiff(label: string, altWert: string, neuWert: string): string | null {
+  if (altWert === neuWert) return null;
+  return `${label}: ${altWert || '—'} → ${neuWert || '—'}`;
+}
+
 function AusfallModal({
   jahr,
   kw,
@@ -2810,6 +2883,7 @@ function AusfallModal({
   parameter,
   istGesperrt,
   istWechselKontext,
+  adminName,
   onClose,
 }: {
   jahr: number;
@@ -2836,6 +2910,8 @@ function AusfallModal({
    * Texte/Labels — Logik bleibt identisch.
    */
   istWechselKontext?: boolean;
+  /** Angemeldeter Benutzer — für das Änderungsprotokoll. */
+  adminName: string;
   onClose: () => void;
 }) {
   const isNeu = !existing && teilgebietId == null;
@@ -2855,6 +2931,17 @@ function AusfallModal({
     existing?.typ === 'springer' ? existing.mitarbeiterId ?? null : null;
 
   const [springerId, setSpringerId] = useState<string | null>(initialSpringerId);
+  // Springer-Zuschlag %: leer = Standardwert aus den Parametern. Analog zum
+  // Einsätze-Screen — „Individuell" wird nur vorbelegt, wenn der bestehende
+  // Wert kein konfigurierter Listenwert ist.
+  const initialSpringerZuschlag = existing?.springerZuschlagProzent;
+  const [springerZuschlag, setSpringerZuschlag] = useState<string>(
+    initialSpringerZuschlag != null ? initialSpringerZuschlag.toString() : '',
+  );
+  const [springerZuschlagIndividuell, setSpringerZuschlagIndividuell] = useState<boolean>(() => {
+    const optionen = parameter?.springerZuschlagOptionen ?? [];
+    return initialSpringerZuschlag != null && !optionen.includes(initialSpringerZuschlag);
+  });
   const [kommentar, setKommentar] = useState(existing?.kommentar ?? '');
   const [externerLink, setExternerLink] = useState(existing?.externerLink ?? '');
   // bisKw wird nur explizit als „mehrwöchig" markiert, wenn der bestehende
@@ -3038,6 +3125,7 @@ function AusfallModal({
           teilgebietId: selectedTgId,
           mitarbeiterId: springerId ?? null,
           typ,
+          springerZuschlagProzent: springerId && springerZuschlag ? parseFloat(springerZuschlag) : undefined,
           kommentar: kommentar.trim() || undefined,
           externerLink: externerLink.trim() || undefined,
           ausfallBisJahr,
@@ -3049,6 +3137,66 @@ function AusfallModal({
           standardAustraegerSnapshot: standardSnapshot,
         });
       }
+
+      // ---- Änderungsprotokoll ----
+      const tgName = tg?.name ?? selectedTgId;
+      const neuMitarbeiterName = springerId
+        ? mitarbeiterById.get(springerId)?.name ?? springerId
+        : null;
+      const altMitarbeiterName = existing?.mitarbeiterId
+        ? mitarbeiterById.get(existing.mitarbeiterId)?.name ?? existing.mitarbeiterId
+        : null;
+      const neuZeitraum = `KW ${von}${bis !== von ? `–${bis}` : ''}/${jahr}`;
+      const teile: string[] = [];
+      const neuZuschlagText = springerId
+        ? springerZuschlag
+          ? `${springerZuschlag}%`
+          : 'Standard'
+        : '';
+      const altZuschlagText = existing?.mitarbeiterId
+        ? existing.springerZuschlagProzent != null
+          ? `${existing.springerZuschlagProzent}%`
+          : 'Standard'
+        : '';
+      if (isNeu) {
+        teile.push(`Zeitraum ${neuZeitraum}`);
+        teile.push(`Springer: ${neuMitarbeiterName ?? '— (unbesetzt)'}`);
+        if (springerId) teile.push(`Zuschlag: ${neuZuschlagText}`);
+        if (kommentar.trim()) teile.push(`Kommentar: "${kommentar.trim()}"`);
+        if (externerLink.trim()) teile.push(`Link: ${externerLink.trim()}`);
+      } else {
+        const altVon = existing?.kw ?? von;
+        const altBis = existing?.ausfallBisKw ?? altVon;
+        const altZeitraum = `KW ${altVon}${altBis !== altVon ? `–${altBis}` : ''}/${existing?.jahr ?? jahr}`;
+        const d1 = protokollDiff('Zeitraum', altZeitraum, neuZeitraum);
+        if (d1) teile.push(d1);
+        const d2 = protokollDiff(
+          'Springer',
+          altMitarbeiterName ?? '— (unbesetzt)',
+          neuMitarbeiterName ?? '— (unbesetzt)',
+        );
+        if (d2) teile.push(d2);
+        const d5 = protokollDiff('Zuschlag', altZuschlagText, neuZuschlagText);
+        if (d5) teile.push(d5);
+        const d3 = protokollDiff('Kommentar', existing?.kommentar ?? '', kommentar.trim());
+        if (d3) teile.push(d3);
+        const d4 = protokollDiff('Link', existing?.externerLink ?? '', externerLink.trim());
+        if (d4) teile.push(d4);
+        if (teile.length === 0) teile.push('Erneut gespeichert, keine inhaltliche Änderung.');
+      }
+      await schreibeAuditLog({
+        adminName,
+        bereich: 'austraeger-ausfall',
+        aktion: isNeu ? 'erstellt' : 'geaendert',
+        teilgebietId: selectedTgId,
+        teilgebietName: tgName ?? selectedTgId,
+        mitarbeiterId: springerId,
+        mitarbeiterName: neuMitarbeiterName,
+        jahr,
+        kwVon: von,
+        kwBis: bis,
+        beschreibung: teile.join('; '),
+      });
 
       onClose();
     } catch (e) {
@@ -3101,6 +3249,21 @@ function AusfallModal({
         vonGruppeAbgekoppelt: true,
         standardAustraegerSnapshot: existing.standardAustraegerSnapshot ?? null,
       });
+      await schreibeAuditLog({
+        adminName,
+        bereich: 'austraeger-ausfall',
+        aktion: 'geaendert',
+        teilgebietId: selectedTgId,
+        teilgebietName: tg?.name ?? selectedTgId,
+        mitarbeiterId: null,
+        mitarbeiterName: null,
+        jahr,
+        kwVon: kw,
+        kwBis: kw,
+        beschreibung:
+          `KW ${kw}/${jahr} aus Ausfall-Gruppe abgekoppelt und auf unbesetzt gesetzt` +
+          (abkopplungKommentar.trim() ? `; Kommentar: "${abkopplungKommentar.trim()}"` : ''),
+      });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Abkoppeln fehlgeschlagen.');
@@ -3126,6 +3289,27 @@ function AusfallModal({
     setError(null);
     try {
       await Promise.all(gruppe.map((e) => loescheEinsatz(e.id)));
+      const kwListe = gruppe.map((e) => e.kw).sort((a, b) => a - b);
+      const geloeschterMitarbeiterName = existing.mitarbeiterId
+        ? mitarbeiterById.get(existing.mitarbeiterId)?.name ?? existing.mitarbeiterId
+        : null;
+      await schreibeAuditLog({
+        adminName,
+        bereich: 'austraeger-ausfall',
+        aktion: 'geloescht',
+        teilgebietId: existing.teilgebietId,
+        teilgebietName: tg?.name ?? existing.teilgebietId,
+        mitarbeiterId: existing.mitarbeiterId ?? null,
+        mitarbeiterName: geloeschterMitarbeiterName,
+        jahr,
+        kwVon: kwListe[0],
+        kwBis: kwListe[kwListe.length - 1],
+        beschreibung:
+          `Ausfall-Eintrag gelöscht (KW ${kwListe.join(', ')}/${jahr}` +
+          (geloeschterMitarbeiterName ? `, Springer: ${geloeschterMitarbeiterName}` : '') +
+          (existing.kommentar ? `, Kommentar war: "${existing.kommentar}"` : '') +
+          ')',
+      });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Löschen fehlgeschlagen.');
@@ -3301,6 +3485,74 @@ function AusfallModal({
             </div>
           );
         })()}
+
+        {/* Springer-Zuschlag % — nur relevant, wenn ein Springer gewählt ist. */}
+        {springerId && (
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Springer-Zuschlag %
+            </label>
+            <div className="flex flex-wrap gap-2 mb-1">
+              <button
+                type="button"
+                onClick={() => { setSpringerZuschlag(''); setSpringerZuschlagIndividuell(false); }}
+                disabled={istGesperrt}
+                className={`px-2.5 py-1 rounded text-xs border transition-colors ${
+                  springerZuschlag === '' && !springerZuschlagIndividuell
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                }`}
+                title="Standard-Wert aus Systemparametern"
+              >
+                Standard ({parameter?.springerZuschlagProzent ?? 25} %)
+              </button>
+              {[...(parameter?.springerZuschlagOptionen ?? [])]
+                .sort((a, b) => a - b)
+                .map((opt) => (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => { setSpringerZuschlag(opt.toString()); setSpringerZuschlagIndividuell(false); }}
+                    disabled={istGesperrt}
+                    className={`px-2.5 py-1 rounded text-xs border transition-colors ${
+                      !springerZuschlagIndividuell && springerZuschlag === opt.toString()
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                    }`}
+                  >
+                    {opt} %
+                  </button>
+                ))}
+              <button
+                type="button"
+                onClick={() => setSpringerZuschlagIndividuell(true)}
+                disabled={istGesperrt}
+                className={`px-2.5 py-1 rounded text-xs border transition-colors ${
+                  springerZuschlagIndividuell
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-500 border-dashed border-gray-300 hover:border-blue-400'
+                }`}
+              >
+                Individuell…
+              </button>
+            </div>
+            {springerZuschlagIndividuell && (
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="200"
+                  placeholder="z. B. 35"
+                  value={springerZuschlag}
+                  onChange={(e) => setSpringerZuschlag(e.target.value)}
+                  disabled={istGesperrt}
+                  className="w-28 border border-gray-300 rounded px-2 py-1.5 text-sm"
+                />
+                <span className="text-sm text-gray-400">%</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Kommentar */}
         <div>
@@ -3644,6 +3896,7 @@ function WechselModal({
   jahr,
   abrechnungsperioden,
   istAdmin,
+  adminName,
   onClose,
 }: {
   teilgebietId: string;
@@ -3662,6 +3915,8 @@ function WechselModal({
   abrechnungsperioden: import('../types').Abrechnungsperiode[];
   /** Nur der Admin darf einen Wechselplan löschen. */
   istAdmin: boolean;
+  /** Angemeldeter Benutzer — für das Änderungsprotokoll. */
+  adminName: string;
   onClose: () => void;
 }) {
   // Bei einem TG ohne Standardausträger gibt es keine letzte Ausgabe
@@ -3830,6 +4085,55 @@ function WechselModal({
         externerLink: externerLink.trim() || undefined,
       });
 
+      // ---- Änderungsprotokoll ----
+      const neuMitarbeiterName = neuerMa ? mitarbeiterById.get(neuerMa)?.name ?? neuerMa : null;
+      const altMitarbeiterName = existing?.neuerAustraegerId
+        ? mitarbeiterById.get(existing.neuerAustraegerId)?.name ?? existing.neuerAustraegerId
+        : null;
+      const fmtKw = (j: number | undefined, k: number | undefined) =>
+        j != null && k != null ? `KW ${k}/${j}` : '—';
+      const neuLetzte = fmtKw(letzteJahr ?? undefined, letzteKw ?? undefined);
+      const neuAb = fmtKw(abJahrFinal, abKwFinal);
+      const teile: string[] = [];
+      if (!existing) {
+        teile.push(`Letzte Ausgabe bisheriger Austräger: ${neuLetzte}`);
+        teile.push(`Neuer Standardausträger: ${neuMitarbeiterName ?? '— (noch unbekannt)'}`);
+        teile.push(`Ab Ausgabe: ${neuAb}`);
+        if (kommentar.trim()) teile.push(`Kommentar: "${kommentar.trim()}"`);
+        if (externerLink.trim()) teile.push(`Link: ${externerLink.trim()}`);
+      } else {
+        const altLetzte = fmtKw(existing.letzteAusgabeJahr, existing.letzteAusgabeKw);
+        const altAb = fmtKw(existing.abAusgabeJahr, existing.abAusgabeKw);
+        const d1 = protokollDiff('Letzte Ausgabe bisheriger Austräger', altLetzte, neuLetzte);
+        if (d1) teile.push(d1);
+        const d2 = protokollDiff(
+          'Neuer Standardausträger',
+          altMitarbeiterName ?? '— (noch unbekannt)',
+          neuMitarbeiterName ?? '— (noch unbekannt)',
+        );
+        if (d2) teile.push(d2);
+        const d3 = protokollDiff('Ab Ausgabe', altAb, neuAb);
+        if (d3) teile.push(d3);
+        const d4 = protokollDiff('Kommentar', existing.kommentar ?? '', kommentar.trim());
+        if (d4) teile.push(d4);
+        const d5 = protokollDiff('Link', existing.externerLink ?? '', externerLink.trim());
+        if (d5) teile.push(d5);
+        if (teile.length === 0) teile.push('Erneut gespeichert, keine inhaltliche Änderung.');
+      }
+      await schreibeAuditLog({
+        adminName,
+        bereich: 'dauerhafter-wechsel',
+        aktion: existing ? 'geaendert' : 'erstellt',
+        teilgebietId,
+        teilgebietName: tg.name,
+        mitarbeiterId: neuerMa,
+        mitarbeiterName: neuMitarbeiterName,
+        jahr,
+        kwVon: abKwFinal ?? letzteKw ?? undefined,
+        kwBis: abKwFinal ?? letzteKw ?? undefined,
+        beschreibung: teile.join('; '),
+      });
+
       // Lücken-Einsätze im aktuell sichtbaren Jahr synchronisieren:
       // Bereich strikt zwischen `letzteAusgabe` und `abAusgabe` (falls
       // gesetzt; sonst bis Jahresende). Im KW-Bereich werden für TG
@@ -3988,6 +4292,7 @@ function WechselModal({
   }
 
   async function loeschen() {
+    if (!existing) return;
     // Welche unbearbeiteten Lücken-Einsätze dieses TG werden mit gelöscht?
     const luecken = einsaetzeImJahr.filter(
       (e) => e.teilgebietId === teilgebietId && e.typ === 'ungeklärt' && !e.mitarbeiterId,
@@ -4021,6 +4326,29 @@ function WechselModal({
       for (const e of autoEinsaetze) {
         await loescheEinsatz(e.id);
       }
+      const geloeschterMitarbeiterName = existing.neuerAustraegerId
+        ? mitarbeiterById.get(existing.neuerAustraegerId)?.name ?? existing.neuerAustraegerId
+        : null;
+      await schreibeAuditLog({
+        adminName,
+        bereich: 'dauerhafter-wechsel',
+        aktion: 'geloescht',
+        teilgebietId,
+        teilgebietName: tg.name,
+        mitarbeiterId: existing.neuerAustraegerId ?? null,
+        mitarbeiterName: geloeschterMitarbeiterName,
+        jahr,
+        kwVon: existing.abAusgabeKw ?? existing.letzteAusgabeKw ?? undefined,
+        kwBis: existing.abAusgabeKw ?? existing.letzteAusgabeKw ?? undefined,
+        beschreibung:
+          `Wechselplan gelöscht (letzte Ausgabe: ${
+            existing.letzteAusgabeJahr != null && existing.letzteAusgabeKw != null
+              ? `KW ${existing.letzteAusgabeKw}/${existing.letzteAusgabeJahr}`
+              : '—'
+          }, neuer Austräger: ${geloeschterMitarbeiterName ?? '— (noch unbekannt)'}` +
+          (existing.kommentar ? `, Kommentar war: "${existing.kommentar}"` : '') +
+          ')',
+      });
       onClose();
     } finally {
       setSaving(false);
