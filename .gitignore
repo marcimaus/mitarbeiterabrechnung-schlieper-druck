@@ -42,3 +42,6 @@ service-account*.json
 
 # Lokale Firestore-Backups
 backups/
+
+# temporaere Scratch-/Debug-Dateien
+tmp_*
