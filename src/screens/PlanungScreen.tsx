@@ -3820,7 +3820,6 @@ function WechselCell({
   // Einsatz angezeigt — sonst wäre die Ausnahme in der
   // Personalplanung unsichtbar.
   const ma = plan.neuerAustraegerId ? mitarbeiterById.get(plan.neuerAustraegerId) : undefined;
-  const kurzname = ma?.kuerzel || ma?.name?.split(' ')[0] || '?';
 
   if (einsatz && einsatz.typ === 'springer' && einsatz.mitarbeiterId && einsatz.mitarbeiterId !== plan.neuerAustraegerId) {
     const springerMa = mitarbeiterById.get(einsatz.mitarbeiterId);
@@ -3848,38 +3847,40 @@ function WechselCell({
       </button>
     );
   }
-  // Erste Ausgabe des neuen Standardausträgers bei einem Wechsel von
-  // „unbesetzt → neu": TG ist ab dieser KW BESETZT (durch den neuen
-  // Austräger), daher grüner Hintergrund (Farbe = Besetzungs-Status). Das
-  // 🔁-Icon vor dem Austräger-Kürzel kennzeichnet „Wechselplan: neue
-  // Übernahme beginnt hier". Greift nur, wenn ein neuer Austräger geplant
-  // ist.
-  if (!hatLetzte && cmpAb === 0 && plan.neuerAustraegerId) {
+  // Erste Ausgabe des neuen Standardausträgers: organisatorisch relevant
+  // (z. B. müssen die Fahrer informiert werden, dass ab jetzt eine andere
+  // Adresse beliefert wird) — bleibt daher markiert. Bewusst NICHT grün
+  // (das würde „hier wurde ein Springer eingeplant" suggerieren), sondern
+  // neutral-informativ in Blau: „ab hier gilt der Wechselplan".
+  if (cmpAb === 0 && plan.neuerAustraegerId) {
     return (
       <button
         type="button"
         onClick={onClickAusfall}
-        className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
-        title={`Wechsel: ${ma?.name ?? '?'} übernimmt ab dieser Ausgabe als neuer Standardausträger — wird beim Monatswechsel vorgeschlagen. Klick erfasst einen Ausfall/Springer für diese KW. Wechselplan über ✎ links bearbeiten.`}
+        className="w-full text-[11px] font-medium py-1 rounded border bg-blue-100 border-blue-300 text-blue-800 leading-tight"
+        title={`Wechsel wirksam: ${ma?.name ?? '?'} übernimmt ab dieser Ausgabe als neuer Standardausträger — Fahrer über die neue Zustelladresse informieren. Klick erfasst einen Ausfall/Springer für diese KW.`}
       >
-        🔁 {kurzname}
+        🔁 erste Woche
       </button>
     );
   }
-  // KW liegt ab der Übernahme durch den neuen Austräger und es gibt
-  // keinen abweichenden Einsatz. Klick öffnet das AusfallModal, damit der
-  // User für diese eine KW einen Ausfall / Springer eintragen kann, ohne
-  // den Wechselplan zu verändern. Der Wechselplan selbst wird über das
-  // ⏳-Chip in der „letzten Ausgabe" oder über das ✕ am Zeilenkopf
-  // bearbeitet/gelöscht.
+  // KW liegt NACH der ersten Ausgabe des neuen Austrägers und es gibt
+  // keinen abweichenden Einsatz — der Wechsel ist durch den Plan bereits
+  // geregelt, hier gibt es nichts zu planen. Bewusst neutral (keine grüne
+  // Box mit Namen): Grün/farbig würde suggerieren, dass für diese KW aktiv
+  // etwas (z. B. ein Springer) eingetragen wurde — das ist aber nicht der
+  // Fall, der neue Standardausträger steht bereits über den Wechselplan
+  // fest (siehe Zeilenkopf-Sublabel „→ Name · ab KW…"). Klick öffnet
+  // trotzdem das AusfallModal, falls für genau diese KW doch ein
+  // Ausfall/Springer erfasst werden muss.
   return (
     <button
       type="button"
       onClick={onClickAusfall}
-      className="w-full text-[11px] font-medium py-1 rounded border bg-green-100 border-green-300 text-green-800 leading-tight"
-      title={`Neuer Standardausträger: ${ma?.name ?? '?'} — Klick erfasst einen Ausfall/Springer für genau diese KW`}
+      className="w-full text-[10px] text-gray-200 hover:text-gray-400 hover:bg-gray-50 py-1 leading-none rounded"
+      title={`Neuer Standardausträger: ${ma?.name ?? '?'} (durch Wechselplan geregelt) — Klick öffnet die Ausfall-Maske`}
     >
-      🟢 {kurzname}
+      ·
     </button>
   );
 }
