@@ -4114,7 +4114,7 @@ function WechselModal({
           teile.push(`• wird durch ${neuName} ersetzt: KW ${ersetztVorschau.join(', ')}/${jahr}`);
         }
         if (zurueckgesetztVorschau.length > 0) {
-          teile.push(`• wird auf „unbesetzt" zurückgesetzt: KW ${zurueckgesetztVorschau.join(', ')}/${jahr}`);
+          teile.push(`• wird entfernt (danach zeigt die Planung ${neuName} als geplanten Nachfolger): KW ${zurueckgesetztVorschau.join(', ')}/${jahr}`);
         }
         if (
           !confirm(
@@ -4334,12 +4334,16 @@ function WechselModal({
           //    Jahresende) — bzw. den KOMPLETTEN Bereich ab abKw, falls die
           //    aktuelle Periode noch gar nicht angelegt ist (periodeGefunden
           //    = false, autoSpringerEndKw dann < abKw): ein überholter
-          //    manueller Springer/Ausfall wird auf „unbesetzt" zurückgesetzt
-          //    — er soll nicht einfach stehen bleiben, aber der neue
-          //    Austräger wird hier noch nicht automatisch eingetragen (erst
-          //    mit dem regulären Monatswechsel bzw. sobald die Periode
-          //    angelegt ist und erneut gespeichert wird). Vergangene KWs
-          //    bleiben unangetastet. Läuft UNABHÄNGIG von periodeGefunden.
+          //    manueller Springer wird hier ENTFERNT (nicht auf „ungeklärt"
+          //    gesetzt!) — ohne Einsatz-Dokument zeigt die Zellen-Anzeige
+          //    (WechselCell) automatisch den geplanten neuen Standardausträger
+          //    grün an (Fallback am Ende der Funktion). Ein „ungeklärt"-Eintrag
+          //    würde dort fälschlich als 🔴 „unbesetzt" erscheinen, obwohl ja
+          //    bereits ein Nachfolger feststeht — das war der ursprüngliche
+          //    Anzeige-Fehler. Der neue Austräger wird hier noch nicht als
+          //    offizieller Standardausträger geführt (das passiert erst mit
+          //    dem Monatswechsel), aber angezeigt wird er schon. Vergangene
+          //    KWs bleiben unangetastet. Läuft UNABHÄNGIG von periodeGefunden.
           const zurueckgesetzteSpringer: { kw: number; altName: string }[] = [];
           for (let k = Math.max(abKw, autoSpringerEndKw + 1); k <= maxKwImJahr; k++) {
             if (istVergangeneKw(jahr, k)) continue;
@@ -4358,15 +4362,7 @@ function WechselModal({
                 mitarbeiterById.get(vorhandenerEinsatz.mitarbeiterId)?.name ??
                 vorhandenerEinsatz.mitarbeiterId,
             });
-            await setzeEinsatz({
-              ausgabeId: vorhandenerEinsatz.ausgabeId,
-              jahr,
-              kw: k,
-              teilgebietId,
-              mitarbeiterId: null,
-              typ: 'ungeklärt',
-              standardAustraegerSnapshot: tg.standardAustraegerId ?? null,
-            });
+            await loescheEinsatz(vorhandenerEinsatz.id);
           }
 
           if (ueberschriebeneSpringer.length > 0 || zurueckgesetzteSpringer.length > 0) {
@@ -4384,7 +4380,9 @@ function WechselModal({
               const kws = zurueckgesetzteSpringer.map((s) => s.kw).sort((a, b) => a - b);
               const altNamen = Array.from(new Set(zurueckgesetzteSpringer.map((s) => s.altName)));
               teile.push(
-                `Springer-Zuweisung KW ${kws.join(', ')}/${jahr} von ${altNamen.join('/')} auf „unbesetzt" zurückgesetzt (außerhalb der automatisch versorgten Periode bzw. Periode noch nicht angelegt — neuer Austräger wird erst mit dem Monatswechsel offiziell)`,
+                `Springer-Zuweisung KW ${kws.join(', ')}/${jahr} von ${altNamen.join('/')} entfernt — die Planung zeigt für diese KWs jetzt ${
+                  neuMitarbeiterName ?? '—'
+                } als geplanten neuen Standardausträger (außerhalb der automatisch versorgten Periode bzw. Periode noch nicht angelegt — offiziell wird er erst mit dem Monatswechsel)`,
               );
             }
             const alleKws = [...ueberschriebeneSpringer, ...zurueckgesetzteSpringer]
