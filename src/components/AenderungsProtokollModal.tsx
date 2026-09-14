@@ -79,8 +79,16 @@ export default function AenderungsProtokollModal({
             gefiltert.map((e) => (
               <div key={e.id} className="px-3 py-2 text-xs space-y-0.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-gray-800">
+                  <span className="font-medium text-gray-800 flex items-center gap-1.5">
                     {PROTOKOLL_AKTION_LABEL[e.aktion] ?? e.aktion}
+                    {e.automatisch && (
+                      <span
+                        className="text-[10px] font-normal text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-1.5 py-0.5"
+                        title="Halb-automatisch: von der App ausgeführt (z. B. Umsetzung eines Wechsel-/Anpassungsplans beim Monatswechsel), durch einen Klick manuell angestoßen"
+                      >
+                        🤖 automatisch (App)
+                      </span>
+                    )}
                   </span>
                   <span className="text-gray-400">{formatZeitstempel(e.zeitstempel)}</span>
                 </div>

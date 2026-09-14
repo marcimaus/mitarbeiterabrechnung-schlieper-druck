@@ -4067,6 +4067,67 @@ function WechselModal({
       }
     }
 
+    // Ende des Zeitraums, in dem der neue Austräger automatisch als
+    // Springer eingeplant wird (aktuelle Abrechnungsperiode der
+    // „ab Ausgabe"). Danach übernimmt niemand automatisch — bestehende,
+    // durch den Plan überholte Einträge werden dort auf „unbesetzt"
+    // zurückgesetzt statt automatisch neu vergeben.
+    function berechneAutoSpringerEndKw(): number {
+      if (!(neuerMa && abJahr === jahr && abKw != null && abKw <= maxKwImJahr)) {
+        return (abKw ?? 1) - 1;
+      }
+      const periodeMitAb = abrechnungsperioden.find(
+        (p) => p.jahr === abJahr && p.kalenderwochen.includes(abKw!),
+      );
+      const okLetzte =
+        letzteJahr == null || letzteKw == null
+          ? true
+          : periodeMitAb != null &&
+            periodeMitAb.jahr === letzteJahr &&
+            periodeMitAb.kalenderwochen.includes(letzteKw);
+      return periodeMitAb && okLetzte ? Math.max(...periodeMitAb.kalenderwochen) : abKw - 1;
+    }
+
+    // ---- Vorschau: bestehende Springer-Einsätze, die durch diesen
+    // Wechselplan für zukünftige KWs überholt werden (Ablösung durch den
+    // neuen Austräger bzw. Rücksetzung auf „unbesetzt"). Vergangene KWs
+    // bleiben immer unangetastet. Der Admin wird vor dem Speichern
+    // informiert, damit er den betroffenen Mitarbeiter Bescheid geben kann.
+    if (neuerMa && abJahr === jahr && abKw != null && abKw <= maxKwImJahr) {
+      const tgEinsaetzeVorschau = einsaetzeImJahr.filter((e) => e.teilgebietId === teilgebietId);
+      const autoEndeVorschau = berechneAutoSpringerEndKw();
+      const ersetztVorschau: number[] = [];
+      const zurueckgesetztVorschau: number[] = [];
+      const namenVorschau = new Set<string>();
+      for (let k = abKw; k <= maxKwImJahr; k++) {
+        if (istVergangeneKw(jahr, k)) continue;
+        const e = tgEinsaetzeVorschau.find((x) => x.kw === k);
+        if (!e || !e.mitarbeiterId || e.mitarbeiterId === neuerMa || e.autoVomWechselplan === true) continue;
+        namenVorschau.add(mitarbeiterById.get(e.mitarbeiterId)?.name ?? e.mitarbeiterId);
+        if (k <= autoEndeVorschau) ersetztVorschau.push(k);
+        else zurueckgesetztVorschau.push(k);
+      }
+      if (ersetztVorschau.length > 0 || zurueckgesetztVorschau.length > 0) {
+        const neuName = mitarbeiterById.get(neuerMa)?.name ?? neuerMa;
+        const teile: string[] = [];
+        if (ersetztVorschau.length > 0) {
+          teile.push(`• wird durch ${neuName} ersetzt: KW ${ersetztVorschau.join(', ')}/${jahr}`);
+        }
+        if (zurueckgesetztVorschau.length > 0) {
+          teile.push(`• wird auf „unbesetzt" zurückgesetzt: KW ${zurueckgesetztVorschau.join(', ')}/${jahr}`);
+        }
+        if (
+          !confirm(
+            `⚠ Für folgende künftige Kalenderwochen ist aktuell noch ${Array.from(namenVorschau).join(', ')} als Springer eingetragen:\n\n` +
+              teile.join('\n') +
+              `\n\nBitte ${Array.from(namenVorschau).join(', ')} über den Wegfall informieren.\n\nTrotzdem speichern?`,
+          )
+        ) {
+          return;
+        }
+      }
+    }
+
     setSaving(true);
     try {
       // Ohne neuen Standardausträger sind „ab Ausgabe (Jahr/KW)" inhaltlich
@@ -4211,48 +4272,49 @@ function WechselModal({
         // er korrekt eingeplant und vergütet.
         if (neuerMa && abJahr === jahr && abKw != null && abKw <= maxKwImJahr) {
           // Auto-Springer-Bereich: ab abAusgabe bis Ende der Periode, in
-          // der abAusgabe liegt. Falls letzteAusgabe gesetzt ist, muss
-          // sie in derselben Periode liegen (sonst wäre es ein
-          // Mehrperioden-Wechsel, da übernimmt Monatswechsel früher).
-          // Bei TG-ohne-letzteAusgabe (unbesetzt-Fall) gilt diese
-          // Bedingung trivial.
-          const periodeMitAb = abrechnungsperioden.find(
-            (p) => p.jahr === abJahr && p.kalenderwochen.includes(abKw!),
-          );
-          const okLetzte =
-            letzteJahr == null || letzteKw == null
-              ? true
-              : periodeMitAb != null &&
-                periodeMitAb.jahr === letzteJahr &&
-                periodeMitAb.kalenderwochen.includes(letzteKw);
-          if (periodeMitAb && okLetzte) {
-            const periodEndKw = Math.max(...periodeMitAb.kalenderwochen);
-            const aktuelleAuto = tgEinsaetze.filter((e) => e.autoVomWechselplan === true);
+          // der abAusgabe liegt. Bei TG-ohne-letzteAusgabe (unbesetzt-Fall)
+          // gilt „okLetzte" trivial. Danach (bis Jahresende) übernimmt
+          // niemand automatisch — überholte Einträge werden dort auf
+          // „unbesetzt" zurückgesetzt statt neu vergeben.
+          const autoSpringerEndKw = berechneAutoSpringerEndKw();
+          const periodeGefunden = autoSpringerEndKw >= abKw;
+          const aktuelleAuto = tgEinsaetze.filter((e) => e.autoVomWechselplan === true);
 
-            // 1) Veraltete Auto-Einsätze aufräumen: außerhalb des neuen
-            //    Bereichs ODER auf einen anderen MA.
-            for (const e of aktuelleAuto) {
-              const imBereich = e.kw >= abKw && e.kw <= periodEndKw;
-              if (!imBereich || e.mitarbeiterId !== neuerMa) {
-                await loescheEinsatz(e.id);
-              }
+          // 1) Veraltete Auto-Einsätze aufräumen: außerhalb des neuen
+          //    Bereichs ODER auf einen anderen MA.
+          for (const e of aktuelleAuto) {
+            const imBereich = e.kw >= abKw && e.kw <= autoSpringerEndKw;
+            if (!imBereich || e.mitarbeiterId !== neuerMa) {
+              await loescheEinsatz(e.id);
             }
+          }
 
-            // 2) Für jede KW im Bereich [abKw..periodEndKw] einen
-            //    Auto-Springer schreiben — sofern nicht bereits ein
-            //    manueller Einsatz existiert (typ='springer' mit
-            //    abweichendem MA → bleibt; ungeklärt-Lücken werden
-            //    überschrieben, weil sie aus der Lücken-Sync oben gar
-            //    nicht für KW >= abKw entstehen).
-            const aktuelleAutoIds = new Set(aktuelleAuto.map((e) => e.id));
-            for (let k = abKw; k <= periodEndKw; k++) {
+          // 2) Für jede KW im Bereich [abKw..autoSpringerEndKw] einen
+          //    Auto-Springer schreiben. Ein bereits bestehender, manuell
+          //    gepflegter Einsatz (z. B. ein Dauer-Springer aus der Zeit,
+          //    als das TG noch unbesetzt war) wird für ZUKÜNFTIGE KWs vom
+          //    neuen Standardausträger abgelöst — er ist durch den
+          //    Wechselplan überholt. Vergangene KWs werden NIE angefasst,
+          //    damit ein Tippfehler bei „ab Ausgabe" (z. B. rückwirkend
+          //    statt zukünftig) keine bereits abgerechneten Wochen verändert.
+          //    Nur ausgeführt, wenn die aktuelle Abrechnungsperiode bekannt
+          //    ist (periodeGefunden) — sonst bleibt dieser Schritt leer und
+          //    ALLES Weitere ab abKw fällt unter Schritt 3 (Rücksetzung).
+          const aktuelleAutoIds = new Set(aktuelleAuto.map((e) => e.id));
+          const ueberschriebeneSpringer: { kw: number; altName: string }[] = [];
+          if (periodeGefunden) {
+            for (let k = abKw; k <= autoSpringerEndKw; k++) {
               const vorhandenerEinsatz = tgEinsaetze.find((e) => e.kw === k);
-              // Manuell gepflegten, nicht-auto Einsatz nicht überschreiben.
-              if (
-                vorhandenerEinsatz &&
-                !aktuelleAutoIds.has(vorhandenerEinsatz.id)
-              ) {
-                continue;
+              if (vorhandenerEinsatz && !aktuelleAutoIds.has(vorhandenerEinsatz.id)) {
+                if (istVergangeneKw(jahr, k)) continue;
+                if (vorhandenerEinsatz.mitarbeiterId) {
+                  ueberschriebeneSpringer.push({
+                    kw: k,
+                    altName:
+                      mitarbeiterById.get(vorhandenerEinsatz.mitarbeiterId)?.name ??
+                      vorhandenerEinsatz.mitarbeiterId,
+                  });
+                }
               }
               const ausgabeId = await getOrCreateAusgabe(jahr, k, parameter);
               await setzeEinsatz({
@@ -4266,13 +4328,85 @@ function WechselModal({
                 autoVomWechselplan: true,
               });
             }
-          } else {
-            // abAusgabe nicht in derselben Periode wie letzteAusgabe →
-            // alte Auto-Einsätze aufräumen (z. B. wenn User das ab-Datum
-            // verschoben hat).
-            for (const e of tgEinsaetze.filter((e) => e.autoVomWechselplan === true)) {
-              await loescheEinsatz(e.id);
+          }
+
+          // 3) Für KWs NACH der automatisch versorgten Periode (bis
+          //    Jahresende) — bzw. den KOMPLETTEN Bereich ab abKw, falls die
+          //    aktuelle Periode noch gar nicht angelegt ist (periodeGefunden
+          //    = false, autoSpringerEndKw dann < abKw): ein überholter
+          //    manueller Springer/Ausfall wird auf „unbesetzt" zurückgesetzt
+          //    — er soll nicht einfach stehen bleiben, aber der neue
+          //    Austräger wird hier noch nicht automatisch eingetragen (erst
+          //    mit dem regulären Monatswechsel bzw. sobald die Periode
+          //    angelegt ist und erneut gespeichert wird). Vergangene KWs
+          //    bleiben unangetastet. Läuft UNABHÄNGIG von periodeGefunden.
+          const zurueckgesetzteSpringer: { kw: number; altName: string }[] = [];
+          for (let k = Math.max(abKw, autoSpringerEndKw + 1); k <= maxKwImJahr; k++) {
+            if (istVergangeneKw(jahr, k)) continue;
+            const vorhandenerEinsatz = tgEinsaetze.find((e) => e.kw === k);
+            if (
+              !vorhandenerEinsatz ||
+              !vorhandenerEinsatz.mitarbeiterId ||
+              vorhandenerEinsatz.mitarbeiterId === neuerMa ||
+              vorhandenerEinsatz.autoVomWechselplan === true
+            ) {
+              continue;
             }
+            zurueckgesetzteSpringer.push({
+              kw: k,
+              altName:
+                mitarbeiterById.get(vorhandenerEinsatz.mitarbeiterId)?.name ??
+                vorhandenerEinsatz.mitarbeiterId,
+            });
+            await setzeEinsatz({
+              ausgabeId: vorhandenerEinsatz.ausgabeId,
+              jahr,
+              kw: k,
+              teilgebietId,
+              mitarbeiterId: null,
+              typ: 'ungeklärt',
+              standardAustraegerSnapshot: tg.standardAustraegerId ?? null,
+            });
+          }
+
+          if (ueberschriebeneSpringer.length > 0 || zurueckgesetzteSpringer.length > 0) {
+            const teile: string[] = [];
+            if (ueberschriebeneSpringer.length > 0) {
+              const kws = ueberschriebeneSpringer.map((s) => s.kw).sort((a, b) => a - b);
+              const altNamen = Array.from(new Set(ueberschriebeneSpringer.map((s) => s.altName)));
+              teile.push(
+                `Springer-Zuweisung KW ${kws.join(', ')}/${jahr} von ${altNamen.join('/')} auf ${
+                  neuMitarbeiterName ?? '—'
+                } umgestellt`,
+              );
+            }
+            if (zurueckgesetzteSpringer.length > 0) {
+              const kws = zurueckgesetzteSpringer.map((s) => s.kw).sort((a, b) => a - b);
+              const altNamen = Array.from(new Set(zurueckgesetzteSpringer.map((s) => s.altName)));
+              teile.push(
+                `Springer-Zuweisung KW ${kws.join(', ')}/${jahr} von ${altNamen.join('/')} auf „unbesetzt" zurückgesetzt (außerhalb der automatisch versorgten Periode bzw. Periode noch nicht angelegt — neuer Austräger wird erst mit dem Monatswechsel offiziell)`,
+              );
+            }
+            const alleKws = [...ueberschriebeneSpringer, ...zurueckgesetzteSpringer]
+              .map((s) => s.kw)
+              .sort((a, b) => a - b);
+            await schreibeAuditLog({
+              adminName,
+              bereich: 'austraeger-ausfall',
+              aktion: 'geaendert',
+              teilgebietId,
+              teilgebietName: tg.name,
+              mitarbeiterId: neuerMa,
+              mitarbeiterName: neuMitarbeiterName,
+              jahr,
+              kwVon: alleKws[0],
+              kwBis: alleKws[alleKws.length - 1],
+              automatisch: true,
+              beschreibung:
+                `🤖 Automatisch angepasst durch Speichern des Wechselplans für „${tg.name}": ` +
+                teile.join('; ') +
+                ' (bisherige Zuweisung(en) waren durch den Wechsel überholt; vergangene KWs wurden nicht angetastet).',
+            });
           }
         } else {
           // Kein neuer MA / kein abAusgabe → bestehende Auto-Einsätze

@@ -1408,6 +1408,16 @@ export interface AuditLog {
   kwBis?: number;
   /** Menschenlesbare Zusammenfassung der Änderung (inkl. alt → neu, falls zutreffend). */
   beschreibung: string;
+  /**
+   * true = die Änderung wurde nicht direkt manuell eingegeben, sondern von der
+   * App ausgeführt — z. B. die Übernahme eines Wechselplans/einer Stückzahl-
+   * Anpassung beim Monatswechsel (dort tippt niemand den neuen Wert ein,
+   * sondern bestätigt nur die Umsetzung eines zuvor in der Personalplanung
+   * hinterlegten Plans). Halb-automatisch, da der Vorgang durch einen Klick
+   * ausgelöst wird — fehlt das Feld (ältere Einträge / direkte manuelle
+   * Eingaben), gilt der Eintrag als manuell.
+   */
+  automatisch?: boolean;
 }
 
 // ---- Hilfsfunktionen / Utils-Typen -------------------------

@@ -2024,6 +2024,7 @@ function WechselplanUebernahmeDialog({
     p: StandardAustraegerWechselPlan,
     tg: Teilgebiet,
     neuerAustraegerId: string | null,
+    bereinigteAutoSpringer = 0,
   ) {
     const bisher = tg.standardAustraegerId
       ? maMap.get(tg.standardAustraegerId)
@@ -2061,11 +2062,16 @@ function WechselplanUebernahmeDialog({
       jahr: p.abAusgabeJahr ?? p.letzteAusgabeJahr,
       kwVon: p.abAusgabeKw ?? p.letzteAusgabeKw,
       kwBis: p.abAusgabeKw ?? p.letzteAusgabeKw,
+      automatisch: true,
       beschreibung:
-        `Wechselplan beim Monatswechsel umgesetzt: Standardausträger ${
+        `🤖 Automatisch durch die App umgesetzt (manuell angestoßen über „Monatswechsel" → „Übernehmen"): ` +
+        `zuvor in der Personalplanung hinterlegter Wechselplan — Standardausträger ${
           bisher?.name ?? '— (unbesetzt)'
         } → ${neuer?.name ?? '— (unbesetzt)'} (Periode ${periode.bezeichnung})` +
-        (p.kommentar ? `; Kommentar: "${p.kommentar}"` : ''),
+        (p.kommentar ? `; Kommentar: "${p.kommentar}"` : '') +
+        (bereinigteAutoSpringer > 0
+          ? `; ${bereinigteAutoSpringer} automatisch angelegte(r) Behelfs-Springer-Einsatz/Einsätze automatisch aufgeräumt`
+          : ''),
     });
   }
 
@@ -2103,13 +2109,12 @@ function WechselplanUebernahmeDialog({
     }
     setBusyId(p.id);
     try {
-      await protokolliereWechsel(p, tg, p.neuerAustraegerId);
-      await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: p.neuerAustraegerId });
       // Behelfs-Springer-Einsätze (autoVomWechselplan) für den neuen Austräger
       // entfernen: Mit der Übernahme ist er offizieller Standardausträger und
       // wird ab jetzt als Standard (nicht als Springer mit Zuschlag) geführt.
       // Nur in NICHT eingefrorenen Perioden löschen — abgeschlossene/fixierte
-      // Monate bleiben unangetastet.
+      // Monate bleiben unangetastet. Vorab ermittelt, damit der Protokoll-
+      // Eintrag die Anzahl der automatisch aufgeräumten Einsätze nennen kann.
       const istEingefroren = (jahr: number, kw: number) => {
         const per = abrechnungsperioden.find(
           (q) => q.jahr === jahr && q.kalenderwochen.includes(kw),
@@ -2120,14 +2125,16 @@ function WechselplanUebernahmeDialog({
         );
       };
       const tgEinsaetze = await ladeEinsaetzeFuerTeilgebiet(tg.id);
-      for (const e of tgEinsaetze) {
-        if (
+      const autoSpringerZuBereinigen = tgEinsaetze.filter(
+        (e) =>
           e.autoVomWechselplan === true &&
           e.mitarbeiterId === p.neuerAustraegerId &&
-          !istEingefroren(e.jahr, e.kw)
-        ) {
-          await loescheEinsatz(e.id);
-        }
+          !istEingefroren(e.jahr, e.kw),
+      );
+      await protokolliereWechsel(p, tg, p.neuerAustraegerId, autoSpringerZuBereinigen.length);
+      await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: p.neuerAustraegerId });
+      for (const e of autoSpringerZuBereinigen) {
+        await loescheEinsatz(e.id);
       }
       await loescheAustraegerwechselPlan(p.teilgebietId);
     } catch (e: any) {
@@ -2340,8 +2347,10 @@ function StueckzahlAnpassungDialog({
         mitarbeiterId: null,
         mitarbeiterName: null,
         jahr: periode.jahr,
+        automatisch: true,
         beschreibung:
-          `Stückzahl-Anpassung beim Monatswechsel umgesetzt: ${tg.stueckzahl} → ${w.neueStueckzahl} Stk (Periode ${periode.bezeichnung})` +
+          `🤖 Automatisch durch die App umgesetzt (manuell angestoßen über „Monatswechsel" → „Übernehmen"): ` +
+          `zuvor vorgemerkte Stückzahl-Anpassung — ${tg.stueckzahl} → ${w.neueStueckzahl} Stk (Periode ${periode.bezeichnung})` +
           (w.bemerkung ? `; Bemerkung: "${w.bemerkung}"` : ''),
       });
     } catch (e: any) {
