@@ -14,7 +14,7 @@
 
 import { initializeApp } from 'firebase/app';
 import {
-  getFirestore, collection, getDocs, setDoc, doc, getDoc, query, where, deleteDoc,
+  getFirestore, collection, getDocs, setDoc, doc, getDoc, query, where, deleteDoc, updateDoc,
 } from 'firebase/firestore';
 import { readFileSync } from 'node:fs';
 import xlsx from 'xlsx';
@@ -26,6 +26,13 @@ const DEFAULT_PFAD = 'C:/Users/marcs/Desktop/Streuplan Beilagenauftrag Austräge
 const args = process.argv.slice(2);
 const pfad = args.find((a) => !/^(write|--.+)$/.test(a)) ?? DEFAULT_PFAD;
 const write = args.includes('write');
+// Optionaler Monats-Override: --monat=6. Fallback, wenn die ODS in O1 keinen
+// Abrechnungsmonat gepflegt hat. Der Monat wird nur als Sanity-Check genutzt
+// (nicht geschrieben) — Ausgaben werden über (jahr, kw) verortet.
+const monatArg = (() => {
+  const a = args.find((x) => /^--monat=\d+$/.test(x));
+  return a ? Number(a.split('=')[1]) : undefined;
+})();
 
 // ---- Firebase -----------------------------------------------
 
@@ -107,25 +114,28 @@ if (!aa) { console.error('Sheet `Abrechnung_Austragen` fehlt.'); process.exit(1)
 if (!beilSheet) { console.error('Sheet `Beilagen` fehlt.'); process.exit(1); }
 
 const jahr = cellNum(aa, 'R1');
-const monat = cellNum(aa, 'O1');
+const monat = cellNum(aa, 'O1') ?? monatArg;
 if (!jahr || !monat) {
-  console.error(`Jahr/Monat nicht lesbar (R1=${jahr}, O1=${monat}).`);
+  console.error(`Jahr/Monat nicht lesbar (R1=${jahr}, O1=${cellNum(aa, 'O1')}). `
+    + `Monat ggf. per --monat=<1-12> übergeben.`);
   process.exit(1);
 }
-console.log(`Jahr ${jahr}, Monat ${monat}`);
+console.log(`Jahr ${jahr}, Monat ${monat}${cellNum(aa, 'O1') == null ? ' (per --monat übergeben)' : ''}`);
 
-// Pro Ausgabe-Slot: KW-Anker, Beilagen-Range, Zusammen-Spalte.
+// Pro Ausgabe-Slot: KW-Anker, Beilagen-Range, Zusammen-Spalte, Springer-Spalte.
 // Seitenzahl + Stapelanzahl werden NICHT auf starre Zellen gemappt,
 // sondern aus Reihe 1 heuristisch gelesen (Headertext „Seitenzahl" /
 // „Anzahl Stapel" + Wert in der Zelle rechts daneben; in Reihenfolge
 // der gefundenen Treffer den Ausgaben zugeordnet) — die Abstände
 // zwischen den Blöcken sind in der ODS nicht regelmäßig.
+// Springer-Spalte (Format „Name, Nummer") je TG-Zeile 5..105 — Nummer 90000
+// („Ungeklärter/Anonymer Springer") → typ='ungeklärt', mitarbeiterId=null.
 const SLOTS = [
-  { kwAddr: 'AA3', beilRange: 'BN5:BW105', zusammenCol: 'AS' },
-  { kwAddr: 'BY3', beilRange: 'DL5:DU105', zusammenCol: 'CQ' },
-  { kwAddr: 'DW3', beilRange: 'FJ5:FS105', zusammenCol: 'EO' },
-  { kwAddr: 'FU3', beilRange: 'HH5:HQ105', zusammenCol: 'GM' },
-  { kwAddr: 'HS3', beilRange: 'JF5:JO105', zusammenCol: 'IK' },
+  { kwAddr: 'AA3', beilRange: 'BN5:BW105', zusammenCol: 'AS', springerCol: 'AB' },
+  { kwAddr: 'BY3', beilRange: 'DL5:DU105', zusammenCol: 'CQ', springerCol: 'BZ' },
+  { kwAddr: 'DW3', beilRange: 'FJ5:FS105', zusammenCol: 'EO', springerCol: 'DX' },
+  { kwAddr: 'FU3', beilRange: 'HH5:HQ105', zusammenCol: 'GM', springerCol: 'FV' },
+  { kwAddr: 'HS3', beilRange: 'JF5:JO105', zusammenCol: 'IK', springerCol: 'HT' },
 ];
 
 // Reihe 1 nach Seitenzahl- und Anzahl-Stapel-Headern scannen.
@@ -273,6 +283,33 @@ for (const a of ausgaben) {
   console.log(`  KW${a.kw}: ${count} Zusammentragen-Zuordnungen`);
 }
 
+// ---- Springer einlesen --------------------------------------
+
+// Liste: { ausgabeKw, tgName, tgRow, name, nummer, ungeklaert }
+// Springer ersetzen für die betroffene (Ausgabe, TG) den Standardausträger.
+// Nummer 90000 = „(Un-)geklärter/Anonymer Springer" → typ='ungeklärt', MA=null.
+const springer = [];
+for (const a of ausgaben) {
+  const col = a.slot.springerCol;
+  let count = 0;
+  for (const tg of tgZeilen) {
+    const cell = cellStr(aa, `${col}${tg.row}`);
+    if (!cell) continue;
+    // Format: "Name, 90590"
+    const parts = cell.split(',');
+    if (parts.length < 2) continue;
+    const nummer = parts[parts.length - 1].trim();
+    const name = parts.slice(0, -1).join(',').trim();
+    if (!nummer) continue;
+    springer.push({
+      ausgabeKw: a.kw, tgName: tg.name, tgRow: tg.row, name, nummer,
+      ungeklaert: nummer === '90000',
+    });
+    count++;
+  }
+  console.log(`  KW${a.kw}: ${count} Springer`);
+}
+
 // ---- Firestore-Lookups laden --------------------------------
 
 console.log('\nLade Stammdaten aus Firestore…');
@@ -312,6 +349,15 @@ for (const z of zusammen) {
     const m = maByNummer.get(z.nummer);
     if (m) maIdByNummer.set(z.nummer, m.id);
     else maMismatches.add(`${z.name} (${z.nummer})`);
+  }
+}
+// Springer-MAs mit auflösen (ungeklärte 90000 brauchen keinen MA-Match).
+for (const s of springer) {
+  if (s.ungeklaert) continue;
+  if (!maIdByNummer.has(s.nummer)) {
+    const m = maByNummer.get(s.nummer);
+    if (m) maIdByNummer.set(s.nummer, m.id);
+    else maMismatches.add(`${s.name} (${s.nummer})`);
   }
 }
 
@@ -437,6 +483,86 @@ for (const z of zusammen) {
   });
 }
 
+// ---- Springer-Schreibplan (Spiegel-Modus) -------------------
+//
+// Das ODS ist die maßgebliche Quelle für Springer je (Ausgabe, TG).
+// Das Datenmodell erlaubt genau EINEN Einsatz pro (Ausgabe, TG); die
+// Abrechnungslogik greift per `find(ausgabeId & teilgebietId)` — daher
+// dürfen keine Duplikate entstehen.
+//
+// Vorgehen pro betroffener (nicht gesperrter) Ausgabe:
+//  · Jeder ODS-Springer → Einsatz typ='springer' (bzw. 'ungeklärt' bei
+//    Nummer 90000, MA=null). Existiert schon ein Einsatz an (Ausgabe, TG),
+//    wird dessen Doc aktualisiert (kein Duplikat); sonst neu mit
+//    deterministischer Doc-ID `streuplan-${ausgabeId}-${tgId}`.
+//  · Bestehende Abweichungs-Einsätze (typ springer/ungeklärt/ausfall) an
+//    (Ausgabe, TG) OHNE ODS-Springer werden gelöscht → Standardausträger
+//    trägt. typ='standard'-Overrides bleiben unangetastet.
+const kwByAusgabeDocId = new Map(planAusgaben.map((a) => [a.docId, a.kw]));
+
+const planSpringer = []; // { ausgabeId, ausgabeKw, tgId, tgName, maId, typ, maNummer }
+for (const s of springer) {
+  if (gesperrteKws.has(s.ausgabeKw)) continue;
+  const ausgabeDocId = ausgabeDocIdFuerKw(s.ausgabeKw);
+  if (!ausgabeDocId) continue;
+  const tgId = tgIdByName.get(s.tgName);
+  if (!tgId) continue; // TG-Mismatch bereits geloggt
+  let maId = null;
+  let typ = 'ungeklärt';
+  if (!s.ungeklaert) {
+    maId = maIdByNummer.get(s.nummer);
+    if (!maId) continue; // MA-Mismatch bereits geloggt
+    typ = 'springer';
+  }
+  planSpringer.push({
+    ausgabeId: ausgabeDocId, ausgabeKw: s.ausgabeKw, kw: s.ausgabeKw, jahr,
+    tgId, tgName: s.tgName, maId, typ, maNummer: s.nummer,
+  });
+}
+
+// Bestehende Einsätze der betroffenen Ausgaben laden (für Spiegel-Abgleich).
+const betroffeneSpringerAusgabeIds = new Set(
+  planAusgaben.filter((a) => !gesperrteKws.has(a.kw)).map((a) => a.docId),
+);
+const bestehendeEinsaetze = [];
+if (betroffeneSpringerAusgabeIds.size > 0) {
+  const einSnap = await getDocs(query(collection(db, 'einsaetze'), where('jahr', '==', jahr)));
+  for (const d of einSnap.docs) {
+    const e = { id: d.id, ...d.data() };
+    if (betroffeneSpringerAusgabeIds.has(e.ausgabeId)) bestehendeEinsaetze.push(e);
+  }
+}
+
+const desiredSpringerByKey = new Map(); // "ausgabeId|tgId" → plan
+for (const p of planSpringer) desiredSpringerByKey.set(`${p.ausgabeId}|${p.tgId}`, p);
+const existingEinsatzByKey = new Map(); // "ausgabeId|tgId" → einsatz
+for (const e of bestehendeEinsaetze) existingEinsatzByKey.set(`${e.ausgabeId}|${e.teilgebietId}`, e);
+
+// Writes: Update (bestehendes Doc weiterverwenden) oder Neuanlage.
+const springerWrites = [];
+for (const [key, p] of desiredSpringerByKey) {
+  const ex = existingEinsatzByKey.get(key);
+  springerWrites.push({
+    docId: ex ? ex.id : `streuplan-${p.ausgabeId}-${p.tgId}`,
+    neu: !ex,
+    ausgabeKw: p.ausgabeKw,
+    tgName: p.tgName,
+    typ: p.typ,
+    maNummer: p.maNummer,
+    payload: {
+      ausgabeId: p.ausgabeId, kw: p.kw, jahr: p.jahr,
+      teilgebietId: p.tgId, mitarbeiterId: p.maId, typ: p.typ,
+    },
+  });
+}
+// Deletes: bestehende Abweichungs-Einsätze ohne ODS-Springer.
+const springerDeletes = [];
+for (const e of bestehendeEinsaetze) {
+  if (!['springer', 'ungeklärt', 'ausfall'].includes(e.typ)) continue;
+  const key = `${e.ausgabeId}|${e.teilgebietId}`;
+  if (!desiredSpringerByKey.has(key)) springerDeletes.push(e);
+}
+
 // ---- Zusammenfassung ----------------------------------------
 
 console.log('\n=== Schreibplan ===');
@@ -450,6 +576,36 @@ console.log(`Zusammentragen-Einsätze: ${planZusammen.length}`);
 const zaehlerProKw = new Map();
 for (const z of planZusammen) zaehlerProKw.set(z.ausgabeKw, (zaehlerProKw.get(z.ausgabeKw) ?? 0) + 1);
 for (const [kw, n] of [...zaehlerProKw].sort()) console.log(`  · KW${kw}: ${n} Einsätze`);
+
+// Springer-Übersicht (Spiegel-Modus).
+const maNameNummerById = new Map();
+for (const m of maSnap.docs) {
+  const d = m.data();
+  maNameNummerById.set(m.id, `${d?.name ?? '?'} (${d?.nummer ?? '?'})`);
+}
+const tgNameByIdSummary = new Map();
+for (const t of tgSnap.docs) {
+  const d = t.data();
+  if (d?.name) tgNameByIdSummary.set(t.id, String(d.name));
+}
+const springerNeu = springerWrites.filter((w) => w.neu).length;
+const springerUpd = springerWrites.filter((w) => !w.neu).length;
+console.log(`Springer-Einsätze:  ${springerWrites.length} (${springerNeu} neu, ${springerUpd} Update)`);
+const sprProKw = new Map();
+for (const w of springerWrites) sprProKw.set(w.ausgabeKw, (sprProKw.get(w.ausgabeKw) ?? 0) + 1);
+for (const [kw, n] of [...sprProKw].sort()) {
+  const ungeklärt = springerWrites.filter((w) => w.ausgabeKw === kw && w.typ === 'ungeklärt').length;
+  console.log(`  · KW${kw}: ${n} Springer${ungeklärt ? ` (davon ${ungeklärt} ungeklärt)` : ''}`);
+}
+if (springerDeletes.length > 0) {
+  console.log(`\nSpringer-Löschungen (App-Einsatz ohne ODS-Springer → Standardausträger): ${springerDeletes.length}`);
+  for (const e of springerDeletes) {
+    const kw = kwByAusgabeDocId.get(e.ausgabeId) ?? '?';
+    const tgN = tgNameByIdSummary.get(e.teilgebietId) ?? e.teilgebietId;
+    const maN = e.mitarbeiterId ? maNameNummerById.get(e.mitarbeiterId) ?? e.mitarbeiterId : '—';
+    console.log(`  · KW${kw} ${tgN}: typ=${e.typ} ma=${maN}  [${e.id.startsWith('streuplan-') ? 'streuplan' : 'App'}]`);
+  }
+}
 
 // Detail-Ansicht pro MA: TG-Liste je KW. Kompakt aggregiert, damit der
 // User beim Dry-Run prüfen kann, welche Mitarbeiter welche Teilgebiete
@@ -590,6 +746,26 @@ for (const z of planZusammen) {
   await setDoc(ref, { ...z.payload, erstelltAm: ts, aktualisiertAm: ts });
 }
 console.log(`  ✓ ${planZusammen.length} Zusammentragen-Einsätze`);
+
+// Springer (Spiegel-Modus): erst Löschungen, dann Updates/Neuanlagen.
+// Bestehende Docs werden per updateDoc nur in typ/mitarbeiterId angepasst,
+// damit gepflegte Planungsfelder (Kommentar, Snapshot …) erhalten bleiben.
+for (const e of springerDeletes) {
+  await deleteDoc(doc(db, 'einsaetze', e.id));
+}
+for (const w of springerWrites) {
+  const ref = doc(db, 'einsaetze', w.docId);
+  if (w.neu) {
+    await setDoc(ref, { ...w.payload, erstelltAm: ts, aktualisiertAm: ts });
+  } else {
+    await updateDoc(ref, {
+      typ: w.payload.typ,
+      mitarbeiterId: w.payload.mitarbeiterId,
+      aktualisiertAm: ts,
+    });
+  }
+}
+console.log(`  ✓ ${springerWrites.length} Springer-Einsätze (${springerDeletes.length} gelöscht)`);
 
 console.log('\nFertig.');
 process.exit(0);
