@@ -17,6 +17,7 @@
       "Bash(findstr /i \"firebase service\")",
       "Bash(node scripts/import-firestore.mjs)",
       "Bash(npx firebase *)",
+      "Bash(npx --no-install firebase deploy --only hosting*)",
       "Bash(npx tsc *)"
     ]
   }
