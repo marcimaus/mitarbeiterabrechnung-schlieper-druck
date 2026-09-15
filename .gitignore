@@ -28,7 +28,20 @@ dist-ssr
 firebase-debug.log
 firestore-debug.log
 
+# Persistenter Emulator-Stand (lokale Test-Sandbox)
+.emulator-data/
+
 # Umgebungsvariablen (NIEMALS einchecken!)
 .env
 .env.local
 .env.*.local
+
+# Firebase Service-Account-Schlüssel (NIEMALS einchecken!)
+firebase-service-account*.json
+service-account*.json
+
+# Lokale Firestore-Backups
+backups/
+
+# temporaere Scratch-/Debug-Dateien
+tmp_*
