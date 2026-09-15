@@ -731,8 +731,10 @@ export async function exportiereAbrechnung(
 // Inhalt (laut Vorgabe):
 //   - Periode (Header)
 //   - je MA: Name, Nummer, Vorschuss, Bruttolohn (= bruttoLohnbuero, also nach
-//     Verrechnung Lohnkonto, ohne Lohnkonto explizit zu erwähnen), Fahrtkosten
-//   - Schluss: Liste an-/abzumeldender Mitarbeiter
+//     Verrechnung Lohnkonto, ohne Lohnkonto explizit zu erwähnen), Fahrtkosten,
+//     Auszahlung (nur bei SV-befreiten MAs; sonst ermittelt das Lohnbüro
+//     den Zahlbetrag nach Abzügen)
+//   - Schluss: Liste abzumeldender Mitarbeiter
 //
 export async function exportiereLohnuebermittlung(
   periode: Abrechnungsperiode,
@@ -762,7 +764,7 @@ export async function exportiereLohnuebermittlung(
     'Vorschuss (€)',
     'Bruttolohn (€)',
     'Fahrtkosten (€)',
-    'Auszahlung (€)',
+    'Auszahlung (€) — nur SV-befreit',
   ];
   ws.getRow(headerRow).font = { bold: true };
   ws.getRow(headerRow).fill = {
@@ -776,7 +778,7 @@ export async function exportiereLohnuebermittlung(
     { width: 14 },
     { width: 16 },
     { width: 16 },
-    { width: 16 },
+    { width: 30 },
   ];
 
   // Reihenfolge wie in der Ansicht „Abrechnung": `ergebnisse` ist bereits von
@@ -790,14 +792,17 @@ export async function exportiereLohnuebermittlung(
   let sumFaKo = 0;
   let sumAuszahlung = 0;
   for (const e of sortiert) {
-    const auszahlung = e.bruttoLohnbuero - e.vorschussSumme;
+    // Auszahlung nur bei SV-befreiten MAs (Brutto = Netto, keine Abzüge).
+    // Bei allen anderen ermittelt das Lohnbüro den Zahlbetrag → Zelle leer.
+    const istSvBefreit = !!e.mitarbeiter.sozialversicherungsBefreit;
+    const auszahlung = istSvBefreit ? e.bruttoLohnbuero - e.vorschussSumme : null;
     ws.getRow(r).values = [
       e.mitarbeiter.nummer,
       e.mitarbeiter.name,
       Number((e.vorschussSumme ?? 0).toFixed(2)),
       Number((e.bruttoLohnbuero ?? 0).toFixed(2)),
       Number((e.fahrtkostenGesamt ?? 0).toFixed(2)),
-      Number(auszahlung.toFixed(2)),
+      auszahlung === null ? null : Number(auszahlung.toFixed(2)),
     ];
     for (let c = 3; c <= 6; c++) {
       ws.getRow(r).getCell(c).numFmt = '#,##0.00 "€"';
@@ -806,7 +811,7 @@ export async function exportiereLohnuebermittlung(
     sumVorschuss += e.vorschussSumme ?? 0;
     sumBrutto += e.bruttoLohnbuero ?? 0;
     sumFaKo += e.fahrtkostenGesamt ?? 0;
-    sumAuszahlung += auszahlung;
+    sumAuszahlung += auszahlung ?? 0;
     r++;
   }
 
@@ -833,33 +838,15 @@ export async function exportiereLohnuebermittlung(
   ws.views = [{ state: 'frozen', ySplit: headerRow }];
 
   // ====================================================
-  // An-/Abmeldungen
+  // Abmeldungen
   // ====================================================
-  // Mitarbeiter, die noch ANgemeldet werden müssen — und Beträge in dieser
-  // Periode haben (nur dann ist die Anmeldung relevant).
-  const anzumelden = ergebnisse
-    .filter((e) => e.mitarbeiter.nochNichtAngemeldet)
-    .map((e) => e.mitarbeiter)
-    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
-
-  // Abzumeldende MA — STRENG eingeschränkt auf explizit bestätigte
-  // Abmeldungen:
-  //   * Wenn die Periode bereits einen `abmeldungenSnapshot` hat (= beim
-  //     Abschluss fixierte Liste), wird dieser verwendet — pro Eintrag
-  //     genau das gemeldete Datum.
-  //   * Sonst: nur MAs, die `abgemeldet=true` UND ein Abmelde-Datum in
-  //     dieser Periode tragen (= manuell im Stammdaten-Form abgemeldet).
+  // (Eine Liste „Anzumeldende Mitarbeiter" wird bewusst NICHT mehr
+  // ausgegeben.)
   //
-  // Wichtiger Punkt: implizite Trigger (ersetzteMitarbeiterId an einem
-  // anderen MA, oder `letzteAbrechnungsperiodeId === periode.id` ohne
-  // Snapshot) werden NICHT mehr automatisch in den Export aufgenommen.
-  // Diese sind reine UI-Vorschläge und keine bestätigten Abmeldungen.
-  const istInPeriode = (datumIso?: string) => {
-    if (!datumIso) return false;
-    const d = new Date(datumIso);
-    if (isNaN(d.getTime())) return false;
-    return d.getFullYear() === periode.jahr && d.getMonth() + 1 === periode.monat;
-  };
+  // Implizite Trigger (ersetzteMitarbeiterId an einem anderen MA, oder
+  // `letzteAbrechnungsperiodeId === periode.id` ohne Snapshot) werden
+  // NICHT automatisch in den Export aufgenommen — reine UI-Vorschläge.
+  //
   // „Abzumeldende Mitarbeiter" — STRENG eingeschränkt auf den fixierten
   // Abmeldungs-Snapshot einer **abgeschlossenen** Periode. Damit ist
   // ausgeschlossen, dass alte `abgemeldet=true`-Datenleichen (z. B. aus
@@ -878,21 +865,6 @@ export async function exportiereLohnuebermittlung(
   }
   abzumelden.sort((a, b) => a.ma.name.localeCompare(b.ma.name, 'de'));
 
-  // Diagnose: MAs mit `abgemeldet=true` und Abmelde-Datum in dieser
-  // Periode, die NICHT im (fehlenden) Snapshot stehen. Das sind die
-  // typischen Datenleichen aus einem früheren Abschluss + Wiederöffnen.
-  // Wird als zusätzlicher Block ausgewiesen, damit der User sie gezielt
-  // in den Stammdaten korrigieren kann.
-  const abzumeldenIds = new Set(abzumelden.map(({ ma }) => ma.id));
-  const datenleichenAbgemeldet = alleMitarbeiter
-    .filter(
-      (m) =>
-        m.abgemeldet
-        && istInPeriode(m.abmeldungUebermittlungDatum)
-        && !abzumeldenIds.has(m.id),
-    )
-    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
-
   // „Vorläufig nicht abmelden" — Bedarfs-Springer, die das Lohnbüro
   // NICHT automatisch abmelden soll. Werden in jeder Übermittlung als
   // Erinnerungsblock aufgeführt — unabhängig davon, ob sie in dieser
@@ -903,30 +875,6 @@ export async function exportiereLohnuebermittlung(
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
 
   let blockRow = sumRow + 3;
-  if (anzumelden.length > 0) {
-    ws.getCell(`A${blockRow}`).value = 'Anzumeldende Mitarbeiter';
-    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
-    blockRow++;
-    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Anmeldedatum (ggf.)'];
-    ws.getRow(blockRow).font = { bold: true };
-    ws.getRow(blockRow).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFE8F5E9' },
-    };
-    blockRow++;
-    for (const m of anzumelden) {
-      ws.getRow(blockRow).values = [
-        m.nummer,
-        m.name,
-        m.anmeldungUebermittlungDatum ? formatierDatum(new Date(m.anmeldungUebermittlungDatum).getTime()) : '',
-      ];
-      blockRow++;
-    }
-    blockRow += 2;
-  }
-
   if (abzumelden.length > 0) {
     ws.getCell(`A${blockRow}`).value = 'Abzumeldende Mitarbeiter';
     ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
@@ -950,41 +898,6 @@ export async function exportiereLohnuebermittlung(
         ma.nummer,
         ma.name,
         formatierDatum(new Date(datumIso).getTime()),
-      ];
-      blockRow++;
-    }
-    blockRow += 2;
-  }
-
-  // Diagnose-Block: Datenleichen aus früherem Abschluss.
-  if (datenleichenAbgemeldet.length > 0) {
-    ws.getCell(`A${blockRow}`).value =
-      '⚠ Datenleichen — bitte in den MA-Stammdaten prüfen';
-    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12, color: { argb: 'FFB45309' } };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
-    blockRow++;
-    ws.getCell(`A${blockRow}`).value =
-      `Diese Mitarbeiter sind in den Stammdaten als „abgemeldet" markiert mit einem Abmelde-Datum in dieser Periode, stehen aber NICHT in der bestätigten Abmelde-Liste der Periode. Vermutlich Reste eines früheren Abschluss-Vorgangs. Bitte unter Mitarbeiter → „Anmeldung / Abmeldung" überprüfen und ggf. korrigieren. Diese Liste fließt NICHT in die Lohnübermittlung.`;
-    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF777777' } };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
-    ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'middle' };
-    ws.getRow(blockRow).height = 45;
-    blockRow++;
-    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Abmelde-Datum (Stammdaten)'];
-    ws.getRow(blockRow).font = { bold: true };
-    ws.getRow(blockRow).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFFFF4CC' },
-    };
-    blockRow++;
-    for (const m of datenleichenAbgemeldet) {
-      ws.getRow(blockRow).values = [
-        m.nummer,
-        m.name,
-        m.abmeldungUebermittlungDatum
-          ? formatierDatum(new Date(m.abmeldungUebermittlungDatum).getTime())
-          : '',
       ];
       blockRow++;
     }
