@@ -124,6 +124,8 @@ function MitarbeiterInhalt() {
   const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
   const [filterAnmeldung, setFilterAnmeldung] = useState<'' | 'offen' | 'angemeldet' | 'abgemeldet'>('');
   const [filterFahrtkosten, setFilterFahrtkosten] = useState<'' | 'ja' | 'nein'>('');
+  // Nur für Admin: MA mit / ohne offenem Lohnkonto-Saldo.
+  const [filterLohnkontoSaldo, setFilterLohnkontoSaldo] = useState<'' | 'ja' | 'nein'>('');
   const [filterInteressent, setFilterInteressent] = useState<'' | 'nur' | 'ohne'>('ohne');
   const [filterInteresseTaetigkeit, setFilterInteresseTaetigkeit] = useState<InteresseTaetigkeit | ''>('');
   const [filterOrtPlz, setFilterOrtPlz] = useState('');
@@ -207,6 +209,12 @@ function MitarbeiterInhalt() {
       if (filterAnmeldung === 'abgemeldet' && !m.abgemeldet) return false;
       if (filterFahrtkosten === 'ja' && !m.fahrtkostenerstattung) return false;
       if (filterFahrtkosten === 'nein' && m.fahrtkostenerstattung) return false;
+      if (isAdmin && filterLohnkontoSaldo) {
+        // In Cent vergleichen, damit Float-Reste nicht als Saldo zählen.
+        const hatSaldo = Math.round((lohnkontoSaldoMap.get(m.id) ?? 0) * 100) !== 0;
+        if (filterLohnkontoSaldo === 'ja' && !hatSaldo) return false;
+        if (filterLohnkontoSaldo === 'nein' && hatSaldo) return false;
+      }
     }
     return true;
   });
@@ -326,6 +334,18 @@ function MitarbeiterInhalt() {
               <option value="ja">🚗 nur erlaubt</option>
               <option value="nein">nur nicht erlaubt</option>
             </select>
+            {isAdmin && (
+              <select
+                value={filterLohnkontoSaldo}
+                onChange={(e) => setFilterLohnkontoSaldo(e.target.value as '' | 'ja' | 'nein')}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                title="Filter Lohnkonto-Saldo (aktueller Stand) — zeigt, bei wem noch etwas zu verrechnen ist"
+              >
+                <option value="">Lohnkonto: alle</option>
+                <option value="ja">nur mit Saldo im Lohnkonto</option>
+                <option value="nein">nur ohne Saldo</option>
+              </select>
+            )}
           </>
         )}
         <select

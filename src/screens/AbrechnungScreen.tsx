@@ -252,6 +252,9 @@ function AbrechnungInhalt() {
   const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
   const [filterMinijob, setFilterMinijob] = useState<'' | 'ja' | 'nein'>('');
   const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
+  // Nur MA mit offenem Lohnkonto-Saldo (nach dieser Periode ≠ 0) — zeigt, bei
+  // wem noch etwas zu verrechnen ist.
+  const [filterLohnkontoSaldo, setFilterLohnkontoSaldo] = useState<'' | 'ja' | 'nein'>('');
   // Warnung: Fahrtkosten-Datensätze, die noch keiner Abrechnungsperiode
   // zugeordnet sind (abrechnungsperiodeId fehlt).
   const [unzugeordneteFahrten, setUnzugeordneteFahrten] = useState<number>(0);
@@ -806,6 +809,12 @@ function AbrechnungInhalt() {
         if (filterMinijob === 'nein' && er.mitarbeiter.istMinijob) return false;
         if (filterSvFrei === 'ja' && !er.mitarbeiter.sozialversicherungsBefreit) return false;
         if (filterSvFrei === 'nein' && er.mitarbeiter.sozialversicherungsBefreit) return false;
+        if (filterLohnkontoSaldo) {
+          // In Cent vergleichen, damit Float-Reste nicht als Saldo zählen.
+          const hatSaldo = Math.round((er.lohnkontoSaldoNachPeriode ?? 0) * 100) !== 0;
+          if (filterLohnkontoSaldo === 'ja' && !hatSaldo) return false;
+          if (filterLohnkontoSaldo === 'nein' && hatSaldo) return false;
+        }
         return true;
       })
     : [];
@@ -1618,7 +1627,17 @@ function AbrechnungInhalt() {
               <option value="ja">nur SV-befreit</option>
               <option value="nein">nur nicht SV-befreit</option>
             </select>
-            {(suchbegriff || filterRolle || filterMinijob || filterSvFrei) && (
+            <select
+              value={filterLohnkontoSaldo}
+              onChange={(e) => setFilterLohnkontoSaldo(e.target.value as '' | 'ja' | 'nein')}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Filter Lohnkonto-Saldo (nach dieser Periode) — zeigt, bei wem noch etwas zu verrechnen ist"
+            >
+              <option value="">Lohnkonto: alle</option>
+              <option value="ja">nur mit Saldo auf Lohnkonto</option>
+              <option value="nein">nur ohne Saldo</option>
+            </select>
+            {(suchbegriff || filterRolle || filterMinijob || filterSvFrei || filterLohnkontoSaldo) && (
               <>
                 <button
                   type="button"
@@ -1627,6 +1646,7 @@ function AbrechnungInhalt() {
                     setFilterRolle('');
                     setFilterMinijob('');
                     setFilterSvFrei('');
+                    setFilterLohnkontoSaldo('');
                   }}
                   className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
                 >
