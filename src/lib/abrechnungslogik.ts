@@ -253,6 +253,34 @@ export async function ladePeriodeData(
   return { ausgaben, beilagen, einsaetze, arbeitszeiten, zusammentragenEinsaetze, fahrten, vorschuesse, sondervereinbarungen };
 }
 
+// ---- Effektive Stammdaten je Periode (Snapshot-Stufen) -----
+//  - End-Snapshot (status='abgeschlossen'): paramSnapshot + periodeSnapshot
+//  - Monatswechsel-Snapshot: eigene Param-/TG-Snapshots
+//  - sonst: Live-Stammdaten
+
+export function effektiveParameter(params: Parameter, periode?: Abrechnungsperiode): Parameter {
+  const istAbgeschlossen = periode?.status === 'abgeschlossen';
+  if (istAbgeschlossen && periode?.paramSnapshot) return { ...params, ...periode.paramSnapshot };
+  if (!istAbgeschlossen && periode?.monatswechselSnapshot?.paramSnapshot) {
+    return { ...params, ...periode.monatswechselSnapshot.paramSnapshot };
+  }
+  return params;
+}
+
+export function effektiveTeilgebiete(
+  teilgebiete: Teilgebiet[] | TeilgebietSnapshot[],
+  periode?: Abrechnungsperiode
+): (Teilgebiet | TeilgebietSnapshot)[] {
+  const istAbgeschlossen = periode?.status === 'abgeschlossen';
+  if (istAbgeschlossen && periode?.periodeSnapshot?.teilgebietSnapshots?.length) {
+    return periode.periodeSnapshot.teilgebietSnapshots;
+  }
+  if (!istAbgeschlossen && periode?.monatswechselSnapshot?.teilgebietSnapshots?.length) {
+    return periode.monatswechselSnapshot.teilgebietSnapshots;
+  }
+  return teilgebiete;
+}
+
 // ---- Abrechnung berechnen ----------------------------------
 
 export function berechneAbrechnung(
@@ -274,18 +302,8 @@ export function berechneAbrechnung(
   const istAbgeschlossen = periode?.status === 'abgeschlossen';
   const istMonatswechsel = !istAbgeschlossen && !!periode?.monatswechselSnapshot;
 
-  const effParams: Parameter = istAbgeschlossen && periode?.paramSnapshot
-    ? { ...params, ...periode.paramSnapshot }
-    : istMonatswechsel && periode?.monatswechselSnapshot?.paramSnapshot
-      ? { ...params, ...periode.monatswechselSnapshot.paramSnapshot }
-      : params;
-
-  const effTeilgebiete: (Teilgebiet | TeilgebietSnapshot)[] =
-    istAbgeschlossen && periode?.periodeSnapshot?.teilgebietSnapshots?.length
-      ? periode.periodeSnapshot.teilgebietSnapshots
-      : istMonatswechsel && periode?.monatswechselSnapshot?.teilgebietSnapshots?.length
-        ? periode.monatswechselSnapshot.teilgebietSnapshots
-        : teilgebiete;
+  const effParams = effektiveParameter(params, periode);
+  const effTeilgebiete = effektiveTeilgebiete(teilgebiete, periode);
 
   // Lookup für fixierte Werte aus dem Monatswechsel-Snapshot
   const monatswechselFixierungProMa = new Map<

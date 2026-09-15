@@ -10,6 +10,7 @@ import AdminPinGate from '../components/AdminPinGate';
 import {
   ladePeriodeData,
   berechneAbrechnung,
+  effektiveTeilgebiete,
   eur,
   stdMin,
   type MitarbeiterAbrechnung,
@@ -49,6 +50,17 @@ interface ManuellesErgebnis {
   gesamt: number;
 }
 
+/** Ausgabe eines Standard-Gebiets des MA, die ein anderer ausgetragen hat
+ *  (Springer) oder die unbesetzt war — nur zur Info, nicht vergütet. */
+interface Vertretung {
+  kw: number;
+  jahr: number;
+  teilgebietId: string;
+  teilgebietName: string;
+  typ: Einsatz['typ'];
+  vertreterName?: string;
+}
+
 export default function AbrechnungsvorschauScreen() {
   return (
     <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
@@ -64,10 +76,13 @@ function AbrechnungsvorschauInhalt() {
   const [maId, setMaId] = useState('');
   const [periodeId, setPeriodeId] = useState('');
   const [extraTgIds, setExtraTgIds] = useState<string[]>([]);
+  // Teilgebiets-Auswahl nur nach „Ja" auf die Simulations-Frage einblenden.
+  const [simulationGewuenscht, setSimulationGewuenscht] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fehler, setFehler] = useState('');
   const [ergebnis, setErgebnis] = useState<MitarbeiterAbrechnung | null>(null);
   const [periodeOhneZusatz, setPeriodeOhneZusatz] = useState<MitarbeiterAbrechnung | null>(null);
+  const [vertretungen, setVertretungen] = useState<Vertretung[]>([]);
   const [tgFilter, setTgFilter] = useState('');
 
   // ---- Manueller Modus -----------------------------------
@@ -185,36 +200,85 @@ function AbrechnungsvorschauInhalt() {
       const basis = ergebnisseBasis.find((e) => e.mitarbeiter.id === ma.id) ?? null;
       setPeriodeOhneZusatz(basis);
 
-      // Variante B: zusätzliche TGs als „Standardausträger"-Übernahme
-      // simulieren. Wir klonen das teilgebiete-Array und setzen für die
-      // ausgewählten TGs den standardAustraegerId auf unseren MA. Damit wird
-      // er für die Berechnung als Standardausträger gewertet (kein Springer-
-      // Zuschlag). Existierende Einsätze, die einem anderen MA zugewiesen
-      // sind (z. B. Springer für diese KW), entfernen wir für die Simulation
-      // aus dem TG, damit unsere Übernahme zum Zug kommt.
+      const effTgs = effektiveTeilgebiete(teilgebiete, periode) as Teilgebiet[];
+
       if (extraTgIds.length > 0) {
-        const tgsFuerSim: Teilgebiet[] = teilgebiete.map((t) =>
+        // Variante B — reine Simulation: Springer, Ausfälle und ungeklärte
+        // Einsätze werden ignoriert. Der MA trägt alle Ausgaben seiner
+        // Standard-Gebiete plus der zusätzlichen Gebiete selbst aus; eigene
+        // Springer-Einsätze in fremden Gebieten zählen nicht mit.
+        // Die Periode wird ohne Snapshots übergeben, sonst würden die
+        // fixierten Austragen-Werte / Snapshot-TGs die Simulation überdecken.
+        // Stammdaten + Parameter der Periode bleiben über effTgs/Snapshot erhalten.
+        const tgsFuerSim: Teilgebiet[] = effTgs.map((t) =>
           extraTgIds.includes(t.id) ? { ...t, standardAustraegerId: ma.id } : t
         );
-        const dataMitSim = {
-          ...data,
-          einsaetze: data.einsaetze.filter(
-            (e) => !(extraTgIds.includes(e.teilgebietId) && e.mitarbeiterId !== ma.id)
-          ),
+        const periodeFuerSim = {
+          ...periode,
+          status: 'offen',
+          periodeSnapshot: undefined,
+          monatswechselSnapshot: undefined,
+          paramSnapshot: undefined,
+        } as typeof periode;
+        const paramsFuerSim = {
+          ...parameter,
+          ...(periode.status === 'abgeschlossen'
+            ? periode.paramSnapshot
+            : periode.monatswechselSnapshot?.paramSnapshot),
         };
-        const ergebnisseSim = berechneAbrechnung(
+        const sim = berechneAbrechnung(
           [maFuerSim],
           tgsFuerSim,
-          dataMitSim,
-          parameter,
-          periode,
-          variablePeriodenZusaetze,
-          abrechnungsperioden,
-          lohnkontoBuchungen
-        );
-        const sim = ergebnisseSim.find((e) => e.mitarbeiter.id === ma.id) ?? null;
-        setErgebnis(sim);
+          { ...data, einsaetze: [] },
+          paramsFuerSim,
+          periodeFuerSim
+        ).find((e) => e.mitarbeiter.id === ma.id);
+        // Nur Austragen wird simuliert — alle übrigen Positionen aus der Basis.
+        const simAustragen = sim?.austraegerGesamt ?? 0;
+        const basisAustragen = basis?.austraegerGesamt ?? 0;
+        const deltaAustragen = simAustragen - basisAustragen;
+        const simErgebnis: MitarbeiterAbrechnung | null = basis
+          ? {
+              ...basis,
+              austraegerEinsaetze: sim?.austraegerEinsaetze ?? [],
+              austraegerGesamt: simAustragen,
+              gewichtsbonusAnzeigenblatt: sim?.gewichtsbonusAnzeigenblatt ?? 0,
+              gewichtsbonusBeilagen: sim?.gewichtsbonusBeilagen ?? 0,
+              gesamt: basis.gesamt + deltaAustragen,
+              bruttoLohnbuero: basis.bruttoLohnbuero + deltaAustragen,
+            }
+          : sim ?? null;
+        setVertretungen([]);
+        setErgebnis(simErgebnis);
       } else {
+        // Variante A — Vorab-Ermittlung: Standard-Gebiets-Ausgaben, die ein
+        // Springer übernommen hat oder die unbesetzt waren, zur Info
+        // mitliefern (nicht vergütet).
+        const bezahlt = new Set(
+          (basis?.austraegerEinsaetze ?? []).map((e) => `${e.teilgebietId}|${e.jahr}|${e.kw}`)
+        );
+        const liste: Vertretung[] = [];
+        for (const tg of effTgs) {
+          if (tg.standardAustraegerId !== ma.id || tg.isActive === false) continue;
+          for (const ausgabe of data.ausgaben) {
+            const ex = data.einsaetze.find(
+              (e) => e.ausgabeId === ausgabe.id && e.teilgebietId === tg.id
+            );
+            if (!ex || ex.typ === 'standard' || ex.mitarbeiterId === ma.id) continue;
+            if (bezahlt.has(`${tg.id}|${ausgabe.jahr}|${ausgabe.kw}`)) continue;
+            liste.push({
+              kw: ausgabe.kw,
+              jahr: ausgabe.jahr,
+              teilgebietId: tg.id,
+              teilgebietName: tg.name,
+              typ: ex.typ,
+              vertreterName: ex.mitarbeiterId
+                ? mitarbeiter.find((m) => m.id === ex.mitarbeiterId)?.name ?? ex.mitarbeiterId
+                : undefined,
+            });
+          }
+        }
+        setVertretungen(liste);
         setErgebnis(basis);
       }
     } catch (e: any) {
@@ -229,6 +293,7 @@ function AbrechnungsvorschauInhalt() {
   useEffect(() => {
     setErgebnis(null);
     setPeriodeOhneZusatz(null);
+    setVertretungen([]);
   }, [maId, periodeId, extraTgIds.join(',')]);
 
   useEffect(() => {
@@ -459,18 +524,48 @@ function AbrechnungsvorschauInhalt() {
         </div>
 
         <div className="mt-5">
-          <div className="flex items-center justify-between mb-2">
-            <label className="block text-sm font-medium text-gray-700">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-2">
+            <span className="block text-sm font-medium text-gray-700">
               Zusätzliche Teilgebiete (optional — Was-wäre-wenn-Simulation)
-            </label>
-            <input
-              type="text"
-              placeholder="Filtern..."
-              value={tgFilter}
-              onChange={(e) => setTgFilter(e.target.value)}
-              className="border border-gray-300 rounded px-2 py-1 text-xs w-40"
-            />
+            </span>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-gray-700">
+              <span>Verdienst bei Übernahme weiterer Teilgebiete simulieren?</span>
+              <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden" role="radiogroup">
+                {([true, false] as const).map((wert) => (
+                  <button
+                    key={String(wert)}
+                    type="button"
+                    role="radio"
+                    aria-checked={simulationGewuenscht === wert}
+                    onClick={() => {
+                      setSimulationGewuenscht(wert);
+                      if (!wert) {
+                        setExtraTgIds([]);
+                        setTgFilter('');
+                      }
+                    }}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      simulationGewuenscht === wert
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    {wert ? 'Ja' : 'Nein'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {simulationGewuenscht && (
+              <input
+                type="text"
+                placeholder="Filtern..."
+                value={tgFilter}
+                onChange={(e) => setTgFilter(e.target.value)}
+                className="border border-gray-300 rounded px-2 py-1 text-xs w-40 ml-auto"
+              />
+            )}
           </div>
+          {simulationGewuenscht && (<>
           {extraTgIds.length > 0 && (
             <div className="mb-2 flex flex-wrap gap-1.5">
               {extraTgIds.map((id) => {
@@ -528,6 +623,7 @@ function AbrechnungsvorschauInhalt() {
               })}
             </div>
           </div>
+          </>)}
         </div>
 
         <div className="flex items-center gap-3 mt-4">
@@ -647,6 +743,7 @@ function AbrechnungsvorschauInhalt() {
           ergebnis={ergebnis}
           basisOhneZusatz={extraTgIds.length > 0 ? periodeOhneZusatz : null}
           extraTgs={extraTgIds.map((id) => teilgebiete.find((t) => t.id === id)?.name ?? id)}
+          vertretungen={vertretungen}
         />
       )}
 
@@ -765,14 +862,54 @@ function VorschauErgebnis({
   ergebnis,
   basisOhneZusatz,
   extraTgs,
+  vertretungen,
 }: {
   ergebnis: MitarbeiterAbrechnung;
   basisOhneZusatz: MitarbeiterAbrechnung | null;
   extraTgs: string[];
+  vertretungen: Vertretung[];
 }) {
   const er = ergebnis;
   const hatSim = !!basisOhneZusatz;
   const delta = hatSim ? er.gesamt - (basisOhneZusatz?.gesamt ?? 0) : 0;
+
+  // Einsatz-Zeilen (vergütet) + Vertretungs-Zeilen (Info), KW absteigend.
+  type Zeile =
+    | { art: 'einsatz'; kw: number; jahr: number; tgName: string; e: MitarbeiterAbrechnung['austraegerEinsaetze'][number] }
+    | { art: 'vertretung'; kw: number; jahr: number; tgName: string; v: Vertretung };
+  const zeilen: Zeile[] = [
+    ...er.austraegerEinsaetze.map((e) => ({ art: 'einsatz' as const, kw: e.kw, jahr: e.jahr, tgName: e.teilgebietName, e })),
+    ...vertretungen.map((v) => ({ art: 'vertretung' as const, kw: v.kw, jahr: v.jahr, tgName: v.teilgebietName, v })),
+  ].sort((a, b) =>
+    b.jahr - a.jahr || b.kw - a.kw || a.tgName.localeCompare(b.tgName, 'de', { numeric: true })
+  );
+  const anzSpringer = er.austraegerEinsaetze.filter((e) => e.typ === 'springer').length;
+  const springerZuschlagSumme = er.austraegerEinsaetze.reduce((s, e) => s + (e.detail.springerZuschlag ?? 0), 0);
+
+  // Zusammentragen je Kalenderwoche (KW absteigend) — damit der MA vorab
+  // sieht, was er in welcher Woche für das Zusammentragen bekommt.
+  const zusammentragenWochen = (() => {
+    const map = new Map<number, {
+      kw: number;
+      anzTeilgebiete: number;
+      stunden: number;
+      lohnZusammentragen: number;
+      lohnVorarbeit: number;
+    }>();
+    for (const z of er.zusammentragenEinsaetze) {
+      const w = map.get(z.kw) ?? { kw: z.kw, anzTeilgebiete: 0, stunden: 0, lohnZusammentragen: 0, lohnVorarbeit: 0 };
+      w.stunden += z.stunden ?? 0;
+      if (z.istVorarbeit) {
+        w.lohnVorarbeit += z.lohn;
+      } else {
+        w.lohnZusammentragen += z.lohn;
+        w.anzTeilgebiete++;
+      }
+      map.set(z.kw, w);
+    }
+    return [...map.values()].sort((a, b) => b.kw - a.kw);
+  })();
+  const hatVorarbeit = er.zusammentragenEinsaetze.some((z) => z.istVorarbeit);
 
   const positionen: Array<{ label: string; wert: number; hint?: string }> = [
     { label: 'Austragen', wert: er.austraegerGesamt, hint: `${er.austraegerEinsaetze.length} Einsätze` },
@@ -848,38 +985,126 @@ function VorschauErgebnis({
       </div>
 
       {/* Austräger-Einsätze (gesondert für Transparenz) */}
-      {er.austraegerEinsaetze.length > 0 && (
+      {zeilen.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50">
-            <span className="text-sm font-medium text-gray-700">Austräger-Einsätze ({er.austraegerEinsaetze.length})</span>
+          <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-medium text-gray-700">
+              Austräger-Einsätze ({er.austraegerEinsaetze.length}
+              {anzSpringer > 0 && ` · davon ${anzSpringer} als Springer`}
+              {vertretungen.length > 0 && ` · ${vertretungen.length} vertreten`})
+            </span>
+            <span className="text-xs text-gray-500">
+              {hatSim
+                ? 'Simulation: Springer / Ausfälle werden ignoriert'
+                : 'Berücksichtigt eingetragene Springer / Ausfälle'}
+            </span>
           </div>
-          <table className="w-full text-xs">
-            <thead className="bg-gray-50 text-gray-600">
-              <tr>
-                <th className="px-3 py-1.5 text-left font-medium">KW</th>
-                <th className="px-3 py-1.5 text-left font-medium">Teilgebiet</th>
-                <th className="px-3 py-1.5 text-right font-medium">Zeit</th>
-                <th className="px-3 py-1.5 text-right font-medium">Grundlohn</th>
-                <th className="px-3 py-1.5 text-right font-medium">Gewichtsbonus</th>
-                <th className="px-3 py-1.5 text-right font-medium">Gesamt</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {er.austraegerEinsaetze.map((e) => {
-                const d = e.detail;
-                return (
-                  <tr key={`${e.teilgebietId}-${e.kw}`} className="hover:bg-gray-50">
-                    <td className="px-3 py-1.5 font-mono">{e.kw}/{e.jahr}</td>
-                    <td className="px-3 py-1.5">{e.teilgebietName}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{stdMin(d.zeitStunden)}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{eur(d.grundlohn)}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{eur((d.gewichtsbonusAnzeigenblatt ?? 0) + (d.gewichtsbonusBeilagen ?? 0))}</td>
-                    <td className="px-3 py-1.5 text-right font-mono font-semibold">{eur(d.gesamt)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 text-gray-600">
+                <tr>
+                  <th className="px-3 py-1.5 text-left font-medium">KW</th>
+                  <th className="px-3 py-1.5 text-left font-medium">Teilgebiet</th>
+                  <th className="px-3 py-1.5 text-left font-medium">Art</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Zeit</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Grundlohn</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Springer-Zuschl.</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Gewichtsbonus</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Gesamt</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {zeilen.map((z) => {
+                  if (z.art === 'vertretung') {
+                    const v = z.v;
+                    return (
+                      <tr key={`v-${v.teilgebietId}-${v.jahr}-${v.kw}`} className="bg-gray-50/60 text-gray-400">
+                        <td className="px-3 py-1.5 font-mono">{v.kw}/{v.jahr}</td>
+                        <td className="px-3 py-1.5 line-through">{v.teilgebietName}</td>
+                        <td className="px-3 py-1.5" colSpan={5}>
+                          {v.typ === 'springer'
+                            ? <span className="text-amber-700">vertreten durch {v.vertreterName ?? 'Springer'}</span>
+                            : <span className="text-red-600">Ausfall – {v.typ === 'ungeklärt' ? 'unbesetzt' : 'ausgefallen'}</span>}
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-mono">—</td>
+                      </tr>
+                    );
+                  }
+                  const e = z.e;
+                  const d = e.detail;
+                  return (
+                    <tr key={`e-${e.teilgebietId}-${e.jahr}-${e.kw}`} className="hover:bg-gray-50">
+                      <td className="px-3 py-1.5 font-mono">{e.kw}/{e.jahr}</td>
+                      <td className="px-3 py-1.5">{e.teilgebietName}</td>
+                      <td className="px-3 py-1.5">
+                        {e.typ === 'springer'
+                          ? <span className="inline-block rounded bg-amber-100 text-amber-800 px-1.5 py-0.5">Springer</span>
+                          : <span className="text-gray-500">Standard</span>}
+                      </td>
+                      <td className="px-3 py-1.5 text-right font-mono">{stdMin(d.zeitStunden)}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{eur(d.grundlohn)}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{d.springerZuschlag ? eur(d.springerZuschlag) : '—'}</td>
+                      <td className="px-3 py-1.5 text-right font-mono">{eur((d.gewichtsbonusAnzeigenblatt ?? 0) + (d.gewichtsbonusBeilagen ?? 0))}</td>
+                      <td className="px-3 py-1.5 text-right font-mono font-semibold">{eur(d.gesamt)}</td>
+                    </tr>
+                  );
+                })}
+                <tr className="bg-blue-50 border-t-2 border-blue-200 font-semibold text-blue-900">
+                  <td className="px-3 py-2" colSpan={5}>Summe Austragen</td>
+                  <td className="px-3 py-2 text-right font-mono">{springerZuschlagSumme ? eur(springerZuschlagSumme) : '—'}</td>
+                  <td className="px-3 py-2 text-right font-mono">{eur(er.gewichtsbonusAnzeigenblatt + er.gewichtsbonusBeilagen)}</td>
+                  <td className="px-3 py-2 text-right font-mono">{eur(er.austraegerGesamt)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Zusammentragen je Kalenderwoche */}
+      {zusammentragenWochen.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-medium text-gray-700">
+              Zusammentragen je Kalenderwoche ({zusammentragenWochen.length} {zusammentragenWochen.length === 1 ? 'Woche' : 'Wochen'})
+            </span>
+            {hatVorarbeit && (
+              <span className="text-xs text-gray-500">inkl. erfasster Vorarbeit beim Zusammentragen</span>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 text-gray-600">
+                <tr>
+                  <th className="px-3 py-1.5 text-left font-medium">KW</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Teilgebiete</th>
+                  {hatVorarbeit && <th className="px-3 py-1.5 text-right font-medium">davon Vorarbeit</th>}
+                  <th className="px-3 py-1.5 text-right font-medium">Zeit</th>
+                  <th className="px-3 py-1.5 text-right font-medium">Betrag</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {zusammentragenWochen.map((w) => (
+                  <tr key={`zt-${w.kw}`} className="hover:bg-gray-50">
+                    <td className="px-3 py-1.5 font-mono">KW {w.kw}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">{w.anzTeilgebiete}</td>
+                    {hatVorarbeit && (
+                      <td className="px-3 py-1.5 text-right font-mono">{w.lohnVorarbeit > 0 ? eur(w.lohnVorarbeit) : '—'}</td>
+                    )}
+                    <td className="px-3 py-1.5 text-right font-mono">{w.stunden > 0 ? stdMin(w.stunden) : '—'}</td>
+                    <td className="px-3 py-1.5 text-right font-mono font-semibold">{eur(w.lohnZusammentragen + w.lohnVorarbeit)}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                ))}
+                <tr className="bg-blue-50 border-t-2 border-blue-200 font-semibold text-blue-900">
+                  <td className="px-3 py-2" colSpan={hatVorarbeit ? 3 : 2}>Summe Zusammentragen</td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {stdMin(zusammentragenWochen.reduce((s, w) => s + w.stunden, 0))}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono">{eur(er.zusammentragenGesamt)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
