@@ -95,7 +95,14 @@ function TourenInhalt() {
                   className="w-3 h-3 rounded-full shrink-0"
                   style={{ backgroundColor: tour.farbe }}
                 />
-                <span className="flex-1 text-left">{tour.name}</span>
+                <span className="flex-1 text-left">
+                  {tour.name}
+                  {tour.nichtImVerteilplan && (
+                    <span className="ml-2 text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-medium" title="Nicht im Verteilplan">
+                      🚫 Verteilplan
+                    </span>
+                  )}
+                </span>
                 <span className="text-xs text-gray-400">
                   {teilgebiete.filter((tg) => tg.tourId === tour.id && tg.isActive).length}
                 </span>
@@ -214,6 +221,7 @@ function TourForm({
     initial?.streckeFahrkostenKm != null ? String(initial.streckeFahrkostenKm) : ''
   );
   const [kartenLink, setKartenLink] = useState<string>(initial?.kartenLink ?? '');
+  const [nichtImVerteilplan, setNichtImVerteilplan] = useState(initial?.nichtImVerteilplan ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -242,9 +250,10 @@ function TourForm({
           farbe,
           streckeFahrkostenKm,
           kartenLink: kartenLinkValue || '',
+          nichtImVerteilplan,
         });
       } else {
-        const payload: Omit<Tour, 'id' | 'erstelltAm'> = { name, farbe };
+        const payload: Omit<Tour, 'id' | 'erstelltAm'> = { name, farbe, nichtImVerteilplan };
         if (streckeFahrkostenKm != null) payload.streckeFahrkostenKm = streckeFahrkostenKm;
         if (kartenLinkValue) payload.kartenLink = kartenLinkValue;
         await erstelleTour(payload);
@@ -349,6 +358,22 @@ function TourForm({
           überschreibbar.
         </p>
       </div>
+
+      <label className="flex items-start gap-2 text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={nichtImVerteilplan}
+          onChange={(e) => setNichtImVerteilplan(e.target.checked)}
+          disabled={!isAdmin}
+          className="rounded mt-0.5"
+        />
+        <span>
+          <span className="font-medium">🚫 NICHT im Verteilplan anzeigen</span>
+          <span className="block text-xs text-gray-600">
+            Tour samt aller Teilgebiete wird im Verteilplan/Bestellzettel ausgeblendet (für Kunden nicht buchbar).
+          </span>
+        </span>
+      </label>
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
 

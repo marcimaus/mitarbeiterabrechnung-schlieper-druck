@@ -391,6 +391,11 @@ export interface Tour {
    */
   fahrerplanungAusgeblendet?: boolean;
   /**
+   * Wenn true, erscheint die Tour (samt aller ihrer TGs) NICHT im
+   * Verteilplan/Bestellzettel — Gebiete, die Kunden nicht buchen können.
+   */
+  nichtImVerteilplan?: boolean;
+  /**
    * Standard-Karten-Link (z. B. Google My Maps) für alle TGs dieser Tour.
    * Wird vom Teilgebiete-Strassen-Tab als Default angezeigt; pro TG kann
    * der Admin diesen über `Teilgebiet.kartenLink` weiterhin überschreiben.
@@ -440,6 +445,11 @@ export interface Teilgebiet {
   tourId: string | null;
   standardAustraegerId: string | null;
   isActive: boolean;
+  /**
+   * Wenn true, erscheint das TG NICHT im Verteilplan/Bestellzettel —
+   * Gebiet, das Kunden nicht buchen können.
+   */
+  nichtImVerteilplan?: boolean;
   strassen: Strasse[];
   sonderauslagen: Sonderauslage[];
   nichtBeliefen: NichtBeliefen[];

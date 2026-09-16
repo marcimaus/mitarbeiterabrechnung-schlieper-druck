@@ -51,6 +51,7 @@ const DEFAULT_FORM: Omit<
   standardAustraegerId: null,
   isActive: true,
   istAuslagestelle: false,
+  nichtImVerteilplan: false,
 };
 
 const inputClass =
@@ -421,7 +422,14 @@ function TeilgebieteInhalt() {
             )}
             {gefiltert.map((tg) => (
               <tr key={tg.id} className={tg.isActive ? 'hover:bg-gray-50' : 'opacity-50 hover:bg-gray-50'}>
-                <td className="px-4 py-3 font-medium text-gray-900">{tg.name}</td>
+                <td className="px-4 py-3 font-medium text-gray-900">
+                  {tg.name}
+                  {tg.nichtImVerteilplan && (
+                    <span className="ml-2 text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-medium" title="Nicht im Verteilplan">
+                      🚫 Verteilplan
+                    </span>
+                  )}
+                </td>
                 <td className="px-4 py-3 text-gray-600">{tg.plz}</td>
                 <td className="px-4 py-3 text-right text-gray-600">
                   {tg.stueckzahl.toLocaleString('de-DE')}
@@ -876,6 +884,7 @@ function TeilgebietForm({
           standardAustraegerId: initial.standardAustraegerId,
           isActive: initial.isActive,
           istAuslagestelle: initial.istAuslagestelle ?? false,
+          nichtImVerteilplan: initial.nichtImVerteilplan ?? false,
           auslagestelleAdresse: initial.auslagestelleAdresse,
           auslagestelleKontaktName: initial.auslagestelleKontaktName,
           auslagestelleKontaktTelefon: initial.auslagestelleKontaktTelefon,
@@ -1363,6 +1372,22 @@ function TeilgebietForm({
               className="rounded"
             />
             Teilgebiet aktiv
+          </label>
+
+          <label className="flex items-start gap-2 text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.nichtImVerteilplan ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, nichtImVerteilplan: e.target.checked }))}
+              disabled={!isAdmin}
+              className="rounded mt-0.5"
+            />
+            <span>
+              <span className="font-medium">🚫 NICHT im Verteilplan anzeigen</span>
+              <span className="block text-xs text-gray-600">
+                Teilgebiet wird im Verteilplan/Bestellzettel ausgeblendet (für Kunden nicht buchbar).
+              </span>
+            </span>
           </label>
         </div>
       )}
