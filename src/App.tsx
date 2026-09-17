@@ -102,12 +102,14 @@ import { useNavigate } from 'react-router-dom';
 import AdminPinGate from './components/AdminPinGate';
 
 function AdminLoginPage() {
-  const { isAdminAuthenticated } = useApp();
+  const { isAdminAuthenticated, userRole } = useApp();
   const navigate = useNavigate();
 
+  // Nach der Anmeldung: Admin/Abrechnung starten in der Personalplanung,
+  // Mitarbeiter auf der Startroute (→ Stempeluhr).
   useEffect(() => {
-    if (isAdminAuthenticated) navigate('/');
-  }, [isAdminAuthenticated, navigate]);
+    if (isAdminAuthenticated) navigate(userRole === 'mitarbeiter' ? '/' : '/planung', { replace: true });
+  }, [isAdminAuthenticated, userRole, navigate]);
 
   return (
     <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>

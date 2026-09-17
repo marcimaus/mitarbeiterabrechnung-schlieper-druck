@@ -4,6 +4,7 @@ import AdminPinGate from '../components/AdminPinGate';
 import { speichereParameter } from '../lib/db';
 import { hashPin } from '../lib/auth';
 import type { Parameter } from '../types';
+import { BEILAGEN_PREIS_DEFAULTS, preisParameter } from '../lib/beilagenPreis';
 
 const STANDARD_PARAMETER: Omit<Parameter, 'adminPinHash' | 'adminName' | 'beilagenPreise'> = {
   laufgeschwindigkeitMProH: 5000,
@@ -67,6 +68,7 @@ function ParameterInhalt() {
     austragenNachIstZeit: false,
     zusammentragenNachIstZeit: false,
     bonusZeiterfassungEur: 0,
+    ...BEILAGEN_PREIS_DEFAULTS,
     adminName: adminName || '',
   });
   const [neueOption, setNeueOption] = useState('');
@@ -112,6 +114,7 @@ function ParameterInhalt() {
         austragenNachIstZeit: parameter.austragenNachIstZeit ?? false,
         zusammentragenNachIstZeit: parameter.zusammentragenNachIstZeit ?? false,
         bonusZeiterfassungEur: parameter.bonusZeiterfassungEur ?? 0,
+        ...preisParameter(parameter),
         adminName: parameter.adminName || '',
       }));
     }
@@ -399,6 +402,77 @@ function ParameterInhalt() {
                 step="0.01"
                 value={form.gewichtszulageBeilagenEurKg}
                 onChange={(e) => setForm((f) => ({ ...f, gewichtszulageBeilagenEurKg: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+        </Section>
+
+        {/* Verkaufspreise Beilagenverteilung */}
+        <Section title="Beilagen-Verkaufspreise (netto, je 1.000 Stück)">
+          <p className="text-xs text-gray-500 -mt-1">
+            Grundlage der Preisermittlung im Bestellformular (Verteilplan & Bestellungen).
+            Alle Preise netto, also ohne Umsatzsteuer.
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Standardformat A4, bis 20g" hint="Standard: 45,00 €">
+              <input
+                type="number" min="0" step="0.01"
+                value={form.beilagenPreisA4EurProTausend}
+                onChange={(e) => setForm((f) => ({ ...f, beilagenPreisA4EurProTausend: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Kleiner A4, bis A5, bis 20g" hint="Standard: 54,00 €">
+              <input
+                type="number" min="0" step="0.01"
+                value={form.beilagenPreisA5EurProTausend}
+                onChange={(e) => setForm((f) => ({ ...f, beilagenPreisA5EurProTausend: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Kleiner A5, bis 20g" hint="Standard: 60,00 €">
+              <input
+                type="number" min="0" step="0.01"
+                value={form.beilagenPreisKleinerA5EurProTausend}
+                onChange={(e) => setForm((f) => ({ ...f, beilagenPreisKleinerA5EurProTausend: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field
+              label="Nicht einlegbar, bis 20g"
+              hint="Standard: 65,00 € — gilt für Beilagen mit Kennzeichen „Einlegen: Extern“ (werden vom Austräger zugestellt)"
+            >
+              <input
+                type="number" min="0" step="0.01"
+                value={form.beilagenPreisNichtEinlegbarEurProTausend}
+                onChange={(e) => setForm((f) => ({ ...f, beilagenPreisNichtEinlegbarEurProTausend: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <Field label="Jedes weitere angefangene 1g" hint="Standard: 1,50 €">
+              <input
+                type="number" min="0" step="0.01"
+                value={form.beilagenZuschlagJeGrammEurProTausend}
+                onChange={(e) => setForm((f) => ({ ...f, beilagenZuschlagJeGrammEurProTausend: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Freigrenze (g/Stk)" hint="Standard: 20 g">
+              <input
+                type="number" min="0" step="1"
+                value={form.beilagenFreigrenzeG}
+                onChange={(e) => setForm((f) => ({ ...f, beilagenFreigrenzeG: num(e.target.value) }))}
+                className={inputClass}
+              />
+            </Field>
+            <Field label="Umsatzsteuer (%)" hint="Standard: 19 % — nur für die Brutto-Anzeige">
+              <input
+                type="number" min="0" step="0.1"
+                value={form.umsatzsteuerProzent}
+                onChange={(e) => setForm((f) => ({ ...f, umsatzsteuerProzent: num(e.target.value) }))}
                 className={inputClass}
               />
             </Field>

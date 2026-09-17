@@ -22,14 +22,22 @@ import {
   kwLabel,
   formatDonnerstag,
 } from '../lib/kalender';
-import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, Einsatz } from '../types';
+import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, BeilagenVorlage, Einsatz } from '../types';
 import { effektiverStandardAustraegerId } from '../utils';
-
-const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
-  { value: 'A4', label: 'DIN A4' },
-  { value: 'A5', label: 'DIN A5' },
-  { value: 'kleinerA5', label: 'Kleiner als A5' },
-];
+import { Link, useSearchParams } from 'react-router-dom';
+import { beilagenVorlagenListener, erstelleBeilagenVorlage } from '../lib/db';
+import {
+  BEILAGEN_FORMATE,
+  auswahlStruktur,
+  formatLabel,
+  kwAuswahlOptionen,
+  stueckzahlVon,
+  vorlageKwLabel,
+  vorlageLink,
+  vorlageTeilgebietIds,
+  vorlageUebernahmeVermerken,
+  vorlageUebernommenFuer,
+} from '../lib/beilagenVorlagen';
 
 export default function AusgabenScreen() {
   return (
@@ -93,6 +101,7 @@ function AusgabenListe() {
   const [editTarget, setEditTarget] = useState<Ausgabe | null>(null);
   const [filterJahr, setFilterJahr] = useState(new Date().getFullYear());
   const [filterPeriodeId, setFilterPeriodeId] = useState<string | 'alle'>('alle');
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
     // Lade Ausgaben und Perioden parallel; lege fehlende Ausgaben für Periode-KWs automatisch an
@@ -140,9 +149,13 @@ function AusgabenListe() {
       setAusgaben(alle);
       setLoading(false);
       if (alle.length > 0) {
-        // Bevorzugt die Ausgabe der aktuellen Kalenderwoche; sonst die jüngste.
+        // Bevorzugt die per Link übergebene KW (?kw=&jahr=), dann die Ausgabe
+        // der aktuellen Kalenderwoche; sonst die jüngste.
         const heute = getCurrentKW();
+        const linkKw = Number(searchParams.get('kw'));
+        const linkJahr = Number(searchParams.get('jahr'));
         const aktuell =
+          alle.find((a) => a.jahr === linkJahr && a.kw === linkKw) ??
           alle.find((a) => a.jahr === heute.jahr && a.kw === heute.kw) ?? alle[0];
         setFilterJahr(aktuell.jahr);
         setSelected(aktuell);
@@ -1067,8 +1080,16 @@ function BeilagenVerwaltung({
   const { teilgebiete } = useApp();
   const [beilagen, setBeilagen] = useState<Beilage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
+  // Dialog-Schritte: Vorlagenauswahl → Formular (leer oder aus Vorlage)
+  const [dialog, setDialog] = useState<null | 'auswahl' | 'form'>(null);
   const [editTarget, setEditTarget] = useState<Beilage | null>(null);
+  const [gewaehlteVorlage, setGewaehlteVorlage] = useState<BeilagenVorlage | null>(null);
+  const [alsVorlageBeilage, setAlsVorlageBeilage] = useState<Beilage | null>(null);
+  // null = noch nicht geladen → Auswahldialog trotzdem zeigen (mit Ladehinweis).
+  const [vorlagenGeladen, setVorlagenGeladen] = useState<BeilagenVorlage[] | null>(null);
+  const vorlagen = vorlagenGeladen ?? [];
+  useEffect(() => beilagenVorlagenListener(setVorlagenGeladen), []);
+  const hatAuswaehlbareVorlagen = vorlagenGeladen === null || vorlagen.some((v) => !v.archiviert);
 
   useEffect(() => {
     setLoading(true);
@@ -1083,6 +1104,18 @@ function BeilagenVerwaltung({
     await loescheBeilage(id);
     setBeilagen((prev) => prev.filter((b) => b.id !== id));
     onBeilagenChange?.();
+  }
+
+  function neueBeilage() {
+    setEditTarget(null);
+    setGewaehlteVorlage(null);
+    // Ohne auswählbare Vorlagen direkt zum leeren Formular.
+    setDialog(hatAuswaehlbareVorlagen ? 'auswahl' : 'form');
+  }
+
+  function schliessen() {
+    setDialog(null);
+    setGewaehlteVorlage(null);
   }
 
   const gesamtgewichtKg = (b: Beilage) => {
@@ -1106,7 +1139,7 @@ function BeilagenVerwaltung({
         </h3>
         {!istGesperrt && (
           <button
-            onClick={() => { setEditTarget(null); setShowForm(true); }}
+            onClick={neueBeilage}
             className="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
           >
             + Beilage hinzufügen
@@ -1121,55 +1154,95 @@ function BeilagenVerwaltung({
       )}
 
       <div className="space-y-2">
-        {beilagen.map((b) => (
-          <div key={b.id} className="border border-gray-200 rounded-lg p-3">
-            <div className="flex items-start justify-between">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="font-medium text-sm text-gray-800">{b.arbeitstitel}</span>
-                  <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    b.kennzeichen === 'int' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
-                  }`}>
-                    {b.kennzeichen === 'int' ? 'intern' : 'extern'}
-                  </span>
-                  <span className="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{b.format}</span>
+        {beilagen.map((b) => {
+          const vorlage = b.vorlageId ? vorlagen.find((v) => v.id === b.vorlageId) : undefined;
+          return (
+            <div key={b.id} className="border border-gray-200 rounded-lg p-3">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-medium text-sm text-gray-800">{b.arbeitstitel}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      b.kennzeichen === 'int' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-700'
+                    }`}>
+                      {b.kennzeichen === 'int' ? 'intern' : 'extern'}
+                    </span>
+                    <span className="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{b.format}</span>
+                    {vorlage && (
+                      <Link
+                        to={vorlageLink(vorlage.id)}
+                        className="text-xs text-blue-600 hover:underline"
+                        title="Bestellung im Verteilplan ansehen"
+                      >
+                        📋 {vorlage.istDauervorlage ? 'Dauerbestellung' : 'Bestellung'}
+                      </Link>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Kunde: {b.kundenname} · {b.gewichtGStk} g/Stk · {b.teilgebietIds.length} Gebiete · ~{gesamtgewichtKg(b)} kg gesamt
+                  </div>
+                  {vorlage?.memo && (
+                    <div className="text-xs text-amber-800 mt-0.5">📝 {vorlage.memo}</div>
+                  )}
                 </div>
-                <div className="text-xs text-gray-500">
-                  Kunde: {b.kundenname} · {b.gewichtGStk} g/Stk · {b.teilgebietIds.length} Gebiete · ~{gesamtgewichtKg(b)} kg gesamt
+                <div className="flex gap-2 ml-3">
+                  {!vorlage && (
+                    <button
+                      onClick={() => setAlsVorlageBeilage(b)}
+                      className="text-xs text-green-700 hover:text-green-900"
+                      title="Diesen Auftrag als wiederverwendbare Bestellung speichern"
+                    >
+                      💾 Als Bestellung
+                    </button>
+                  )}
+                  {!istGesperrt && (
+                    <>
+                      <button
+                        onClick={() => { setEditTarget(b); setGewaehlteVorlage(null); setDialog('form'); }}
+                        className="text-xs text-blue-600 hover:text-blue-800"
+                      >
+                        Bearbeiten
+                      </button>
+                      <button
+                        onClick={() => handleLoeschen(b.id)}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        Löschen
+                      </button>
+                    </>
+                  )}
                 </div>
-              </div>
-              <div className="flex gap-2 ml-3">
-                {!istGesperrt && (
-                  <>
-                    <button
-                      onClick={() => { setEditTarget(b); setShowForm(true); }}
-                      className="text-xs text-blue-600 hover:text-blue-800"
-                    >
-                      Bearbeiten
-                    </button>
-                    <button
-                      onClick={() => handleLoeschen(b.id)}
-                      className="text-xs text-red-500 hover:text-red-700"
-                    >
-                      Löschen
-                    </button>
-                  </>
-                )}
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <Modal
-        isOpen={showForm}
-        onClose={() => setShowForm(false)}
-        title={editTarget ? 'Beilage bearbeiten' : 'Neue Beilage'}
+        isOpen={dialog === 'auswahl'}
+        onClose={schliessen}
+        title="Neue Beilage — Bestellung übernehmen?"
+        size="lg"
+      >
+        <VorlagenAuswahl
+          ausgabe={ausgabe}
+          vorlagen={vorlagenGeladen}
+          onWaehlen={(v) => { setGewaehlteVorlage(v); setDialog('form'); }}
+          onOhneVorlage={() => { setGewaehlteVorlage(null); setDialog('form'); }}
+        />
+      </Modal>
+
+      <Modal
+        isOpen={dialog === 'form'}
+        onClose={schliessen}
+        title={editTarget ? 'Beilage bearbeiten' : gewaehlteVorlage ? 'Neue Beilage aus Bestellung' : 'Neue Beilage'}
         size="lg"
       >
         <BeilageForm
+          key={editTarget?.id ?? gewaehlteVorlage?.id ?? 'neu'}
           initial={editTarget}
-          ausgabeId={ausgabe.id}
+          vorlage={gewaehlteVorlage}
+          ausgabe={ausgabe}
           onSave={(b) => {
             setBeilagen((prev) => {
               const idx = prev.findIndex((x) => x.id === b.id);
@@ -1177,11 +1250,266 @@ function BeilagenVerwaltung({
               return [...prev, b];
             });
             onBeilagenChange?.();
-            setShowForm(false);
+            schliessen();
           }}
-          onCancel={() => setShowForm(false)}
+          // Bei neuer Beilage führt „Abbrechen" zurück zur Vorlagenauswahl.
+          onCancel={() => (!editTarget && hatAuswaehlbareVorlagen ? setDialog('auswahl') : schliessen())}
+          abbrechenLabel={!editTarget && hatAuswaehlbareVorlagen ? '← Zurück zur Bestellungsauswahl' : 'Abbrechen'}
         />
       </Modal>
+
+      <Modal
+        isOpen={alsVorlageBeilage !== null}
+        onClose={() => setAlsVorlageBeilage(null)}
+        title="Als Bestellung speichern"
+        size="md"
+      >
+        {alsVorlageBeilage && (
+          <AlsVorlageSpeichernForm
+            beilage={alsVorlageBeilage}
+            onDone={() => setAlsVorlageBeilage(null)}
+          />
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+// ---- Vorlagenauswahl beim Hinzufügen einer Beilage -----------
+
+function VorlagenAuswahl({
+  ausgabe,
+  vorlagen,
+  onWaehlen,
+  onOhneVorlage,
+}: {
+  ausgabe: Ausgabe;
+  /** null = lädt noch */
+  vorlagen: BeilagenVorlage[] | null;
+  onWaehlen: (v: BeilagenVorlage) => void;
+  onOhneVorlage: () => void;
+}) {
+  const [suche, setSuche] = useState('');
+
+  const s = suche.trim().toLowerCase();
+  const treffer = (vorlagen ?? [])
+    .filter((v) => !v.archiviert)
+    .filter((v) => !s || [v.arbeitstitel, v.kundenname, v.memo].some((x) => x?.toLowerCase().includes(s)))
+    .sort((a, b) =>
+      (a.arbeitstitel || a.kundenname).localeCompare(b.arbeitstitel || b.kundenname, 'de', { numeric: true }),
+    );
+  const istDieseKw = (v: BeilagenVorlage) => v.kw === ausgabe.kw && v.jahr === ausgabe.jahr;
+  const fuerDieseKw = treffer.filter((v) => !v.istDauervorlage && istDieseKw(v));
+  const dauer = treffer.filter((v) => v.istDauervorlage);
+  const andere = treffer
+    .filter((v) => !v.istDauervorlage && !istDieseKw(v))
+    .sort((a, b) => (a.jahr ?? 9999) - (b.jahr ?? 9999) || (a.kw ?? 99) - (b.kw ?? 99));
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-600">
+        Bestellung wählen — Teilgebiete und Stückzahlen werden nach dem <b>aktuellen Verteilplan</b> übernommen
+        und können vor dem Hinzufügen noch angepasst werden.
+      </p>
+      <div className="flex gap-2">
+        <input
+          type="search"
+          value={suche}
+          onChange={(e) => setSuche(e.target.value)}
+          placeholder="Bestellung suchen (Titel, Kunde, Memo) …"
+          className={inputClass}
+          autoFocus
+        />
+        <button
+          type="button"
+          onClick={onOhneVorlage}
+          className="shrink-0 px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+        >
+          Ohne Bestellung (leer) →
+        </button>
+      </div>
+      <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1">
+        <VorlagenGruppe titel={`Bestellt für KW ${ausgabe.kw}/${ausgabe.jahr}`} liste={fuerDieseKw} ausgabe={ausgabe} onWaehlen={onWaehlen} hervorheben />
+        <VorlagenGruppe titel="Dauerbestellungen" liste={dauer} ausgabe={ausgabe} onWaehlen={onWaehlen} />
+        <VorlagenGruppe titel="Weitere Bestellungen" liste={andere} ausgabe={ausgabe} onWaehlen={onWaehlen} />
+        {vorlagen === null ? (
+          <p className="text-sm text-gray-400">Bestellungen werden geladen …</p>
+        ) : treffer.length === 0 && (
+          <p className="text-sm text-gray-400">Keine passende Bestellung gefunden.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VorlagenGruppe({
+  titel,
+  liste,
+  ausgabe,
+  onWaehlen,
+  hervorheben,
+}: {
+  titel: string;
+  liste: BeilagenVorlage[];
+  ausgabe: Ausgabe;
+  onWaehlen: (v: BeilagenVorlage) => void;
+  hervorheben?: boolean;
+}) {
+  const { teilgebiete, touren } = useApp();
+  if (liste.length === 0) return null;
+  return (
+    <div>
+      <div className={`text-xs font-semibold uppercase mb-1.5 ${hervorheben ? 'text-green-700' : 'text-gray-500'}`}>
+        {titel} ({liste.length})
+      </div>
+      <div className="space-y-1.5">
+        {liste.map((v) => {
+          const tgIds = vorlageTeilgebietIds(v, teilgebiete, touren);
+          const stk = stueckzahlVon(tgIds, teilgebiete);
+          const schonUebernommen = vorlageUebernommenFuer(v, ausgabe.kw, ausgabe.jahr);
+          return (
+            <div
+              key={v.id}
+              className={`border rounded-lg px-3 py-2 flex items-start gap-3 ${hervorheben ? 'border-green-300 bg-green-50' : 'border-gray-200'}`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5 text-sm">
+                  <span className="font-medium text-gray-900">{v.arbeitstitel || '(ohne Arbeitstitel)'}</span>
+                  {v.kundenname && <span className="text-gray-500">· {v.kundenname}</span>}
+                  <span className={`text-[11px] px-1.5 py-0.5 rounded ${v.kennzeichen === 'ext' ? 'bg-orange-100 text-orange-700' : 'bg-purple-100 text-purple-700'}`}>
+                    {v.kennzeichen === 'ext' ? 'extern' : 'intern'}
+                  </span>
+                  {v.format && (
+                    <span className="text-[11px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{formatLabel(v.format)}</span>
+                  )}
+                  {!v.istDauervorlage && <span className="text-[11px] text-gray-500">{vorlageKwLabel(v)}</span>}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {tgIds.length} Teilgebiete · {stk.toLocaleString('de-DE')} Stk (aktuell)
+                  {v.gewichtGStk > 0 && ` · ${v.gewichtGStk.toLocaleString('de-DE')} g/Stk`}
+                </div>
+                {v.memo && <div className="text-xs text-amber-800 mt-0.5 truncate" title={v.memo}>📝 {v.memo}</div>}
+                {schonUebernommen && (
+                  <div className="text-xs text-red-600 mt-0.5">⚠ Für diese KW bereits in einen Auftrag übernommen</div>
+                )}
+              </div>
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onWaehlen(v)}
+                  className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium hover:bg-blue-700"
+                >
+                  Übernehmen
+                </button>
+                <a
+                  href={vorlageLink(v.id)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] text-blue-600 hover:underline"
+                >
+                  ansehen ↗
+                </a>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---- Bestehende Beilage als Vorlage speichern ----------------
+
+function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone: () => void }) {
+  const { teilgebiete, touren } = useApp();
+  const [istDauervorlage, setIstDauervorlage] = useState(true);
+  const [kwKey, setKwKey] = useState('');
+  const [memo, setMemo] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+
+  async function speichern() {
+    setSaving(true);
+    setError('');
+    try {
+      const [j, k] = !istDauervorlage && kwKey ? kwKey.split('-').map(Number) : [null, null];
+      await erstelleBeilagenVorlage({
+        arbeitstitel: beilage.arbeitstitel,
+        kundenname: beilage.kundenname,
+        kw: k,
+        jahr: j,
+        format: beilage.format,
+        kennzeichen: beilage.kennzeichen,
+        gewichtGStk: beilage.gewichtGStk,
+        memo: memo.trim() || undefined,
+        ...auswahlStruktur(beilage.teilgebietIds, teilgebiete, touren),
+        istDauervorlage,
+        archiviert: false,
+        uebernahmen: [],
+        quelle: 'beilage',
+      });
+      onDone();
+    } catch (err) {
+      console.error(err);
+      setError('Fehler beim Speichern.');
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-600">
+        „{beilage.arbeitstitel}" ({beilage.kundenname}, {beilage.teilgebietIds.length} Teilgebiete) wird als
+        Bestellung gespeichert und steht bei „Beilage hinzufügen" und im Verteilplan zur Verfügung.
+      </p>
+      <label className="flex items-start gap-2 text-sm cursor-pointer">
+        <input
+          type="checkbox"
+          checked={istDauervorlage}
+          onChange={(e) => setIstDauervorlage(e.target.checked)}
+          className="w-4 h-4 mt-0.5"
+        />
+        <span>
+          Dauerbestellung
+          <span className="block text-xs text-gray-500">wiederkehrender Auftrag — wird nach Übernahme nicht archiviert</span>
+        </span>
+      </label>
+      {!istDauervorlage && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Kalenderwoche (optional)</label>
+          <select value={kwKey} onChange={(e) => setKwKey(e.target.value)} className={inputClass}>
+            <option value="">— keine —</option>
+            {kwAuswahlOptionen(kwKey).map((g) => (
+              <optgroup key={g.jahr} label={String(g.jahr)}>
+                {g.kws.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        </div>
+      )}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Memo</label>
+        <textarea
+          value={memo}
+          onChange={(e) => setMemo(e.target.value)}
+          rows={3}
+          className={inputClass}
+          placeholder="Besonderheiten zum Auftrag"
+        />
+      </div>
+      {error && <p className="text-red-600 text-sm">{error}</p>}
+      <div className="flex justify-end gap-3">
+        <button type="button" onClick={onDone} className="px-4 py-2 text-sm text-gray-600">Abbrechen</button>
+        <button
+          type="button"
+          onClick={speichern}
+          disabled={saving}
+          className="bg-green-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
+        >
+          {saving ? 'Speichere...' : '💾 Bestellung speichern'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -1190,23 +1518,33 @@ function BeilagenVerwaltung({
 
 function BeilageForm({
   initial,
-  ausgabeId,
+  vorlage,
+  ausgabe,
   onSave,
   onCancel,
+  abbrechenLabel = 'Abbrechen',
 }: {
   initial: Beilage | null;
-  ausgabeId: string;
+  /** Neue Beilage aus dieser Vorlage vorbelegen (nur wenn `initial` leer). */
+  vorlage?: BeilagenVorlage | null;
+  ausgabe: Ausgabe;
   onSave: (b: Beilage) => void;
   onCancel: () => void;
+  abbrechenLabel?: string;
 }) {
+  const ausgabeId = ausgabe.id;
   const { teilgebiete, touren } = useApp();
-  const [arbeitstitel, setArbeitstitel] = useState(initial?.arbeitstitel ?? '');
-  const [kundenname, setKundenname] = useState(initial?.kundenname ?? '');
-  const [gewicht, setGewicht] = useState(initial?.gewichtGStk ?? 0);
-  const [format, setFormat] = useState<BeilagenFormat>(initial?.format ?? 'A4');
-  const [kennzeichen, setKennzeichen] = useState<BeilagenKennzeichen>(initial?.kennzeichen ?? 'int');
+  const quelle = initial ? null : vorlage ?? null;
+  const [arbeitstitel, setArbeitstitel] = useState(initial?.arbeitstitel ?? quelle?.arbeitstitel ?? '');
+  const [kundenname, setKundenname] = useState(initial?.kundenname ?? quelle?.kundenname ?? '');
+  const [gewicht, setGewicht] = useState(initial?.gewichtGStk ?? quelle?.gewichtGStk ?? 0);
+  const [format, setFormat] = useState<BeilagenFormat>(initial?.format ?? (quelle?.format || 'A4'));
+  const [kennzeichen, setKennzeichen] = useState<BeilagenKennzeichen>(
+    initial?.kennzeichen ?? quelle?.kennzeichen ?? 'int'
+  );
+  // Aus der Vorlage: aktuell gültige Teilgebiete laut Verteilplan.
   const [ausgewaehlteTeilgebiete, setAusgewaehlteTeilgebiete] = useState<string[]>(
-    initial?.teilgebietIds ?? []
+    () => initial?.teilgebietIds ?? (quelle ? vorlageTeilgebietIds(quelle, teilgebiete, touren) : [])
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1258,6 +1596,10 @@ function BeilageForm({
     }
   }
 
+  const vorlageStueckzahlAktuell = quelle
+    ? stueckzahlVon(vorlageTeilgebietIds(quelle, teilgebiete, touren), teilgebiete)
+    : 0;
+
   const gesamtStueckzahl = ausgewaehlteTeilgebiete.reduce((sum, id) => {
     return sum + (teilgebiete.find((t) => t.id === id)?.stueckzahl ?? 0);
   }, 0);
@@ -1283,8 +1625,12 @@ function BeilageForm({
         await aktualisiereBeilage(initial.id, data);
         onSave({ ...initial, ...data });
       } else {
-        const id = await erstelleBeilage(data);
-        onSave({ id, ...data, erstelltAm: Date.now() });
+        const neu = { ...data, ...(quelle ? { vorlageId: quelle.id } : {}) };
+        const id = await erstelleBeilage(neu);
+        const beilage: Beilage = { id, ...neu, erstelltAm: Date.now() };
+        // Übernahme an der Vorlage vermerken; Nicht-Dauervorlagen → Archiv.
+        if (quelle) await vorlageUebernahmeVermerken(quelle, beilage, ausgabe);
+        onSave(beilage);
       }
     } catch (err) {
       setError('Fehler beim Speichern.');
@@ -1296,6 +1642,27 @@ function BeilageForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {quelle && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-xs text-blue-900 space-y-0.5">
+          <div>
+            📋 Aus Bestellung <b>{quelle.arbeitstitel || quelle.kundenname}</b>
+            {quelle.istDauervorlage
+              ? ' (Dauerbestellung — bleibt nach dem Hinzufügen verfügbar).'
+              : ' — wird nach dem Hinzufügen archiviert.'}{' '}
+            <a href={vorlageLink(quelle.id)} target="_blank" rel="noreferrer" className="underline">ansehen ↗</a>
+          </div>
+          {quelle.stueckzahlGespeichert != null && quelle.stueckzahlGespeichert !== vorlageStueckzahlAktuell && (
+            <div>
+              ℹ Stückzahl beim Speichern der Bestellung {quelle.stueckzahlGespeichert.toLocaleString('de-DE')} — nach
+              aktuellem Verteilplan {vorlageStueckzahlAktuell.toLocaleString('de-DE')}.
+            </div>
+          )}
+          {quelle.memo && <div className="text-amber-900 whitespace-pre-line">📝 {quelle.memo}</div>}
+          {vorlageUebernommenFuer(quelle, ausgabe.kw, ausgabe.jahr) && (
+            <div className="text-red-700">⚠ Diese Bestellung wurde für diese KW bereits übernommen.</div>
+          )}
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Arbeitstitel *</label>
@@ -1477,7 +1844,7 @@ function BeilageForm({
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
       <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">Abbrechen</button>
+        <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">{abbrechenLabel}</button>
         <button
           type="submit"
           disabled={saving}

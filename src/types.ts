@@ -548,7 +548,62 @@ export interface Beilage {
   format: BeilagenFormat;
   kennzeichen: BeilagenKennzeichen;
   teilgebietIds: string[];    // welche Teilgebiete beliefert werden
+  /** Beilagen-Auftragsvorlage, aus der dieser Auftrag übernommen wurde. */
+  vorlageId?: string;
   erstelltAm: number;
+}
+
+// ---- Beilagen-Auftragsvorlage ------------------------------
+//
+// Bestellung aus dem Verteilplan (oder gespeicherter Beilagenauftrag), die
+// später in „Ausgaben & Beilagen" als Auftrag übernommen wird. Gespeichert
+// wird die Auswahl (Gesamtgebiet / ganze Touren / einzelne TGs) — bei der
+// Übernahme werden daraus die aktuell gültigen Teilgebiete und Stückzahlen
+// ermittelt (siehe lib/beilagenVorlagen.ts).
+
+export interface BeilagenVorlageUebernahme {
+  beilageId: string;
+  ausgabeId: string;
+  kw: number;
+  jahr: number;
+  am: number;
+}
+
+export interface BeilagenVorlage {
+  id: string;
+  arbeitstitel: string;
+  kundenname: string;
+  ansprechpartner?: string;
+  telefon?: string;
+  /** Bestelldatum ISO YYYY-MM-DD */
+  datum?: string;
+  /** Kalenderwoche der Verteilung — null = noch keine KW zugeordnet. */
+  kw: number | null;
+  jahr: number | null;
+  /** '' = noch nicht festgelegt */
+  format: BeilagenFormat;
+  kennzeichen: BeilagenKennzeichen;
+  /** Gramm je Stück — 0 = noch nicht bekannt */
+  gewichtGStk: number;
+  /** Notizen / Besonderheiten zum (Dauer-)Auftrag */
+  memo?: string;
+  /** Gesamtgebiet gewählt → bei Übernahme alle aktuell buchbaren TGs. */
+  gesamtgebiet: boolean;
+  /** Vollständig gewählte Touren → bei Übernahme alle aktuell buchbaren TGs der Tour. */
+  tourIds: string[];
+  /** Alle beim Speichern gewählten Teilgebiete. */
+  teilgebietIds: string[];
+  /** Stückzahl der Auswahl zum Zeitpunkt der Speicherung (nur Info). */
+  stueckzahlGespeichert?: number;
+  /** Wiederkehrender Auftrag — wird bei Übernahme NICHT automatisch archiviert. */
+  istDauervorlage: boolean;
+  /** Archiviert: nicht mehr auswählbar, nur per Link einsehbar. */
+  archiviert: boolean;
+  archiviertAm?: number;
+  uebernahmen?: BeilagenVorlageUebernahme[];
+  quelle: 'verteilplan' | 'beilage';
+  erstelltAm: number;
+  aktualisiertAm: number;
 }
 
 // ---- Abrechnungsperiode (= Monat) --------------------------
@@ -927,6 +982,23 @@ export interface Parameter {
   abrechnungPinHash?: string;  // Zweiter PIN für "Mitarbeiter Abrechnung"-Rolle
   // Beilagenformate & Preise (JSON-serialisiert)
   beilagenPreise: BeilagenPreis[];
+  // ---- Verkaufspreise Beilagenverteilung (Bestellformular/Verteilplan) ----
+  // Alle Preise NETTO (ohne Umsatzsteuer) je angefangene 1.000 Stück,
+  // gültig für Beilagen bis zur Freigrenze (Standard 20 g/Stück).
+  /** „Beilage Standardformat A4, bis 20g" — Standard: 45,00 € */
+  beilagenPreisA4EurProTausend?: number;
+  /** „Beilage kleiner A4, bis A5, bis 20g" — Standard: 54,00 € */
+  beilagenPreisA5EurProTausend?: number;
+  /** „Beilage kleiner A5, bis 20g" — Standard: 60,00 € */
+  beilagenPreisKleinerA5EurProTausend?: number;
+  /** „Beilage nicht einlegbar bis 20g" (Kennzeichen extern) — Standard: 65,00 € */
+  beilagenPreisNichtEinlegbarEurProTausend?: number;
+  /** „Jedes weitere angefangene 1g" über der Freigrenze — Standard: 1,50 € */
+  beilagenZuschlagJeGrammEurProTausend?: number;
+  /** Gewichtsgrenze, bis zu der kein Zuschlag anfällt — Standard: 20 g */
+  beilagenFreigrenzeG?: number;
+  /** Umsatzsteuersatz für die Brutto-Anzeige — Standard: 19 % */
+  umsatzsteuerProzent?: number;
   // Abrechnungslogik: Plan-Zeit (false) oder Ist-Zeit (true)
   austragenNachIstZeit: boolean;
   zusammentragenNachIstZeit: boolean;

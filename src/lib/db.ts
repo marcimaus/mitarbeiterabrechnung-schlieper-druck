@@ -26,6 +26,7 @@ import type {
   Sondervereinbarung,
   Ausgabe,
   Beilage,
+  BeilagenVorlage,
   Abrechnungsperiode,
   Einsatz,
   Arbeitszeit,
@@ -420,6 +421,51 @@ export async function aktualisiereBeilage(
 
 export async function loescheBeilage(id: string): Promise<void> {
   await deleteDoc(doc(db, 'beilagen', id));
+}
+
+export function beilagenListener(cb: (list: Beilage[]) => void): Unsubscribe {
+  return onSnapshot(collection(db, 'beilagen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Beilage)));
+  });
+}
+
+// ---- Beilagen-Auftragsvorlagen -----------------------------
+
+export function beilagenVorlagenListener(cb: (list: BeilagenVorlage[]) => void): Unsubscribe {
+  return onSnapshot(collection(db, 'beilagenVorlagen'), (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as BeilagenVorlage)));
+  });
+}
+
+export async function ladeBeilagenVorlagen(): Promise<BeilagenVorlage[]> {
+  const snap = await getDocs(collection(db, 'beilagenVorlagen'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as BeilagenVorlage));
+}
+
+export async function erstelleBeilagenVorlage(
+  data: Omit<BeilagenVorlage, 'id' | 'erstelltAm' | 'aktualisiertAm'>
+): Promise<string> {
+  const ts = now();
+  const ref = await addDoc(collection(db, 'beilagenVorlagen'), {
+    ...stripUndef(data as Record<string, unknown>),
+    erstelltAm: ts,
+    aktualisiertAm: ts,
+  });
+  return ref.id;
+}
+
+export async function aktualisiereBeilagenVorlage(
+  id: string,
+  data: Partial<Omit<BeilagenVorlage, 'id'>>
+): Promise<void> {
+  await updateDoc(doc(db, 'beilagenVorlagen', id), {
+    ...undefAsDelete(data as Record<string, unknown>),
+    aktualisiertAm: now(),
+  });
+}
+
+export async function loescheBeilagenVorlage(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'beilagenVorlagen', id));
 }
 
 // ---- Auslieferungs-Memos -----------------------------------

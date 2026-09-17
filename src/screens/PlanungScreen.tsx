@@ -215,9 +215,17 @@ import {
   type Ausgabe,
   type AuditLog,
 } from '../types';
-import { ausgabenListener, ladeBeilagen, schreibeAuditLog, auditLogListener } from '../lib/db';
+import { ausgabenListener, beilagenListener, beilagenVorlagenListener, schreibeAuditLog, auditLogListener } from '../lib/db';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
-import type { Beilage } from '../types';
+import type { Beilage, BeilagenVorlage } from '../types';
+import { Link } from 'react-router-dom';
+import {
+  formatLabel,
+  stueckzahlVon,
+  vorlageLink,
+  vorlageTeilgebietIds,
+  vorlageUebernommenFuer,
+} from '../lib/beilagenVorlagen';
 
 const TAETIGKEITEN: DrucksaalTaetigkeit[] = [
   'drucken',
@@ -359,17 +367,15 @@ function PlanungContent() {
     return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
   }, [jahr]);
 
-  // Beilagen einmal global laden — wird für die Soll-Zeit-Berechnung
-  // pro KW gebraucht. Refetch nur, wenn sich die Ausgaben-Liste ändert
-  // (= jemand legt neue Ausgaben oder Beilagen an).
+  // Beilagen (live) — für die Soll-Zeit-Berechnung pro KW und die
+  // Beilagen-Sektion. Dazu die Auftragsvorlagen (bestellte Beilagen).
   const [alleBeilagen, setAlleBeilagen] = useState<Beilage[]>([]);
+  const [beilagenVorlagen, setBeilagenVorlagen] = useState<BeilagenVorlage[]>([]);
   useEffect(() => {
-    let abgebrochen = false;
-    ladeBeilagen().then((list) => {
-      if (!abgebrochen) setAlleBeilagen(list);
-    });
-    return () => { abgebrochen = true; };
-  }, [ausgaben.length]);
+    const u1 = beilagenListener(setAlleBeilagen);
+    const u2 = beilagenVorlagenListener(setBeilagenVorlagen);
+    return () => { u1(); u2(); };
+  }, []);
 
   // ---- Indizes für O(1)-Lookup in den Zellen ----
   const drucksaalIdx = useMemo(() => {
@@ -466,6 +472,33 @@ function PlanungContent() {
     for (const a of ausgaben) if (a.jahr === jahr) m.set(a.kw, a);
     return m;
   }, [ausgaben, jahr]);
+
+  // ---- Beilagen je KW ----
+  // Aufträge = erfasste Beilagen der Ausgabe (Exemplare sind da).
+  // Bestellt = nicht archivierte Bestellungen mit KW, die für diese KW noch
+  // nicht in einen Auftrag übernommen wurden (Exemplare noch nicht da).
+  const beilagenAuftraegeNachKw = useMemo(() => {
+    const kwNachAusgabeId = new Map<string, number>();
+    for (const a of ausgaben) if (a.jahr === jahr) kwNachAusgabeId.set(a.id, a.kw);
+    const m = new Map<number, Beilage[]>();
+    for (const b of alleBeilagen) {
+      const kw = kwNachAusgabeId.get(b.ausgabeId);
+      if (kw === undefined) continue;
+      m.set(kw, [...(m.get(kw) ?? []), b]);
+    }
+    for (const liste of m.values()) liste.sort((a, b) => a.arbeitstitel.localeCompare(b.arbeitstitel, 'de'));
+    return m;
+  }, [ausgaben, alleBeilagen, jahr]);
+
+  const beilagenBestelltNachKw = useMemo(() => {
+    const m = new Map<number, BeilagenVorlage[]>();
+    for (const v of beilagenVorlagen) {
+      if (v.archiviert || v.jahr !== jahr || v.kw == null) continue;
+      if (vorlageUebernommenFuer(v, v.kw, jahr)) continue;
+      m.set(v.kw, [...(m.get(v.kw) ?? []), v]);
+    }
+    return m;
+  }, [beilagenVorlagen, jahr]);
 
   // KWs, die jeweils die letzte KW ihres Monats sind → dort rechts eine
   // kräftige vertikale Trennlinie über alle Zeilen (siehe MonatsGrenzeContext).
@@ -754,14 +787,15 @@ function PlanungContent() {
   const [showFerienliste, setShowFerienliste] = useState(false);
 
   // ---- Klappzustand der Sektionen ----
-  // Drucksaal/Fahrer/Zusammenträger sind standardmäßig eingeklappt — diese
-  // werden seltener bearbeitet als Urlaub und Ausfälle.
+  // Alle Sektionen starten eingeklappt — außer „Teilgebiet dauerhaft
+  // unbesetzt / Standard-Wechsel".
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    beilagen: false,
     drucksaal: false,
     fahrer: false,
     urlaub: false,
     zusammen: false,
-    ausfaelle: true,
+    ausfaelle: false,
     wechsel: true,
   });
   const toggleSection = (key: string) =>
@@ -916,6 +950,111 @@ function PlanungContent() {
             }
             renderCell={(kw) => <FerienFeiertagZelle jahr={jahr} kw={kw} />}
           />
+
+          {/* ---- Beilagen ----
+              Aufträge (erfasste Beilagen, Exemplare da) und bestellte
+              Beilagen (Auftragsvorlagen mit KW, Exemplare noch nicht da).
+              Die Summenzeile bleibt auch eingeklappt sichtbar. */}
+          <SectionHeader
+            title="📰 Beilagen"
+            isOpen={openSections.beilagen}
+            onToggle={() => toggleSection('beilagen')}
+            extra={
+              <Link to="/verteilplan" className="text-[11px] text-gray-500 hover:text-blue-700 underline">
+                📋 Verteilplan / Bestellungen
+              </Link>
+            }
+          />
+          <TaetigkeitRow
+            label={<span className="text-[11px] text-gray-500 italic">Aufträge ✓ / bestellt ⏳ je KW</span>}
+            kws={kws}
+            renderCell={(kw) => {
+              const auftraege = beilagenAuftraegeNachKw.get(kw)?.length ?? 0;
+              const bestellt = beilagenBestelltNachKw.get(kw)?.length ?? 0;
+              if (auftraege === 0 && bestellt === 0) {
+                return <div className="text-[10px] text-gray-200 text-center py-1">·</div>;
+              }
+              return (
+                <button
+                  type="button"
+                  onClick={() => !openSections.beilagen && toggleSection('beilagen')}
+                  className="w-full flex justify-center gap-1 text-xs font-bold py-1"
+                  title={`${auftraege} Beilagenaufträge erfasst · ${bestellt} bestellt (Exemplare noch nicht da)`}
+                >
+                  {auftraege > 0 && <span className="px-1 rounded bg-green-100 text-green-800">✓ {auftraege}</span>}
+                  {bestellt > 0 && <span className="px-1 rounded bg-amber-100 text-amber-800">⏳ {bestellt}</span>}
+                </button>
+              );
+            }}
+          />
+          {openSections.beilagen && (
+            <>
+              <TaetigkeitRow
+                label="Aufträge"
+                sublabel="erfasst — Beilagen sind da"
+                kws={kws}
+                renderCell={(kw) => (
+                  <div className="flex flex-col gap-0.5">
+                    {(beilagenAuftraegeNachKw.get(kw) ?? []).map((b) => {
+                      const stk = stueckzahlVon(b.teilgebietIds, teilgebiete);
+                      return (
+                        <Link
+                          key={b.id}
+                          to={`/ausgaben?kw=${kw}&jahr=${jahr}`}
+                          className="block rounded border border-green-300 bg-green-50 hover:bg-green-100 px-1 py-0.5 text-[10px] leading-tight text-green-900"
+                          title={[
+                            b.arbeitstitel,
+                            `Kunde: ${b.kundenname}`,
+                            `${b.kennzeichen === 'ext' ? 'extern' : 'intern'} · ${formatLabel(b.format)} · ${b.gewichtGStk} g/Stk`,
+                            `${b.teilgebietIds.length} Teilgebiete · ${stk.toLocaleString('de-DE')} Stk`,
+                          ].join('\n')}
+                        >
+                          <div className="font-semibold truncate">{b.arbeitstitel || b.kundenname}</div>
+                          <div className="opacity-75">
+                            {b.kennzeichen === 'ext' ? 'ext' : 'int'} · {stk.toLocaleString('de-DE')}
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              />
+              <TaetigkeitRow
+                label="Bestellt"
+                sublabel="Bestellungen mit KW — Exemplare noch nicht da"
+                kws={kws}
+                renderCell={(kw) => (
+                  <div className="flex flex-col gap-0.5">
+                    {(beilagenBestelltNachKw.get(kw) ?? []).map((v) => {
+                      const stk = stueckzahlVon(vorlageTeilgebietIds(v, teilgebiete, touren), teilgebiete);
+                      return (
+                        <Link
+                          key={v.id}
+                          to={vorlageLink(v.id)}
+                          className="block rounded border border-dashed border-amber-400 bg-amber-50 hover:bg-amber-100 px-1 py-0.5 text-[10px] leading-tight text-amber-900"
+                          title={[
+                            v.arbeitstitel,
+                            v.kundenname && `Kunde: ${v.kundenname}`,
+                            [v.kennzeichen === 'ext' ? 'extern' : 'intern', formatLabel(v.format), v.gewichtGStk ? `${v.gewichtGStk} g/Stk` : '']
+                              .filter(Boolean).join(' · '),
+                            `${stk.toLocaleString('de-DE')} Stk (aktueller Verteilplan)`,
+                            v.istDauervorlage ? 'Dauerbestellung' : '',
+                            v.memo ? `Memo: ${v.memo}` : '',
+                          ].filter(Boolean).join('\n')}
+                        >
+                          <div className="font-semibold truncate">{v.arbeitstitel || v.kundenname || '(ohne Titel)'}</div>
+                          <div className="opacity-75">
+                            {v.kennzeichen === 'ext' ? 'ext' : 'int'} · {stk.toLocaleString('de-DE')}
+                            {v.memo && ' 📝'}
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              />
+            </>
+          )}
 
           {/* ---- Drucksaal ---- */}
           <SectionHeader

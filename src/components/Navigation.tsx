@@ -14,6 +14,12 @@ const NAV_ITEMS: NavItem[] = [
   // Startseite nur für Admin/Abrechnung — Mitarbeiter landen direkt auf der
   // Stempeluhr (Redirect in App.tsx).
   { to: '/', label: 'Start', icon: '🏠', roles: ['admin', 'abrechnung'] },
+  // Tagesgeschäft zuerst: Personalplanung ist zugleich die Startansicht
+  // nach der Anmeldung (siehe App.tsx).
+  { to: '/planung', label: 'Personalplanung', icon: '🗒', roles: ['admin', 'abrechnung'] },
+  { to: '/verteilplan', label: 'Verteilplan & Bestellungen', icon: '📋', roles: ['admin', 'abrechnung'] },
+  { to: '/ausgaben', label: 'Ausgaben & Beilagen', icon: '📄', roles: ['admin', 'abrechnung'] },
+  { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
   { to: '/zeiterfassung', label: 'Stempeluhr', icon: '⏱' },
   { to: '/fahrten', label: 'Fahrtkosten', icon: '🚗', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   // Zeitübersicht: für Mitarbeiter ebenfalls sichtbar — eingeschränkt auf
@@ -22,11 +28,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/mitarbeiter', label: 'Mitarbeiter & Interessenten', icon: '👥', roles: ['admin', 'abrechnung'] },
   { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin', 'abrechnung'] },
   { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin', 'abrechnung'] },
-  { to: '/ausgaben', label: 'Ausgaben & Beilagen', icon: '📄', roles: ['admin', 'abrechnung'] },
-  { to: '/planung', label: 'Personalplanung', icon: '🗒', roles: ['admin', 'abrechnung'] },
   { to: '/urlaub', label: 'Urlaub', icon: '🏖', roles: ['admin', 'abrechnung'] },
-  { to: '/einsaetze', label: 'Einsätze', icon: '🗓', roles: ['admin', 'abrechnung'] },
-  { to: '/verteilplan', label: 'Verteilplan', icon: '📋', roles: ['admin', 'abrechnung'] },
   { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   { to: '/reklamationen', label: 'Reklamationen', icon: '📞', roles: ['admin', 'abrechnung'] },
   // Abrechnung & Parameter: nur Admin. Lieferscheine: ausgeblendet, Druck

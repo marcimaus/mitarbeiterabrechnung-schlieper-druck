@@ -5,9 +5,27 @@
 // Ankreuzen oder ausgefüllt mit Auswahl und berechneten Summen.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
-import type { Teilgebiet, Tour } from '../types';
+import type { BeilagenFormat, BeilagenKennzeichen, BeilagenVorlage, Teilgebiet, Tour } from '../types';
+import {
+  beilagenVorlagenListener,
+  erstelleBeilagenVorlage,
+  aktualisiereBeilagenVorlage,
+  loescheBeilagenVorlage,
+} from '../lib/db';
+import {
+  BEILAGEN_FORMATE,
+  auswahlStruktur,
+  buchbareTeilgebiete,
+  formatLabel,
+  kwAuswahlOptionen,
+  vorlageKwLabel,
+  vorlageTeilgebietIds,
+} from '../lib/beilagenVorlagen';
+import { kwLabel } from '../lib/kalender';
+import { berechneBeilagenPreis, eur, type BeilagenPreisErgebnis } from '../lib/beilagenPreis';
 
 export default function VerteilplanScreen() {
   return (
@@ -35,13 +53,60 @@ interface PlzGruppe {
 }
 
 interface Kundendaten {
+  arbeitstitel: string;
   kundenname: string;
   ansprechpartner: string;
   telefon: string;
   datum: string;
-  kw: string;
-  format: string;
+  /** '' oder "jahr-kw" */
+  kwKey: string;
+  format: BeilagenFormat;
+  kennzeichen: BeilagenKennzeichen;
   gewichtGStk: string;
+  memo: string;
+  istDauervorlage: boolean;
+}
+
+const leereKundendaten = (): Kundendaten => ({
+  arbeitstitel: '',
+  kundenname: '',
+  ansprechpartner: '',
+  telefon: '',
+  datum: new Date().toISOString().slice(0, 10),
+  kwKey: '',
+  format: '',
+  kennzeichen: 'int',
+  gewichtGStk: '',
+  memo: '',
+  istDauervorlage: false,
+});
+
+function kwKeyParse(key: string): { kw: number | null; jahr: number | null } {
+  const m = /^(\d{4})-(\d{1,2})$/.exec(key);
+  return m ? { jahr: Number(m[1]), kw: Number(m[2]) } : { kw: null, jahr: null };
+}
+
+function kundendatenAusVorlage(v: BeilagenVorlage): Kundendaten {
+  return {
+    arbeitstitel: v.arbeitstitel ?? '',
+    kundenname: v.kundenname ?? '',
+    ansprechpartner: v.ansprechpartner ?? '',
+    telefon: v.telefon ?? '',
+    datum: v.datum ?? '',
+    kwKey: v.kw != null && v.jahr != null ? `${v.jahr}-${v.kw}` : '',
+    format: v.format ?? '',
+    kennzeichen: v.kennzeichen ?? 'int',
+    gewichtGStk: v.gewichtGStk ? String(v.gewichtGStk).replace('.', ',') : '',
+    memo: v.memo ?? '',
+    istDauervorlage: !!v.istDauervorlage,
+  };
+}
+
+const standVon = (k: Kundendaten, a: Set<string>) => JSON.stringify([k, [...a].sort()]);
+
+function vorlagenLabel(v: BeilagenVorlage): string {
+  const titel = [v.arbeitstitel, v.kundenname].filter(Boolean).join(' · ') || '(ohne Titel)';
+  return v.istDauervorlage ? titel : `${titel} — ${vorlageKwLabel(v)}`;
 }
 
 type Variante = 'blanko' | 'ausgefuellt';
@@ -72,29 +137,147 @@ function summeAuswahl(tgs: Teilgebiet[], auswahl: Set<string>): number {
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 function VerteilplanInhalt() {
-  const { teilgebiete, touren } = useApp();
+  const { teilgebiete, touren, parameter } = useApp();
 
-  const [kunde, setKunde] = useState<Kundendaten>({
-    kundenname: '',
-    ansprechpartner: '',
-    telefon: '',
-    datum: new Date().toISOString().slice(0, 10),
-    kw: '',
-    format: '',
-    gewichtGStk: '',
-  });
+  const [kunde, setKunde] = useState<Kundendaten>(leereKundendaten);
   const [auswahl, setAuswahl] = useState<Set<string>>(new Set());
   // Startansicht: alle Touren zugeklappt
   const [aufgeklappt, setAufgeklappt] = useState<Set<string>>(new Set());
   const [vorschau, setVorschau] = useState<Variante | null>(null);
 
+  // ---- Beilagen-Auftragsvorlagen ----
+  // Die geladene Vorlage steht in der URL (?vorlage=<id>) — so sind auch
+  // archivierte Vorlagen per Link einsehbar.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const vorlageId = searchParams.get('vorlage');
+  const [vorlagen, setVorlagen] = useState<BeilagenVorlage[] | null>(null);
+  const [speichern, setSpeichern] = useState(false);
+  const [meldung, setMeldung] = useState<{ text: string; fehler?: boolean } | null>(null);
+  useEffect(() => beilagenVorlagenListener(setVorlagen), []);
+  const aktiveVorlage = vorlageId ? vorlagen?.find((v) => v.id === vorlageId) ?? null : null;
+
+  // Stand beim Laden/Speichern — für den „ungespeichert"-Hinweis.
+  const [gespeicherterStand, setGespeicherterStand] = useState(() => standVon(leereKundendaten(), new Set()));
+  const geaendert = standVon(kunde, auswahl) !== gespeicherterStand;
+
+  // Vorlage aus der URL einmalig in den Bearbeitungszustand laden.
+  const geladeneVorlageId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!vorlageId) {
+      geladeneVorlageId.current = null;
+      return;
+    }
+    if (geladeneVorlageId.current === vorlageId || !vorlagen || teilgebiete.length === 0) return;
+    const v = vorlagen.find((x) => x.id === vorlageId);
+    if (!v) return;
+    geladeneVorlageId.current = vorlageId;
+    const k = kundendatenAusVorlage(v);
+    const a = new Set(vorlageTeilgebietIds(v, teilgebiete, touren));
+    setKunde(k);
+    setAuswahl(a);
+    setGespeicherterStand(standVon(k, a));
+    setMeldung(null);
+  }, [vorlageId, vorlagen, teilgebiete, touren]);
+
+  const auswaehlbareVorlagen = useMemo(() => {
+    const liste = (vorlagen ?? []).filter((v) => !v.archiviert);
+    const titelSort = (a: BeilagenVorlage, b: BeilagenVorlage) => nameSort(vorlagenLabel(a), vorlagenLabel(b));
+    return {
+      dauer: liste.filter((v) => v.istDauervorlage).sort(titelSort),
+      mitKw: liste
+        .filter((v) => !v.istDauervorlage && v.kw != null)
+        .sort((a, b) => (a.jahr ?? 0) - (b.jahr ?? 0) || (a.kw ?? 0) - (b.kw ?? 0) || titelSort(a, b)),
+      ohneKw: liste.filter((v) => !v.istDauervorlage && v.kw == null).sort(titelSort),
+    };
+  }, [vorlagen]);
+
+  function zuruecksetzen() {
+    setSearchParams({});
+    const k = leereKundendaten();
+    setKunde(k);
+    setAuswahl(new Set());
+    setGespeicherterStand(standVon(k, new Set()));
+  }
+
+  function vorlageOeffnen(id: string | null) {
+    if (geaendert && !confirm('Ungespeicherte Änderungen verwerfen?')) return;
+    setMeldung(null);
+    if (id) setSearchParams({ vorlage: id });
+    else zuruecksetzen();
+  }
+
+  async function vorlageSpeichern(alsNeu: boolean) {
+    if (!kunde.arbeitstitel.trim() && !kunde.kundenname.trim()) {
+      setMeldung({ text: 'Bitte Arbeitstitel oder Kundenname angeben.', fehler: true });
+      return;
+    }
+    const gewicht = parseFloat(kunde.gewichtGStk.replace(',', '.'));
+    const { kw, jahr } = kwKeyParse(kunde.kwKey);
+    const daten = {
+      arbeitstitel: kunde.arbeitstitel.trim(),
+      kundenname: kunde.kundenname.trim(),
+      ansprechpartner: kunde.ansprechpartner.trim() || undefined,
+      telefon: kunde.telefon.trim() || undefined,
+      datum: kunde.datum || undefined,
+      kw,
+      jahr,
+      format: kunde.format,
+      kennzeichen: kunde.kennzeichen,
+      gewichtGStk: Number.isFinite(gewicht) && gewicht > 0 ? gewicht : 0,
+      memo: kunde.memo.trim() || undefined,
+      istDauervorlage: kunde.istDauervorlage,
+      ...auswahlStruktur(auswahl, teilgebiete, touren),
+    };
+    setSpeichern(true);
+    try {
+      if (aktiveVorlage && !alsNeu) {
+        await aktualisiereBeilagenVorlage(aktiveVorlage.id, daten);
+        setMeldung({ text: 'Bestellung gespeichert.' });
+      } else {
+        const id = await erstelleBeilagenVorlage({
+          ...daten,
+          archiviert: false,
+          uebernahmen: [],
+          quelle: 'verteilplan',
+        });
+        geladeneVorlageId.current = id; // Zustand ist bereits aktuell
+        setSearchParams({ vorlage: id });
+        setMeldung({ text: 'Neue Bestellung angelegt.' });
+      }
+      setGespeicherterStand(standVon(kunde, auswahl));
+    } catch (err) {
+      console.error(err);
+      setMeldung({ text: 'Fehler beim Speichern.', fehler: true });
+    } finally {
+      setSpeichern(false);
+    }
+  }
+
+  async function archivSetzen(archiviert: boolean) {
+    if (!aktiveVorlage) return;
+    await aktualisiereBeilagenVorlage(aktiveVorlage.id, {
+      archiviert,
+      archiviertAm: archiviert ? Date.now() : undefined,
+    });
+    setMeldung({ text: archiviert ? 'Bestellung archiviert.' : 'Bestellung wieder aktiv.' });
+  }
+
+  async function vorlageLoeschen() {
+    if (!aktiveVorlage) return;
+    if (!confirm(`Bestellung „${vorlagenLabel(aktiveVorlage)}" endgültig löschen?`)) return;
+    await loescheBeilagenVorlage(aktiveVorlage.id);
+    zuruecksetzen();
+    setMeldung({ text: 'Bestellung gelöscht.' });
+  }
+
+  // KW-Auswahl ab kurz vor der aktuellen KW, unabhängig von angelegten Ausgaben.
+  const kwOptionen = useMemo(() => kwAuswahlOptionen(kunde.kwKey), [kunde.kwKey]);
+
   // Nicht buchbare Gebiete ausblenden: TG selbst markiert oder seine Tour markiert.
-  const aktiveTGs = useMemo(() => {
-    const gesperrteTouren = new Set(touren.filter((t) => t.nichtImVerteilplan).map((t) => t.id));
-    return teilgebiete
-      .filter((tg) => tg.isActive && !tg.nichtImVerteilplan && !(tg.tourId && gesperrteTouren.has(tg.tourId)))
-      .sort((a, b) => nameSort(a.name, b.name));
-  }, [teilgebiete, touren]);
+  const aktiveTGs = useMemo(
+    () => buchbareTeilgebiete(teilgebiete, touren).sort((a, b) => nameSort(a.name, b.name)),
+    [teilgebiete, touren],
+  );
 
   const tourGruppen: TourGruppe[] = useMemo(() => {
     const gruppen: TourGruppe[] = touren
@@ -129,6 +312,17 @@ function VerteilplanInhalt() {
 
   const gesamt = summe(aktiveTGs);
   const auswahlSumme = summeAuswahl(aktiveTGs, auswahl);
+  // Verkaufspreis der Bestellung laut Parametern (netto/brutto).
+  const gewichtZahl = parseFloat(kunde.gewichtGStk.replace(',', '.')) || 0;
+  const preis = berechneBeilagenPreis(
+    {
+      format: kunde.format,
+      kennzeichen: kunde.kennzeichen,
+      gewichtGStk: gewichtZahl,
+      stueckzahl: auswahlSumme,
+    },
+    parameter,
+  );
   const auswahlAnzahl = aktiveTGs.filter((tg) => auswahl.has(tg.id)).length;
 
   /** Setzt/entfernt eine Menge TGs: sind alle gewählt → abwählen, sonst alle wählen. */
@@ -168,6 +362,14 @@ function VerteilplanInhalt() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button
+            onClick={() => vorlageOeffnen(null)}
+            disabled={!aktiveVorlage && !geaendert}
+            className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50 disabled:opacity-40"
+            title="Alle Eingaben und die Auswahl zurücksetzen — für eine neue Bestellung"
+          >
+            🧹 Formular leeren
+          </button>
+          <button
             onClick={() => setVorschau('blanko')}
             className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
           >
@@ -182,12 +384,100 @@ function VerteilplanInhalt() {
         </div>
       </div>
 
-      {/* Kundendaten */}
-      <details className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 mb-4">
-        <summary className="text-xs font-semibold text-gray-500 uppercase cursor-pointer select-none">
-          Kundendaten für den ausgefüllten Plan
-        </summary>
+      {/* Beilagen-Auftragsvorlage */}
+      <div className="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-gray-500 uppercase mr-1">Bestellungen</span>
+          <select
+            value={aktiveVorlage && !aktiveVorlage.archiviert ? aktiveVorlage.id : ''}
+            onChange={(e) => vorlageOeffnen(e.target.value || null)}
+            className="flex-1 min-w-[14rem] border border-gray-300 rounded px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">
+              {aktiveVorlage?.archiviert ? `(archiviert) ${vorlagenLabel(aktiveVorlage)}` : '— neue Bestellung —'}
+            </option>
+            {auswaehlbareVorlagen.mitKw.length > 0 && (
+              <optgroup label="Bestellt für Kalenderwoche">
+                {auswaehlbareVorlagen.mitKw.map((v) => <option key={v.id} value={v.id}>{vorlagenLabel(v)}</option>)}
+              </optgroup>
+            )}
+            {auswaehlbareVorlagen.dauer.length > 0 && (
+              <optgroup label="Dauerbestellungen">
+                {auswaehlbareVorlagen.dauer.map((v) => <option key={v.id} value={v.id}>{vorlagenLabel(v)}</option>)}
+              </optgroup>
+            )}
+            {auswaehlbareVorlagen.ohneKw.length > 0 && (
+              <optgroup label="Ohne Kalenderwoche">
+                {auswaehlbareVorlagen.ohneKw.map((v) => <option key={v.id} value={v.id}>{vorlagenLabel(v)}</option>)}
+              </optgroup>
+            )}
+          </select>
+          <button
+            onClick={() => vorlageSpeichern(false)}
+            disabled={speichern || (!!aktiveVorlage && !geaendert)}
+            className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-40"
+          >
+            💾 Bestellung speichern
+          </button>
+          {aktiveVorlage && (
+            <>
+              <button
+                onClick={() => vorlageSpeichern(true)}
+                disabled={speichern}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40"
+                title="Aktuelle Eingaben als zusätzliche, neue Bestellung speichern"
+              >
+                Als neue Bestellung
+              </button>
+              <button
+                onClick={() => archivSetzen(!aktiveVorlage.archiviert)}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                {aktiveVorlage.archiviert ? '↩ Aus Archiv holen' : '🗄 Archivieren'}
+              </button>
+              <button
+                onClick={vorlageLoeschen}
+                className="px-3 py-1.5 text-sm text-red-600 hover:text-red-800"
+              >
+                Löschen
+              </button>
+            </>
+          )}
+        </div>
+        {vorlageId && vorlagen && !aktiveVorlage && (
+          <p className="mt-2 text-sm text-red-600">Die verlinkte Bestellung existiert nicht (mehr).</p>
+        )}
+        {aktiveVorlage?.archiviert && (
+          <p className="mt-2 text-sm bg-amber-50 border border-amber-200 text-amber-900 rounded px-3 py-1.5">
+            🗄 Archiviert{aktiveVorlage.archiviertAm ? ` am ${new Date(aktiveVorlage.archiviertAm).toLocaleDateString('de-DE')}` : ''} —
+            nicht mehr für neue Aufträge auswählbar, nur über diesen Link einsehbar.
+          </p>
+        )}
+        {aktiveVorlage && (aktiveVorlage.uebernahmen?.length ?? 0) > 0 && (
+          <p className="mt-2 text-xs text-gray-600">
+            In Aufträge übernommen:{' '}
+            {aktiveVorlage.uebernahmen!.map((u) => `${kwLabel(u.kw, u.jahr)} (${new Date(u.am).toLocaleDateString('de-DE')})`).join(', ')}
+          </p>
+        )}
+        {aktiveVorlage && aktiveVorlage.stueckzahlGespeichert != null && aktiveVorlage.stueckzahlGespeichert !== auswahlSumme && !geaendert && (
+          <p className="mt-2 text-xs text-blue-800">
+            ℹ Stückzahl beim Speichern: {nf(aktiveVorlage.stueckzahlGespeichert)} — nach aktuellem Verteilplan: {nf(auswahlSumme)}.
+          </p>
+        )}
+        {meldung && (
+          <p className={`mt-2 text-sm ${meldung.fehler ? 'text-red-600' : 'text-green-700'}`}>{meldung.text}</p>
+        )}
+        {geaendert && !meldung?.fehler && (
+          <p className="mt-2 text-xs text-amber-700">● Ungespeicherte Änderungen</p>
+        )}
+      </div>
+
+      {/* Auftragsdaten */}
+      <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 mb-4">
+        <div className="text-xs font-semibold text-gray-500 uppercase">Auftragsdaten</div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+          <Eingabe label="Arbeitstitel" value={kunde.arbeitstitel} placeholder="REWE Prospekt"
+            onChange={(v) => setKunde({ ...kunde, arbeitstitel: v })} />
           <Eingabe label="Kundenname / Firma" value={kunde.kundenname} placeholder="REWE Uslar GmbH"
             onChange={(v) => setKunde({ ...kunde, kundenname: v })} />
           <Eingabe label="Ansprechpartner" value={kunde.ansprechpartner} placeholder="Max Mustermann"
@@ -196,14 +486,106 @@ function VerteilplanInhalt() {
             onChange={(v) => setKunde({ ...kunde, telefon: v })} />
           <Eingabe label="Datum" type="date" value={kunde.datum}
             onChange={(v) => setKunde({ ...kunde, datum: v })} />
-          <Eingabe label="Kalenderwoche" value={kunde.kw} placeholder="KW 17/2026"
-            onChange={(v) => setKunde({ ...kunde, kw: v })} />
-          <Eingabe label="Format der Beilage" value={kunde.format} placeholder="DIN A4, DIN A5 …"
-            onChange={(v) => setKunde({ ...kunde, format: v })} />
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Kalenderwoche</label>
+            <select
+              value={kunde.kwKey}
+              onChange={(e) => setKunde({ ...kunde, kwKey: e.target.value })}
+              className={auswahlKlasse}
+            >
+              <option value="">— keine —</option>
+              {kwOptionen.map((j) => (
+                <optgroup key={j.jahr} label={String(j.jahr)}>
+                  {j.kws.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Format der Beilage</label>
+            <select
+              value={kunde.format}
+              onChange={(e) => setKunde({ ...kunde, format: e.target.value })}
+              className={auswahlKlasse}
+            >
+              <option value="">— offen —</option>
+              {BEILAGEN_FORMATE.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+            </select>
+          </div>
           <Eingabe label="Gewicht (g/Stk)" value={kunde.gewichtGStk} placeholder="28"
             onChange={(v) => setKunde({ ...kunde, gewichtGStk: v })} />
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Einlegen</label>
+            <div className="flex gap-1.5">
+              {(['int', 'ext'] as BeilagenKennzeichen[]).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setKunde({ ...kunde, kennzeichen: k })}
+                  className={`flex-1 py-1.5 text-xs rounded border ${
+                    kunde.kennzeichen === k ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300'
+                  }`}
+                  title={k === 'int' ? 'Wird im Betrieb eingelegt' : 'Austräger legt ein'}
+                >
+                  {k === 'int' ? '🏭 Intern' : '🚶 Extern'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="col-span-2 md:col-span-2">
+            <label className="block text-xs text-gray-500 mb-1">Memo (Besonderheiten zum Auftrag)</label>
+            <textarea
+              value={kunde.memo}
+              onChange={(e) => setKunde({ ...kunde, memo: e.target.value })}
+              rows={2}
+              className={`${auswahlKlasse} resize-y`}
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
+            <input
+              type="checkbox"
+              checked={kunde.istDauervorlage}
+              onChange={(e) => setKunde({ ...kunde, istDauervorlage: e.target.checked })}
+              className="w-4 h-4 accent-blue-600"
+            />
+            <span>
+              Dauerbestellung
+              <span className="block text-[11px] text-gray-500">wiederkehrend — wird nach Übernahme nicht archiviert</span>
+            </span>
+          </label>
         </div>
-      </details>
+      </div>
+
+      {/* Preisermittlung (Verkaufspreis laut Parametern) */}
+      <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 mb-4">
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          <span className="text-xs font-semibold text-emerald-800 uppercase">Preis der Bestellung</span>
+          <span className="text-sm text-emerald-900">
+            netto <b className="text-lg tabular-nums">{eur(preis.nettoEur)}</b>
+          </span>
+          <span className="text-sm text-emerald-900">
+            zzgl. {preis.ustProzent.toLocaleString('de-DE')} % USt {eur(preis.ustEur)}
+          </span>
+          <span className="text-sm text-emerald-900">
+            brutto <b className="text-lg tabular-nums">{eur(preis.bruttoEur)}</b>
+          </span>
+        </div>
+        <div className="text-xs text-emerald-900/80 mt-1">
+          {preis.basisLabel}: {eur(preis.basisEurProTausend)} je 1.000
+          {preis.zusatzGramm > 0 && (
+            <> · Gewichtszuschlag {preis.zusatzGramm} g über {preis.freigrenzeG} g: {eur(preis.zuschlagEurProTausend)} je 1.000</>
+          )}
+          {' '}· <b>{eur(preis.proTausendEur)} je 1.000</b> × {nf(auswahlSumme)} Stück
+        </div>
+        {(preis.unvollstaendig || auswahlSumme === 0 || gewichtZahl <= 0) && (
+          <div className="text-xs text-amber-800 mt-1">
+            ⚠ Noch unvollständig:
+            {preis.unvollstaendig && ' Format wählen.'}
+            {gewichtZahl <= 0 && ' Gewicht (g/Stk) eintragen — sonst ohne Gewichtszuschlag gerechnet.'}
+            {auswahlSumme === 0 && ' Teilgebiete auswählen.'}
+          </div>
+        )}
+      </div>
 
       {/* Auswahl-Leiste (klebt oben) */}
       <div className="sticky top-0 z-10 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 mb-3 flex flex-wrap items-center gap-x-5 gap-y-2 shadow-sm">
@@ -363,6 +745,7 @@ function VerteilplanInhalt() {
           plzGruppen={plzGruppen}
           aktiveTGs={aktiveTGs}
           auswahl={auswahl}
+          preis={preis}
           onVariante={setVorschau}
           onClose={() => setVorschau(null)}
         />
@@ -388,6 +771,9 @@ function Checkbox({ status, onChange, hell }: { status: Status; onChange: () => 
     />
   );
 }
+
+const auswahlKlasse =
+  'w-full border border-gray-300 rounded px-2 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500';
 
 function Eingabe({
   label, value, onChange, placeholder, type = 'text',
@@ -415,6 +801,8 @@ interface DruckProps {
   plzGruppen: PlzGruppe[];
   aktiveTGs: Teilgebiet[];
   auswahl: Set<string>;
+  /** Verkaufspreis der Auswahl — wird nur im ausgefüllten Plan gedruckt. */
+  preis: BeilagenPreisErgebnis;
 }
 
 function DruckVorschau(props: DruckProps & { onVariante: (v: Variante) => void; onClose: () => void }) {
@@ -437,7 +825,7 @@ function DruckVorschau(props: DruckProps & { onVariante: (v: Variante) => void; 
         @media screen {
           .vp-print-root { display: none; }
           .vp-sheet {
-            width: 210mm; min-height: 297mm; margin: 0 auto 16px; padding: 8mm 10mm;
+            width: 210mm; min-height: 297mm; margin: 0 auto 16px; padding: 10mm 20mm;
             background: white; box-shadow: 0 2px 12px rgba(0,0,0,.25); box-sizing: border-box;
           }
         }
@@ -447,14 +835,14 @@ function DruckVorschau(props: DruckProps & { onVariante: (v: Variante) => void; 
           body * { visibility: hidden !important; }
           .vp-print-root, .vp-print-root * { visibility: visible !important; }
           .vp-print-root { position: absolute !important; left: 0; top: 0; width: 100%; }
-          @page { size: A4 portrait; margin: 8mm 10mm; }
+          @page { size: A4 portrait; margin: 10mm 20mm; }
           .vp-sheet { width: auto; padding: 0; }
           .vp-t tr { break-inside: avoid; }
           .vp-tour-kopf { break-after: avoid; }
           .vp-block { break-inside: avoid; }
         }
         .vp-sheet { font-family: Arial, Helvetica, sans-serif; font-size: 7.5pt; line-height: 1.2; color: #111; }
-        table.vp-t { width: 100%; border-collapse: collapse; font-size: 7pt; line-height: 1.15; }
+        table.vp-t { width: 125mm; max-width: 100%; border-collapse: collapse; font-size: 7pt; line-height: 1.15; }
         table.vp-t th {
           background: #1d4ed8; color: white; font-size: 6.5pt; font-weight: bold;
           padding: 0.8mm 1.5mm; text-align: left;
@@ -510,7 +898,7 @@ function DruckVorschau(props: DruckProps & { onVariante: (v: Variante) => void; 
   );
 }
 
-function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs, auswahl }: DruckProps) {
+function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs, auswahl, preis }: DruckProps) {
   const voll = variante === 'ausgefuellt';
   const gesamt = summe(aktiveTGs);
   const gewGesamt = summeAuswahl(aktiveTGs, auswahl);
@@ -550,8 +938,8 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
         <DruckFeld label="Ansprechpartner" value={voll ? kunde.ansprechpartner : ''} />
         <DruckFeld label="Telefon" value={voll ? kunde.telefon : ''} />
         <DruckFeld label="Datum" value={datum} />
-        <DruckFeld label="Kalenderwoche" value={voll ? kunde.kw : ''} />
-        <DruckFeld label="Format / Gewicht (g/Stk)" value={voll ? [kunde.format, kunde.gewichtGStk && `${kunde.gewichtGStk} g`].filter(Boolean).join(' · ') : ''} />
+        <DruckFeld label="Kalenderwoche" value={voll && kunde.kwKey ? vorlageKwLabel(kwKeyParse(kunde.kwKey)) : ''} />
+        <DruckFeld label="Format / Gewicht (g/Stk)" value={voll ? [formatLabel(kunde.format), kunde.gewichtGStk && `${kunde.gewichtGStk} g`].filter(Boolean).join(' · ') : ''} />
       </div>
 
       <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '3px', padding: '0.8mm 2mm', marginBottom: '2mm', fontSize: '6.5pt', color: '#1e40af' }}>
@@ -619,7 +1007,7 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
       <div style={{ fontSize: '8.5pt', fontWeight: 'bold', margin: '3mm 0 1mm', breakAfter: 'avoid' }}>
         Summen je Postleitzahl
       </div>
-      <table className="vp-t">
+      <table className="vp-t" style={{ width: '100%' }}>
         <thead>
           <tr>
             <th className="c">✓</th>
@@ -651,8 +1039,54 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
         </tbody>
       </table>
 
+      {/* Preis — nur im ausgefüllten Plan (der Blanko-Bogen bleibt preisfrei) */}
+      {voll && (
+        <div className="vp-block" style={{ marginTop: '3mm' }}>
+          <div style={{ fontSize: '8.5pt', fontWeight: 'bold', marginBottom: '1mm' }}>Preis</div>
+          <table className="vp-t" style={{ width: '105mm' }}>
+            <tbody>
+              <tr>
+                <td>{preis.basisLabel}</td>
+                <td className="r" style={{ width: '30mm' }}>{eur(preis.basisEurProTausend)} je 1.000</td>
+              </tr>
+              {preis.zusatzGramm > 0 && (
+                <tr>
+                  <td>
+                    Jedes weitere angefangene 1g über {preis.freigrenzeG} g
+                    {kunde.gewichtGStk && ` (${kunde.gewichtGStk} g/Stk)`} — {preis.zusatzGramm} g
+                  </td>
+                  <td className="r">{eur(preis.zuschlagEurProTausend)} je 1.000</td>
+                </tr>
+              )}
+              <tr style={{ background: '#f3f4f6' }}>
+                <td style={{ fontWeight: 'bold' }}>
+                  Preis je 1.000 Stück × {nf(preis.stueckzahl)} Stück
+                </td>
+                <td className="r" style={{ fontWeight: 'bold' }}>{eur(preis.proTausendEur)}</td>
+              </tr>
+              <tr>
+                <td style={{ fontWeight: 'bold' }}>Summe netto</td>
+                <td className="r" style={{ fontWeight: 'bold' }}>{eur(preis.nettoEur)}</td>
+              </tr>
+              <tr>
+                <td>zzgl. {preis.ustProzent.toLocaleString('de-DE')} % Umsatzsteuer</td>
+                <td className="r">{eur(preis.ustEur)}</td>
+              </tr>
+              <tr style={{ background: '#1d4ed8', color: 'white', fontWeight: 'bold', fontSize: '8pt' }}>
+                <td>Gesamtpreis brutto</td>
+                <td className="r">{eur(preis.bruttoEur)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style={{ fontSize: '6pt', color: '#666', marginTop: '0.8mm' }}>
+            Alle Preise gelten je angefangene 1.000 Stück. Angebotspreis — maßgeblich ist die
+            Auftragsbestätigung.
+          </div>
+        </div>
+      )}
+
       {/* Unterschrift */}
-      <div className="vp-block" style={{ marginTop: '9mm', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15mm' }}>
+      <div className="vp-block" style={{ marginTop: voll ? '6mm' : '9mm', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15mm' }}>
         <div style={{ borderTop: '1px solid #555', paddingTop: '0.8mm', fontSize: '6.5pt', color: '#555' }}>
           Unterschrift Kunde / Datum
         </div>
