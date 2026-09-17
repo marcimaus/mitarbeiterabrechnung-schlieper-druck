@@ -64,6 +64,8 @@ interface Kundendaten {
   kennzeichen: BeilagenKennzeichen;
   gewichtGStk: string;
   memo: string;
+  /** Externer Link (Mail-Thread o. ä.) — wird nicht gedruckt. */
+  externerLink: string;
   istDauervorlage: boolean;
 }
 
@@ -78,6 +80,7 @@ const leereKundendaten = (): Kundendaten => ({
   kennzeichen: 'int',
   gewichtGStk: '',
   memo: '',
+  externerLink: '',
   istDauervorlage: false,
 });
 
@@ -98,6 +101,7 @@ function kundendatenAusVorlage(v: BeilagenVorlage): Kundendaten {
     kennzeichen: v.kennzeichen ?? 'int',
     gewichtGStk: v.gewichtGStk ? String(v.gewichtGStk).replace('.', ',') : '',
     memo: v.memo ?? '',
+    externerLink: v.externerLink ?? '',
     istDauervorlage: !!v.istDauervorlage,
   };
 }
@@ -225,6 +229,7 @@ function VerteilplanInhalt() {
       kennzeichen: kunde.kennzeichen,
       gewichtGStk: Number.isFinite(gewicht) && gewicht > 0 ? gewicht : 0,
       memo: kunde.memo.trim() || undefined,
+      externerLink: kunde.externerLink.trim() || undefined,
       istDauervorlage: kunde.istDauervorlage,
       ...auswahlStruktur(auswahl, teilgebiete, touren),
     };
@@ -540,6 +545,29 @@ function VerteilplanInhalt() {
               rows={2}
               className={`${auswahlKlasse} resize-y`}
             />
+            {/* Memo und Link sind interne Felder — sie erscheinen nicht im Ausdruck. */}
+            <label className="block text-xs text-gray-500 mb-1 mt-2">Externer Link (z. B. Mail zur Bestellung)</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="url"
+                value={kunde.externerLink}
+                onChange={(e) => setKunde({ ...kunde, externerLink: e.target.value })}
+                placeholder="https://… oder outlook:… / message:…"
+                className={auswahlKlasse}
+              />
+              {kunde.externerLink.trim() && (
+                <a
+                  href={kunde.externerLink.trim()}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0 text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1.5"
+                  title="Link in neuem Tab öffnen"
+                >
+                  🔗 öffnen
+                </a>
+              )}
+            </div>
+            <p className="text-[11px] text-gray-400 mt-1">Memo und Link stehen nicht im Ausdruck.</p>
           </div>
           <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
             <input

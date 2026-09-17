@@ -587,6 +587,8 @@ export interface BeilagenVorlage {
   gewichtGStk: number;
   /** Notizen / Besonderheiten zum (Dauer-)Auftrag */
   memo?: string;
+  /** Externer Link zur Bestellung (i. d. R. Mail-Thread). Wird nicht gedruckt. */
+  externerLink?: string;
   /** Gesamtgebiet gewählt → bei Übernahme alle aktuell buchbaren TGs. */
   gesamtgebiet: boolean;
   /** Vollständig gewählte Touren → bei Übernahme alle aktuell buchbaren TGs der Tour. */

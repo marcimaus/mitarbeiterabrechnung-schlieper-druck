@@ -1184,6 +1184,17 @@ function BeilagenVerwaltung({
                   {vorlage?.memo && (
                     <div className="text-xs text-amber-800 mt-0.5">📝 {vorlage.memo}</div>
                   )}
+                  {vorlage?.externerLink && (
+                    <a
+                      href={vorlage.externerLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 hover:underline mt-0.5 inline-block"
+                      title={vorlage.externerLink}
+                    >
+                      🔗 Externer Link zur Bestellung
+                    </a>
+                  )}
                 </div>
                 <div className="flex gap-2 ml-3">
                   {!vorlage && (
@@ -1389,6 +1400,18 @@ function VorlagenGruppe({
                   {v.gewichtGStk > 0 && ` · ${v.gewichtGStk.toLocaleString('de-DE')} g/Stk`}
                 </div>
                 {v.memo && <div className="text-xs text-amber-800 mt-0.5 truncate" title={v.memo}>📝 {v.memo}</div>}
+                {v.externerLink && (
+                  <a
+                    href={v.externerLink}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[11px] text-blue-600 hover:underline"
+                    title={v.externerLink}
+                  >
+                    🔗 Externer Link
+                  </a>
+                )}
                 {schonUebernommen && (
                   <div className="text-xs text-red-600 mt-0.5">⚠ Für diese KW bereits in einen Auftrag übernommen</div>
                 )}
@@ -1425,6 +1448,7 @@ function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone
   const [istDauervorlage, setIstDauervorlage] = useState(true);
   const [kwKey, setKwKey] = useState('');
   const [memo, setMemo] = useState('');
+  const [externerLink, setExternerLink] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -1443,6 +1467,7 @@ function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone
         kennzeichen: beilage.kennzeichen,
         gewichtGStk: beilage.gewichtGStk,
         memo: memo.trim() || undefined,
+        externerLink: externerLink.trim() || undefined,
         ...auswahlStruktur(beilage.teilgebietIds, teilgebiete, touren),
         istDauervorlage,
         archiviert: false,
@@ -1496,6 +1521,16 @@ function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone
           rows={3}
           className={inputClass}
           placeholder="Besonderheiten zum Auftrag"
+        />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Externer Link</label>
+        <input
+          type="url"
+          value={externerLink}
+          onChange={(e) => setExternerLink(e.target.value)}
+          className={inputClass}
+          placeholder="https://… (z. B. Mail zur Bestellung)"
         />
       </div>
       {error && <p className="text-red-600 text-sm">{error}</p>}
@@ -1658,6 +1693,13 @@ function BeilageForm({
             </div>
           )}
           {quelle.memo && <div className="text-amber-900 whitespace-pre-line">📝 {quelle.memo}</div>}
+          {quelle.externerLink && (
+            <div>
+              <a href={quelle.externerLink} target="_blank" rel="noreferrer" className="underline" title={quelle.externerLink}>
+                🔗 Externer Link zur Bestellung
+              </a>
+            </div>
+          )}
           {vorlageUebernommenFuer(quelle, ausgabe.kw, ausgabe.jahr) && (
             <div className="text-red-700">⚠ Diese Bestellung wurde für diese KW bereits übernommen.</div>
           )}
