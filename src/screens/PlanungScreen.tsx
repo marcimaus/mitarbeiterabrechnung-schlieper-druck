@@ -967,22 +967,45 @@ function PlanungContent() {
           />
           <TaetigkeitRow
             label={<span className="text-[11px] text-gray-500 italic">bestellt ⏳ / Aufträge ✓ je KW</span>}
+            sublabel="darunter: Stück gesamt"
             kws={kws}
             renderCell={(kw) => {
-              const auftraege = beilagenAuftraegeNachKw.get(kw)?.length ?? 0;
-              const bestellt = beilagenBestelltNachKw.get(kw)?.length ?? 0;
+              const bestellteListe = beilagenBestelltNachKw.get(kw) ?? [];
+              const auftragsListe = beilagenAuftraegeNachKw.get(kw) ?? [];
+              const bestellt = bestellteListe.length;
+              const auftraege = auftragsListe.length;
               if (auftraege === 0 && bestellt === 0) {
                 return <div className="text-[10px] text-gray-200 text-center py-1">·</div>;
               }
+              // Zu verteilende Exemplare: Summe der Stückzahlen aller
+              // Teilgebiete je Beilage (Bestellungen nach aktuellem Verteilplan).
+              const stkBestellt = bestellteListe.reduce(
+                (s, v) => s + stueckzahlVon(vorlageTeilgebietIds(v, teilgebiete, touren), teilgebiete),
+                0,
+              );
+              const stkAuftraege = auftragsListe.reduce(
+                (s, b) => s + stueckzahlVon(b.teilgebietIds, teilgebiete),
+                0,
+              );
+              const stkGesamt = stkBestellt + stkAuftraege;
               return (
                 <button
                   type="button"
                   onClick={() => !openSections.beilagen && toggleSection('beilagen')}
-                  className="w-full flex justify-center gap-1 text-xs font-bold py-1"
-                  title={`${bestellt} bestellt (Exemplare noch nicht da) · ${auftraege} Beilagenaufträge erfasst`}
+                  className="w-full py-1 leading-tight"
+                  title={
+                    `${bestellt} bestellt (Exemplare noch nicht da): ${stkBestellt.toLocaleString('de-DE')} Stück\n` +
+                    `${auftraege} Beilagenaufträge erfasst: ${stkAuftraege.toLocaleString('de-DE')} Stück\n` +
+                    `zu verteilen gesamt: ${stkGesamt.toLocaleString('de-DE')} Stück`
+                  }
                 >
-                  {bestellt > 0 && <span className="px-1 rounded bg-amber-100 text-amber-800">⏳ {bestellt}</span>}
-                  {auftraege > 0 && <span className="px-1 rounded bg-green-100 text-green-800">✓ {auftraege}</span>}
+                  <div className="flex justify-center gap-1 text-xs font-bold">
+                    {bestellt > 0 && <span className="px-1 rounded bg-amber-100 text-amber-800">⏳ {bestellt}</span>}
+                    {auftraege > 0 && <span className="px-1 rounded bg-green-100 text-green-800">✓ {auftraege}</span>}
+                  </div>
+                  <div className="text-[10px] text-gray-600 tabular-nums">
+                    {stkGesamt.toLocaleString('de-DE')}
+                  </div>
                 </button>
               );
             }}
