@@ -966,7 +966,7 @@ function PlanungContent() {
             }
           />
           <TaetigkeitRow
-            label={<span className="text-[11px] text-gray-500 italic">Aufträge ✓ / bestellt ⏳ je KW</span>}
+            label={<span className="text-[11px] text-gray-500 italic">bestellt ⏳ / Aufträge ✓ je KW</span>}
             kws={kws}
             renderCell={(kw) => {
               const auftraege = beilagenAuftraegeNachKw.get(kw)?.length ?? 0;
@@ -979,46 +979,16 @@ function PlanungContent() {
                   type="button"
                   onClick={() => !openSections.beilagen && toggleSection('beilagen')}
                   className="w-full flex justify-center gap-1 text-xs font-bold py-1"
-                  title={`${auftraege} Beilagenaufträge erfasst · ${bestellt} bestellt (Exemplare noch nicht da)`}
+                  title={`${bestellt} bestellt (Exemplare noch nicht da) · ${auftraege} Beilagenaufträge erfasst`}
                 >
-                  {auftraege > 0 && <span className="px-1 rounded bg-green-100 text-green-800">✓ {auftraege}</span>}
                   {bestellt > 0 && <span className="px-1 rounded bg-amber-100 text-amber-800">⏳ {bestellt}</span>}
+                  {auftraege > 0 && <span className="px-1 rounded bg-green-100 text-green-800">✓ {auftraege}</span>}
                 </button>
               );
             }}
           />
           {openSections.beilagen && (
             <>
-              <TaetigkeitRow
-                label="Aufträge"
-                sublabel="erfasst — Beilagen sind da"
-                kws={kws}
-                renderCell={(kw) => (
-                  <div className="flex flex-col gap-0.5">
-                    {(beilagenAuftraegeNachKw.get(kw) ?? []).map((b) => {
-                      const stk = stueckzahlVon(b.teilgebietIds, teilgebiete);
-                      return (
-                        <Link
-                          key={b.id}
-                          to={`/ausgaben?kw=${kw}&jahr=${jahr}`}
-                          className="block rounded border border-green-300 bg-green-50 hover:bg-green-100 px-1 py-0.5 text-[10px] leading-tight text-green-900"
-                          title={[
-                            b.arbeitstitel,
-                            `Kunde: ${b.kundenname}`,
-                            `${b.kennzeichen === 'ext' ? 'extern' : 'intern'} · ${formatLabel(b.format)} · ${b.gewichtGStk} g/Stk`,
-                            `${b.teilgebietIds.length} Teilgebiete · ${stk.toLocaleString('de-DE')} Stk`,
-                          ].join('\n')}
-                        >
-                          <div className="font-semibold truncate">{b.arbeitstitel || b.kundenname}</div>
-                          <div className="opacity-75">
-                            {b.kennzeichen === 'ext' ? 'ext' : 'int'} · {stk.toLocaleString('de-DE')}
-                          </div>
-                        </Link>
-                      );
-                    })}
-                  </div>
-                )}
-              />
               <TaetigkeitRow
                 label="Bestellt"
                 sublabel="Bestellungen mit KW — Exemplare noch nicht da"
@@ -1046,6 +1016,36 @@ function PlanungContent() {
                           <div className="opacity-75">
                             {v.kennzeichen === 'ext' ? 'ext' : 'int'} · {stk.toLocaleString('de-DE')}
                             {v.memo && ' 📝'}
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              />
+              <TaetigkeitRow
+                label="Aufträge"
+                sublabel="erfasst — Beilagen sind da"
+                kws={kws}
+                renderCell={(kw) => (
+                  <div className="flex flex-col gap-0.5">
+                    {(beilagenAuftraegeNachKw.get(kw) ?? []).map((b) => {
+                      const stk = stueckzahlVon(b.teilgebietIds, teilgebiete);
+                      return (
+                        <Link
+                          key={b.id}
+                          to={`/ausgaben?kw=${kw}&jahr=${jahr}`}
+                          className="block rounded border border-green-300 bg-green-50 hover:bg-green-100 px-1 py-0.5 text-[10px] leading-tight text-green-900"
+                          title={[
+                            b.arbeitstitel,
+                            `Kunde: ${b.kundenname}`,
+                            `${b.kennzeichen === 'ext' ? 'extern' : 'intern'} · ${formatLabel(b.format)} · ${b.gewichtGStk} g/Stk`,
+                            `${b.teilgebietIds.length} Teilgebiete · ${stk.toLocaleString('de-DE')} Stk`,
+                          ].join('\n')}
+                        >
+                          <div className="font-semibold truncate">{b.arbeitstitel || b.kundenname}</div>
+                          <div className="opacity-75">
+                            {b.kennzeichen === 'ext' ? 'ext' : 'int'} · {stk.toLocaleString('de-DE')}
                           </div>
                         </Link>
                       );
