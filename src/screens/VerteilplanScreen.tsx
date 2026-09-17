@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
+import Modal from '../components/Modal';
 import type { BeilagenFormat, BeilagenKennzeichen, BeilagenVorlage, Teilgebiet, Tour } from '../types';
 import {
   beilagenVorlagenListener,
@@ -141,7 +142,8 @@ function summeAuswahl(tgs: Teilgebiet[], auswahl: Set<string>): number {
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 function VerteilplanInhalt() {
-  const { teilgebiete, touren, parameter } = useApp();
+  const { teilgebiete, touren, parameter, userRole } = useApp();
+  const istAdmin = userRole === 'admin';
 
   const [kunde, setKunde] = useState<Kundendaten>(leereKundendaten);
   const [auswahl, setAuswahl] = useState<Set<string>>(new Set());
@@ -157,6 +159,7 @@ function VerteilplanInhalt() {
   const [vorlagen, setVorlagen] = useState<BeilagenVorlage[] | null>(null);
   const [speichern, setSpeichern] = useState(false);
   const [meldung, setMeldung] = useState<{ text: string; fehler?: boolean } | null>(null);
+  const [archivOffen, setArchivOffen] = useState(false);
   useEffect(() => beilagenVorlagenListener(setVorlagen), []);
   const aktiveVorlage = vorlageId ? vorlagen?.find((v) => v.id === vorlageId) ?? null : null;
 
@@ -182,6 +185,15 @@ function VerteilplanInhalt() {
     setGespeicherterStand(standVon(k, a));
     setMeldung(null);
   }, [vorlageId, vorlagen, teilgebiete, touren]);
+
+  // Archiv (nur Admin): erledigte Bestellungen, jüngste zuerst.
+  const archivierteVorlagen = useMemo(
+    () =>
+      (vorlagen ?? [])
+        .filter((v) => v.archiviert)
+        .sort((a, b) => (b.archiviertAm ?? b.aktualisiertAm ?? 0) - (a.archiviertAm ?? a.aktualisiertAm ?? 0)),
+    [vorlagen],
+  );
 
   const auswaehlbareVorlagen = useMemo(() => {
     const liste = (vorlagen ?? []).filter((v) => !v.archiviert);
@@ -417,6 +429,15 @@ function VerteilplanInhalt() {
               </optgroup>
             )}
           </select>
+          {istAdmin && (
+            <button
+              onClick={() => setArchivOffen(true)}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+              title="Archivierte Bestellungen ansehen (nur Admin)"
+            >
+              🗄 Archiv ({archivierteVorlagen.length})
+            </button>
+          )}
           <button
             onClick={() => vorlageSpeichern(false)}
             disabled={speichern || (!!aktiveVorlage && !geaendert)}
@@ -778,7 +799,97 @@ function VerteilplanInhalt() {
           onClose={() => setVorschau(null)}
         />
       )}
+
+      {/* Archiv der erledigten Bestellungen — nur Admin */}
+      <Modal
+        isOpen={istAdmin && archivOffen}
+        onClose={() => setArchivOffen(false)}
+        title="Archiv — erledigte Bestellungen"
+        size="lg"
+      >
+        <ArchivListe
+          vorlagen={archivierteVorlagen}
+          onOeffnen={(id) => {
+            setArchivOffen(false);
+            vorlageOeffnen(id);
+          }}
+        />
+      </Modal>
     </>
+  );
+}
+
+// ── Archiv ────────────────────────────────────────────────────────────────────
+
+/**
+ * Archivierte Bestellungen. Sie stehen bewusst NICHT in der Auswahlliste
+ * (sonst wird sie mit der Zeit unbrauchbar lang) — dieses Fenster ist der
+ * Zugang für den Admin. Ein Klick lädt die Bestellung wie ein Link
+ * (?vorlage=<id>), sie bleibt dabei archiviert.
+ */
+function ArchivListe({
+  vorlagen,
+  onOeffnen,
+}: {
+  vorlagen: BeilagenVorlage[];
+  onOeffnen: (id: string) => void;
+}) {
+  const [suche, setSuche] = useState('');
+  const s = suche.trim().toLowerCase();
+  const treffer = vorlagen.filter(
+    (v) =>
+      !s ||
+      [v.arbeitstitel, v.kundenname, v.memo, vorlageKwLabel(v)].some((x) => x?.toLowerCase().includes(s)),
+  );
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-600">
+        Erledigte Bestellungen — nicht mehr für neue Aufträge auswählbar, aber jederzeit einsehbar.
+      </p>
+      <input
+        type="search"
+        value={suche}
+        onChange={(e) => setSuche(e.target.value)}
+        placeholder="Suchen (Titel, Kunde, KW, Memo) …"
+        className={auswahlKlasse}
+        autoFocus
+      />
+      <div className="max-h-[55vh] overflow-y-auto space-y-1.5 pr-1">
+        {treffer.map((v) => (
+          <div key={v.id} className="border border-gray-200 rounded-lg px-3 py-2 flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5 text-sm">
+                <span className="font-medium text-gray-900">{v.arbeitstitel || '(ohne Arbeitstitel)'}</span>
+                {v.kundenname && <span className="text-gray-500">· {v.kundenname}</span>}
+                <span className="text-[11px] text-gray-500">{vorlageKwLabel(v)}</span>
+                {v.istDauervorlage && (
+                  <span className="text-[11px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">Dauerbestellung</span>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                archiviert{v.archiviertAm ? ` am ${new Date(v.archiviertAm).toLocaleDateString('de-DE')}` : ''}
+                {(v.uebernahmen?.length ?? 0) > 0 &&
+                  ` · übernommen: ${v.uebernahmen!.map((u) => kwLabel(u.kw, u.jahr)).join(', ')}`}
+              </div>
+              {v.memo && <div className="text-xs text-amber-800 mt-0.5 truncate" title={v.memo}>📝 {v.memo}</div>}
+            </div>
+            <button
+              type="button"
+              onClick={() => onOeffnen(v.id)}
+              className="shrink-0 text-xs border border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded px-2.5 py-1 font-medium"
+            >
+              Ansehen
+            </button>
+          </div>
+        ))}
+        {treffer.length === 0 && (
+          <p className="text-sm text-gray-400">
+            {vorlagen.length === 0 ? 'Noch keine archivierten Bestellungen.' : 'Keine Treffer.'}
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 
