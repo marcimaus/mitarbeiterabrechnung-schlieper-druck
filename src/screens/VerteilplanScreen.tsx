@@ -222,7 +222,18 @@ function VerteilplanInhalt() {
     else zuruecksetzen();
   }
 
-  async function vorlageSpeichern(alsNeu: boolean) {
+  /**
+   * Löst das Formular von der geladenen Bestellung: die Eingaben bleiben
+   * stehen, gespeichert wird aber erst beim Klick auf „Bestellung speichern"
+   * — und dann als neue Bestellung. Das Original bleibt unverändert.
+   */
+  function alsNeueBestellungVorbereiten() {
+    setSearchParams({});
+    setGespeicherterStand('');
+    setMeldung({ text: 'Kopie vorbereitet — zum Anlegen auf „💾 Bestellung speichern" klicken.' });
+  }
+
+  async function vorlageSpeichern() {
     if (!kunde.arbeitstitel.trim() && !kunde.kundenname.trim()) {
       setMeldung({ text: 'Bitte Arbeitstitel oder Kundenname angeben.', fehler: true });
       return;
@@ -247,7 +258,7 @@ function VerteilplanInhalt() {
     };
     setSpeichern(true);
     try {
-      if (aktiveVorlage && !alsNeu) {
+      if (aktiveVorlage) {
         await aktualisiereBeilagenVorlage(aktiveVorlage.id, daten);
         setMeldung({ text: 'Bestellung gespeichert.' });
       } else {
@@ -439,7 +450,7 @@ function VerteilplanInhalt() {
             </button>
           )}
           <button
-            onClick={() => vorlageSpeichern(false)}
+            onClick={() => vorlageSpeichern()}
             disabled={speichern || (!!aktiveVorlage && !geaendert)}
             className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-40"
           >
@@ -448,10 +459,10 @@ function VerteilplanInhalt() {
           {aktiveVorlage && (
             <>
               <button
-                onClick={() => vorlageSpeichern(true)}
+                onClick={alsNeueBestellungVorbereiten}
                 disabled={speichern}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40"
-                title="Aktuelle Eingaben als zusätzliche, neue Bestellung speichern"
+                title="Eingaben übernehmen und vom Original lösen — angelegt wird erst mit „Bestellung speichern“"
               >
                 Als neue Bestellung
               </button>
