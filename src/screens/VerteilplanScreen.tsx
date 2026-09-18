@@ -548,27 +548,6 @@ function VerteilplanInhalt() {
           </button>
           {aktiveVorlage && (
             <>
-              {/* Archivierte Bestellungen sind erledigt — kein zweiter Auftrag. */}
-              <button
-                onClick={inAuftragUebernehmen}
-                disabled={speichern || geaendert || aktiveVorlage.archiviert || fehlendeAngaben.length > 0}
-                className={`px-3 py-1.5 text-sm rounded-lg font-medium ${
-                  !speichern && !geaendert && !aktiveVorlage.archiviert && fehlendeAngaben.length === 0
-                    ? 'bg-green-600 text-white hover:bg-green-700'
-                    : 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                }`}
-                title={
-                  aktiveVorlage.archiviert
-                    ? 'Bereits übernommen und archiviert — für eine erneute Übernahme zuerst „Aus Archiv holen".'
-                    : geaendert
-                    ? 'Bitte zuerst die Bestellung speichern.'
-                    : fehlendeAngaben.length > 0
-                    ? `Bestellung unvollständig — es fehlt: ${fehlendeAngaben.join(', ')}`
-                    : 'Bestellung als Beilagenauftrag in „Ausgaben & Beilagen" übernehmen'
-                }
-              >
-                ➡ Bestellung in Aufträge übernehmen
-              </button>
               <button
                 onClick={alsNeueBestellungVorbereiten}
                 disabled={speichern}
@@ -617,11 +596,6 @@ function VerteilplanInhalt() {
         )}
         {geaendert && !meldung?.fehler && (
           <p className="mt-2 text-xs text-amber-700">● Ungespeicherte Änderungen</p>
-        )}
-        {aktiveVorlage && fehlendeAngaben.length > 0 && (
-          <p className="mt-2 text-xs text-amber-700">
-            ⚠ Für die Übernahme in Aufträge fehlt: {fehlendeAngaben.join(', ')}
-          </p>
         )}
       </div>
 
@@ -743,6 +717,52 @@ function VerteilplanInhalt() {
           </label>
         </div>
       </div>
+
+      {/* Übernahme in Aufträge — bewusst unter den Eingabefeldern, weil es
+          der abschließende Schritt ist. Archivierte Bestellungen sind
+          erledigt und werden gesperrt (kein zweiter Auftrag). */}
+      {aktiveVorlage && (
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <button
+            onClick={inAuftragUebernehmen}
+            disabled={speichern || geaendert || aktiveVorlage.archiviert || fehlendeAngaben.length > 0}
+            className={`px-6 py-3 text-base rounded-lg font-semibold shadow-sm ${
+              !speichern && !geaendert && !aktiveVorlage.archiviert && fehlendeAngaben.length === 0
+                ? 'bg-green-600 text-white hover:bg-green-700'
+                : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+            }`}
+            title={
+              aktiveVorlage.archiviert
+                ? 'Bereits übernommen und archiviert — für eine erneute Übernahme zuerst „Aus Archiv holen".'
+                : geaendert
+                ? 'Bitte zuerst die Bestellung speichern.'
+                : fehlendeAngaben.length > 0
+                ? `Bestellung unvollständig — es fehlt: ${fehlendeAngaben.join(', ')}`
+                : 'Bestellung als Beilagenauftrag in „Ausgaben & Beilagen" übernehmen'
+            }
+          >
+            ➡ Bestellung in Aufträge übernehmen
+          </button>
+          {aktiveVorlage.archiviert ? (
+            <span className="text-xs text-gray-500">
+              Bereits übernommen und archiviert — für eine erneute Übernahme zuerst „↩ Aus Archiv holen".
+            </span>
+          ) : geaendert ? (
+            <span className="text-xs text-amber-700">Bitte zuerst die Bestellung speichern.</span>
+          ) : fehlendeAngaben.length > 0 ? (
+            <span className="text-xs text-amber-700">
+              ⚠ Dafür fehlt noch: {fehlendeAngaben.join(', ')}
+            </span>
+          ) : (
+            <span className="text-xs text-gray-500">
+              Legt die Beilage in „Ausgaben & Beilagen" an
+              {aktiveVorlage.istDauervorlage
+                ? ' (Dauerbestellung — bleibt verfügbar).'
+                : ' und archiviert die Bestellung.'}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Preisermittlung (Verkaufspreis laut Parametern) */}
       <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 mb-4">
