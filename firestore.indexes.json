@@ -5,6 +5,14 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "mitarbeiterId", "order": "ASCENDING" },
+        { "fieldPath": "startTime", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "arbeitszeiten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "mitarbeiterId", "order": "ASCENDING" },
         { "fieldPath": "startTime", "order": "DESCENDING" }
       ]
     },
@@ -38,6 +46,31 @@
       "fields": [
         { "fieldPath": "jahr", "order": "DESCENDING" },
         { "fieldPath": "kw", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fahrten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "mitarbeiterId", "order": "ASCENDING" },
+        { "fieldPath": "datum", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "fahrten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "abrechnungsperiodeId", "order": "ASCENDING" },
+        { "fieldPath": "datum", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "zusammentragezeiten",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "ausgabeId", "order": "ASCENDING" },
+        { "fieldPath": "teilgebietId", "order": "ASCENDING" },
+        { "fieldPath": "mitarbeiterId", "order": "ASCENDING" }
       ]
     }
   ],
