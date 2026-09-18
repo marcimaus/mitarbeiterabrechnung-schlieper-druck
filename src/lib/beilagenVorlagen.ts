@@ -8,8 +8,6 @@
 // TGs fallen heraus.
 
 import type {
-  Ausgabe,
-  Beilage,
   BeilagenFormat,
   BeilagenVorlage,
   Teilgebiet,
@@ -129,6 +127,32 @@ export function vorlageKwLabel(v: Pick<BeilagenVorlage, 'kw' | 'jahr'>): string 
   return `KW ${String(v.kw).padStart(2, '0')}/${v.jahr}`;
 }
 
+/**
+ * Was fehlt, damit die Bestellung als Auftrag übernommen werden kann?
+ * Leere Liste = vollständig.
+ */
+export function fehlendeAngabenFuerAuftrag(
+  v: {
+    kw: number | null;
+    jahr: number | null;
+    format: BeilagenFormat;
+    gewichtGStk: number;
+    kundenname: string;
+    arbeitstitel?: string;
+    beilageAngeliefert?: boolean;
+  },
+  teilgebietAnzahl: number,
+): string[] {
+  const fehlt: string[] = [];
+  if (v.kw == null || v.jahr == null) fehlt.push('Kalenderwoche');
+  if (!v.format) fehlt.push('Format');
+  if (!(v.gewichtGStk > 0)) fehlt.push('Gewicht (g/Stk)');
+  if (!v.kundenname.trim()) fehlt.push('Kundenname');
+  if (teilgebietAnzahl === 0) fehlt.push('Teilgebiete');
+  if (v.beilageAngeliefert === false) fehlt.push('Kennzeichen „Beilage angeliefert“');
+  return fehlt;
+}
+
 /** Wurde die Vorlage bereits für diese KW in einen Auftrag übernommen? */
 export function vorlageUebernommenFuer(v: BeilagenVorlage, kw: number, jahr: number): boolean {
   return (v.uebernahmen ?? []).some((u) => u.kw === kw && u.jahr === jahr);
@@ -140,15 +164,11 @@ export function vorlageUebernommenFuer(v: BeilagenVorlage, kw: number, jahr: num
  */
 export async function vorlageUebernahmeVermerken(
   vorlage: BeilagenVorlage,
-  beilage: Beilage,
-  ausgabe: Ausgabe,
+  uebernahme: { beilageId: string; ausgabeId: string; kw: number; jahr: number },
 ): Promise<void> {
   const ts = Date.now();
   await aktualisiereBeilagenVorlage(vorlage.id, {
-    uebernahmen: [
-      ...(vorlage.uebernahmen ?? []),
-      { beilageId: beilage.id, ausgabeId: ausgabe.id, kw: ausgabe.kw, jahr: ausgabe.jahr, am: ts },
-    ],
+    uebernahmen: [...(vorlage.uebernahmen ?? []), { ...uebernahme, am: ts }],
     ...(vorlage.istDauervorlage ? {} : { archiviert: true, archiviertAm: ts }),
   });
 }

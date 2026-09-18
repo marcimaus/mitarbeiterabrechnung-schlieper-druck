@@ -1664,7 +1664,14 @@ function BeilageForm({
         const id = await erstelleBeilage(neu);
         const beilage: Beilage = { id, ...neu, erstelltAm: Date.now() };
         // Übernahme an der Vorlage vermerken; Nicht-Dauervorlagen → Archiv.
-        if (quelle) await vorlageUebernahmeVermerken(quelle, beilage, ausgabe);
+        if (quelle) {
+          await vorlageUebernahmeVermerken(quelle, {
+            beilageId: id,
+            ausgabeId: ausgabe.id,
+            kw: ausgabe.kw,
+            jahr: ausgabe.jahr,
+          });
+        }
         onSave(beilage);
       }
     } catch (err) {

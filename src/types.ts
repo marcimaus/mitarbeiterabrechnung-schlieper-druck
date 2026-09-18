@@ -597,6 +597,12 @@ export interface BeilagenVorlage {
   teilgebietIds: string[];
   /** Stückzahl der Auswahl zum Zeitpunkt der Speicherung (nur Info). */
   stueckzahlGespeichert?: number;
+  /**
+   * Kennzeichen „Beilage angeliefert": bei Neuanlage gesetzt, kann manuell
+   * zurückgenommen werden. Nur mit gesetztem Kennzeichen lässt sich die
+   * Bestellung in einen Auftrag übernehmen.
+   */
+  beilageAngeliefert?: boolean;
   /** Wiederkehrender Auftrag — wird bei Übernahme NICHT automatisch archiviert. */
   istDauervorlage: boolean;
   /** Archiviert: nicht mehr auswählbar, nur per Link einsehbar. */

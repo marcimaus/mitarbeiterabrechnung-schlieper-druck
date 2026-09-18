@@ -220,6 +220,7 @@ import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 import type { Beilage, BeilagenVorlage } from '../types';
 import { Link } from 'react-router-dom';
 import {
+  fehlendeAngabenFuerAuftrag,
   formatLabel,
   stueckzahlVon,
   vorlageLink,
@@ -1019,12 +1020,20 @@ function PlanungContent() {
                 renderCell={(kw) => (
                   <div className="flex flex-col gap-0.5">
                     {(beilagenBestelltNachKw.get(kw) ?? []).map((v) => {
-                      const stk = stueckzahlVon(vorlageTeilgebietIds(v, teilgebiete, touren), teilgebiete);
+                      const tgIds = vorlageTeilgebietIds(v, teilgebiete, touren);
+                      const stk = stueckzahlVon(tgIds, teilgebiete);
+                      // Unvollständige Bestellungen lassen sich noch nicht in
+                      // einen Auftrag übernehmen → Warnzeichen + Tooltip.
+                      const fehlt = fehlendeAngabenFuerAuftrag(v, tgIds.length);
                       return (
                         <Link
                           key={v.id}
                           to={vorlageLink(v.id)}
-                          className="block rounded border border-dashed border-amber-400 bg-amber-50 hover:bg-amber-100 px-1 py-0.5 text-[10px] leading-tight text-amber-900"
+                          className={`block rounded border border-dashed px-1 py-0.5 text-[10px] leading-tight ${
+                            fehlt.length > 0
+                              ? 'border-red-400 bg-red-50 hover:bg-red-100 text-red-900'
+                              : 'border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-900'
+                          }`}
                           title={[
                             v.arbeitstitel,
                             v.kundenname && `Kunde: ${v.kundenname}`,
@@ -1033,9 +1042,13 @@ function PlanungContent() {
                             `${stk.toLocaleString('de-DE')} Stk (aktueller Verteilplan)`,
                             v.istDauervorlage ? 'Dauerbestellung' : '',
                             v.memo ? `Memo: ${v.memo}` : '',
+                            fehlt.length > 0 ? `⚠ Unvollständig — es fehlt: ${fehlt.join(', ')}` : '',
                           ].filter(Boolean).join('\n')}
                         >
-                          <div className="font-semibold truncate">{v.arbeitstitel || v.kundenname || '(ohne Titel)'}</div>
+                          <div className="font-semibold truncate">
+                            {fehlt.length > 0 && '⚠ '}
+                            {v.arbeitstitel || v.kundenname || '(ohne Titel)'}
+                          </div>
                           <div className="opacity-75">
                             {v.kennzeichen === 'ext' ? 'ext' : 'int'} · {stk.toLocaleString('de-DE')}
                             {v.memo && ' 📝'}

@@ -15,13 +15,19 @@ import {
   erstelleBeilagenVorlage,
   aktualisiereBeilagenVorlage,
   loescheBeilagenVorlage,
+  erstelleBeilage,
+  getOrCreateAusgabe,
 } from '../lib/db';
 import {
   BEILAGEN_FORMATE,
   auswahlStruktur,
   buchbareTeilgebiete,
   formatLabel,
+  fehlendeAngabenFuerAuftrag,
   kwAuswahlOptionen,
+  stueckzahlVon,
+  vorlageUebernahmeVermerken,
+  vorlageUebernommenFuer,
   vorlageKwLabel,
   vorlageTeilgebietIds,
 } from '../lib/beilagenVorlagen';
@@ -67,6 +73,8 @@ interface Kundendaten {
   memo: string;
   /** Externer Link (Mail-Thread o. ä.) — wird nicht gedruckt. */
   externerLink: string;
+  /** Kennzeichen „Beilage angeliefert" — bei Neuanlage gesetzt. */
+  beilageAngeliefert: boolean;
   istDauervorlage: boolean;
 }
 
@@ -82,6 +90,7 @@ const leereKundendaten = (): Kundendaten => ({
   gewichtGStk: '',
   memo: '',
   externerLink: '',
+  beilageAngeliefert: true,
   istDauervorlage: false,
 });
 
@@ -103,6 +112,8 @@ function kundendatenAusVorlage(v: BeilagenVorlage): Kundendaten {
     gewichtGStk: v.gewichtGStk ? String(v.gewichtGStk).replace('.', ',') : '',
     memo: v.memo ?? '',
     externerLink: v.externerLink ?? '',
+    // Altbestände ohne Kennzeichen gelten als angeliefert.
+    beilageAngeliefert: v.beilageAngeliefert !== false,
     istDauervorlage: !!v.istDauervorlage,
   };
 }
@@ -142,7 +153,7 @@ function summeAuswahl(tgs: Teilgebiet[], auswahl: Set<string>): number {
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 function VerteilplanInhalt() {
-  const { teilgebiete, touren, parameter, userRole } = useApp();
+  const { teilgebiete, touren, parameter, userRole, abrechnungsperioden } = useApp();
   const istAdmin = userRole === 'admin';
 
   const [kunde, setKunde] = useState<Kundendaten>(leereKundendaten);
@@ -185,6 +196,23 @@ function VerteilplanInhalt() {
     setGespeicherterStand(standVon(k, a));
     setMeldung(null);
   }, [vorlageId, vorlagen, teilgebiete, touren]);
+
+  // Was fehlt für die Übernahme in Aufträge? (steuert den grünen Knopf)
+  const fehlendeAngaben = useMemo(
+    () =>
+      fehlendeAngabenFuerAuftrag(
+        {
+          ...kwKeyParse(kunde.kwKey),
+          format: kunde.format,
+          gewichtGStk: parseFloat(kunde.gewichtGStk.replace(',', '.')) || 0,
+          kundenname: kunde.kundenname,
+          arbeitstitel: kunde.arbeitstitel,
+          beilageAngeliefert: kunde.beilageAngeliefert,
+        },
+        auswahl.size,
+      ),
+    [kunde, auswahl],
+  );
 
   // Archiv (nur Admin): erledigte Bestellungen, jüngste zuerst.
   const archivierteVorlagen = useMemo(
@@ -253,6 +281,7 @@ function VerteilplanInhalt() {
       gewichtGStk: Number.isFinite(gewicht) && gewicht > 0 ? gewicht : 0,
       memo: kunde.memo.trim() || undefined,
       externerLink: kunde.externerLink.trim() || undefined,
+      beilageAngeliefert: kunde.beilageAngeliefert,
       istDauervorlage: kunde.istDauervorlage,
       ...auswahlStruktur(auswahl, teilgebiete, touren),
     };
@@ -276,6 +305,67 @@ function VerteilplanInhalt() {
     } catch (err) {
       console.error(err);
       setMeldung({ text: 'Fehler beim Speichern.', fehler: true });
+    } finally {
+      setSpeichern(false);
+    }
+  }
+
+  /**
+   * Übernimmt die gespeicherte Bestellung als Beilagenauftrag in die Ausgabe
+   * der gewählten KW — gleiche Wirkung wie „Beilage hinzufügen" → „Übernehmen"
+   * in „Ausgaben & Beilagen". Die Bestellung wird dabei archiviert (außer
+   * Dauerbestellungen).
+   */
+  async function inAuftragUebernehmen() {
+    if (!aktiveVorlage || fehlendeAngaben.length > 0 || !parameter) return;
+    const { kw, jahr } = kwKeyParse(kunde.kwKey);
+    if (kw == null || jahr == null) return;
+
+    // Abgeschlossene Periode / Monatswechsel: dort sind Beilagen fixiert.
+    const periode = abrechnungsperioden.find(
+      (p) => p.jahr === jahr && p.kalenderwochen.includes(kw),
+    );
+    if (periode?.status === 'abgeschlossen' || periode?.monatswechselSnapshot) {
+      setMeldung({
+        text: `${kwLabel(kw, jahr)} gehört zu „${periode.bezeichnung}" — die Beilagen sind dort bereits fixiert. Übernahme nicht möglich.`,
+        fehler: true,
+      });
+      return;
+    }
+    if (
+      vorlageUebernommenFuer(aktiveVorlage, kw, jahr) &&
+      !confirm(`Diese Bestellung wurde für ${kwLabel(kw, jahr)} bereits übernommen. Noch einmal übernehmen?`)
+    ) {
+      return;
+    }
+
+    setSpeichern(true);
+    try {
+      const tgIds = vorlageTeilgebietIds(aktiveVorlage, teilgebiete, touren);
+      const ausgabeId = await getOrCreateAusgabe(jahr, kw, parameter);
+      const beilageId = await erstelleBeilage({
+        ausgabeId,
+        // Ohne Arbeitstitel wird vereinfachend der Kundenname verwendet.
+        arbeitstitel: kunde.arbeitstitel.trim() || kunde.kundenname.trim(),
+        kundenname: kunde.kundenname.trim(),
+        gewichtGStk: parseFloat(kunde.gewichtGStk.replace(',', '.')) || 0,
+        format: kunde.format,
+        kennzeichen: kunde.kennzeichen,
+        teilgebietIds: tgIds,
+        vorlageId: aktiveVorlage.id,
+      });
+      await vorlageUebernahmeVermerken(aktiveVorlage, { beilageId, ausgabeId, kw, jahr });
+      setMeldung({
+        text:
+          `Als Beilagenauftrag in ${kwLabel(kw, jahr)} übernommen (${tgIds.length} Teilgebiete, ` +
+          `${nf(stueckzahlVon(tgIds, teilgebiete))} Stück). ` +
+          (aktiveVorlage.istDauervorlage
+            ? 'Dauerbestellung — bleibt verfügbar.'
+            : 'Die Bestellung wurde archiviert.'),
+      });
+    } catch (err) {
+      console.error(err);
+      setMeldung({ text: 'Fehler bei der Übernahme.', fehler: true });
     } finally {
       setSpeichern(false);
     }
@@ -459,6 +549,24 @@ function VerteilplanInhalt() {
           {aktiveVorlage && (
             <>
               <button
+                onClick={inAuftragUebernehmen}
+                disabled={speichern || geaendert || fehlendeAngaben.length > 0}
+                className={`px-3 py-1.5 text-sm rounded-lg font-medium ${
+                  !speichern && !geaendert && fehlendeAngaben.length === 0
+                    ? 'bg-green-600 text-white hover:bg-green-700'
+                    : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                }`}
+                title={
+                  geaendert
+                    ? 'Bitte zuerst die Bestellung speichern.'
+                    : fehlendeAngaben.length > 0
+                    ? `Bestellung unvollständig — es fehlt: ${fehlendeAngaben.join(', ')}`
+                    : 'Bestellung als Beilagenauftrag in „Ausgaben & Beilagen" übernehmen'
+                }
+              >
+                ➡ Bestellung in Aufträge übernehmen
+              </button>
+              <button
                 onClick={alsNeueBestellungVorbereiten}
                 disabled={speichern}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-40"
@@ -506,6 +614,11 @@ function VerteilplanInhalt() {
         )}
         {geaendert && !meldung?.fehler && (
           <p className="mt-2 text-xs text-amber-700">● Ungespeicherte Änderungen</p>
+        )}
+        {aktiveVorlage && fehlendeAngaben.length > 0 && (
+          <p className="mt-2 text-xs text-amber-700">
+            ⚠ Für die Übernahme in Aufträge fehlt: {fehlendeAngaben.join(', ')}
+          </p>
         )}
       </div>
 
@@ -601,6 +714,18 @@ function VerteilplanInhalt() {
             </div>
             <p className="text-[11px] text-gray-400 mt-1">Memo und Link stehen nicht im Ausdruck.</p>
           </div>
+          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
+            <input
+              type="checkbox"
+              checked={kunde.beilageAngeliefert}
+              onChange={(e) => setKunde({ ...kunde, beilageAngeliefert: e.target.checked })}
+              className="w-4 h-4 accent-blue-600"
+            />
+            <span>
+              Beilage angeliefert
+              <span className="block text-[11px] text-gray-500">Voraussetzung für die Übernahme in Aufträge</span>
+            </span>
+          </label>
           <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
             <input
               type="checkbox"
