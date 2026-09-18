@@ -317,7 +317,7 @@ function VerteilplanInhalt() {
    * Dauerbestellungen).
    */
   async function inAuftragUebernehmen() {
-    if (!aktiveVorlage || fehlendeAngaben.length > 0 || !parameter) return;
+    if (!aktiveVorlage || aktiveVorlage.archiviert || fehlendeAngaben.length > 0 || !parameter) return;
     const { kw, jahr } = kwKeyParse(kunde.kwKey);
     if (kw == null || jahr == null) return;
 
@@ -548,16 +548,19 @@ function VerteilplanInhalt() {
           </button>
           {aktiveVorlage && (
             <>
+              {/* Archivierte Bestellungen sind erledigt — kein zweiter Auftrag. */}
               <button
                 onClick={inAuftragUebernehmen}
-                disabled={speichern || geaendert || fehlendeAngaben.length > 0}
+                disabled={speichern || geaendert || aktiveVorlage.archiviert || fehlendeAngaben.length > 0}
                 className={`px-3 py-1.5 text-sm rounded-lg font-medium ${
-                  !speichern && !geaendert && fehlendeAngaben.length === 0
+                  !speichern && !geaendert && !aktiveVorlage.archiviert && fehlendeAngaben.length === 0
                     ? 'bg-green-600 text-white hover:bg-green-700'
                     : 'bg-gray-200 text-gray-500 cursor-not-allowed'
                 }`}
                 title={
-                  geaendert
+                  aktiveVorlage.archiviert
+                    ? 'Bereits übernommen und archiviert — für eine erneute Übernahme zuerst „Aus Archiv holen".'
+                    : geaendert
                     ? 'Bitte zuerst die Bestellung speichern.'
                     : fehlendeAngaben.length > 0
                     ? `Bestellung unvollständig — es fehlt: ${fehlendeAngaben.join(', ')}`
