@@ -1808,3 +1808,44 @@ export interface UmgesetzteMengenanpassung extends UmgesetzteAnpassungBase {
 export type UmgesetzteAnpassung =
   | UmgesetzterStandardWechsel
   | UmgesetzteMengenanpassung;
+
+/**
+ * KW-Vermerk — ein Freitext-Hinweis pro Kalenderwoche, der in der
+ * Personalplanung im Tabellenkopf unterhalb des Datums erscheint.
+ * docId = `${jahr}-${kw}` — Upsert, höchstens ein Vermerk je KW.
+ *
+ * Typische Inhalte:
+ *  - Thema einer Sonderseite, zu der Anzeigenakquise läuft
+ *  - Ferien-/Feiertagshinweise mit Auswirkung auf die Produktion
+ *  - sonstige Wochen, die besondere Aufmerksamkeit brauchen
+ */
+export type KwVermerkKategorie = 'sonderseite' | 'ferien' | 'hinweis';
+
+export const KW_VERMERK_KATEGORIE_LABELS: Record<KwVermerkKategorie, string> = {
+  sonderseite: 'Sonderseite / Anzeigenakquise',
+  ferien: 'Ferien / Feiertage',
+  hinweis: 'Allgemeiner Hinweis',
+};
+
+/** Icon + Farbklassen je Kategorie — einheitlich in Kopf und Modal. */
+export const KW_VERMERK_KATEGORIE_STYLE: Record<
+  KwVermerkKategorie,
+  { icon: string; chip: string }
+> = {
+  sonderseite: { icon: '📰', chip: 'bg-violet-100 text-violet-800 border-violet-300' },
+  ferien: { icon: '🏖', chip: 'bg-sky-100 text-sky-800 border-sky-300' },
+  hinweis: { icon: '⚠', chip: 'bg-amber-100 text-amber-900 border-amber-300' },
+};
+
+export interface KwVermerk {
+  id: string;
+  jahr: number;
+  kw: number;
+  /** Der angezeigte Vermerktext. Leer = Datensatz wird gelöscht. */
+  text: string;
+  kategorie: KwVermerkKategorie;
+  /** Wer den Vermerk zuletzt gepflegt hat (Anzeige im Tooltip/Modal). */
+  bearbeiterName?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}

@@ -33,6 +33,8 @@ import type {
   UrlaubsEintrag,
   UrlaubStatus,
   StandardAustraegerWechselPlan,
+  KwVermerk,
+  KwVermerkKategorie,
 } from '../types';
 
 function now(): number {
@@ -542,4 +544,66 @@ export async function setzeAustraegerwechselPlan(
 
 export async function loescheAustraegerwechselPlan(teilgebietId: string): Promise<void> {
   await deleteDoc(doc(db, WECHSEL_COLL, teilgebietId)).catch(() => {});
+}
+
+// ============================================================
+// KW-Vermerke (Kopfzeilen-Hinweis je Kalenderwoche)
+// ============================================================
+//
+// Ein Freitext je (jahr, kw) — docId = `${jahr}-${kw}`. Wird in der
+// Personalplanung direkt unter dem Datum im Tabellenkopf angezeigt:
+// Sonderseiten-Themen (Anzeigenakquise), Ferienhinweise, sonstige
+// Wochen mit besonderem Abstimmungsbedarf.
+//
+// Leerer Text → Datensatz wird gelöscht (wie bei den übrigen
+// Planungs-Collections), damit keine leeren Hüllen liegen bleiben.
+
+const KW_VERMERK_COLL = 'kwVermerke';
+
+function kwVermerkDocId(jahr: number, kw: number): string {
+  return `${jahr}-${kw}`;
+}
+
+export function kwVermerkeListener(
+  jahr: number,
+  cb: (list: KwVermerk[]) => void,
+): Unsubscribe {
+  const q = query(collection(db, KW_VERMERK_COLL), where('jahr', '==', jahr));
+  return onSnapshot(q, (snap) => {
+    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as KwVermerk)));
+  });
+}
+
+export async function setzeKwVermerk(
+  jahr: number,
+  kw: number,
+  text: string,
+  kategorie: KwVermerkKategorie,
+  bearbeiterName?: string,
+): Promise<void> {
+  const ref = doc(db, KW_VERMERK_COLL, kwVermerkDocId(jahr, kw));
+  const textClean = text.trim();
+  // Kein Text mehr → Datensatz entfernen statt leer speichern.
+  if (!textClean) {
+    await deleteDoc(ref).catch(() => {});
+    return;
+  }
+  const existing = await getDoc(ref);
+  const ts = now();
+  await setDoc(
+    ref,
+    stripUndef({
+      jahr,
+      kw,
+      text: textClean,
+      kategorie,
+      bearbeiterName: bearbeiterName?.trim() || undefined,
+      erstelltAm: existing.exists() ? (existing.data().erstelltAm ?? ts) : ts,
+      aktualisiertAm: ts,
+    }),
+  );
+}
+
+export async function loescheKwVermerk(jahr: number, kw: number): Promise<void> {
+  await deleteDoc(doc(db, KW_VERMERK_COLL, kwVermerkDocId(jahr, kw))).catch(() => {});
 }

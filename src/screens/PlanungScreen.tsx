@@ -49,6 +49,9 @@ import {
   austraegerwechselPlanListener,
   setzeAustraegerwechselPlan,
   loescheAustraegerwechselPlan,
+  kwVermerkeListener,
+  setzeKwVermerk,
+  loescheKwVermerk,
 } from '../lib/planung';
 import { getISOWeek, getISOYear } from '../lib/kalender';
 import { ferienInKw, feiertageInKw } from '../lib/ferien';
@@ -200,6 +203,10 @@ import {
   DRUCKSAAL_TAETIGKEIT_LABELS,
   ZUSAMMENTRAGER_STATUS_LABELS,
   URLAUB_STATUS_LABELS,
+  KW_VERMERK_KATEGORIE_LABELS,
+  KW_VERMERK_KATEGORIE_STYLE,
+  type KwVermerk,
+  type KwVermerkKategorie,
   type DrucksaalPlanung,
   type DrucksaalTaetigkeit,
   type FahrerPlanung,
@@ -239,10 +246,13 @@ const TAETIGKEITEN: DrucksaalTaetigkeit[] = [
 // Spaltenbreite muss in allen Tabellen identisch sein.
 const KW_COL_PX = 96;
 const LABEL_COL_PX = 220;
-// Höhe der KW-Kopfzeile in Pixeln (zweizeilig: KW-Nummer + Datum + py-2).
-// Die Sektionen-Header docken direkt darunter an und bleiben so beim
-// vertikalen Scrollen sichtbar.
-const KW_HEADER_HEIGHT_PX = 50;
+// Höhe der KW-Kopfzeile in Pixeln (dreizeilig: KW-Nummer + Datum +
+// Vermerk-Zeile + py-2). Die Vermerk-Zeile wird IMMER gerendert (auch
+// leer), damit die Kopfhöhe konstant bleibt — die Sektionen-Header
+// docken mit festem Offset darunter an und bleiben beim vertikalen
+// Scrollen sichtbar.
+const KW_VERMERK_ROW_PX = 16;
+const KW_HEADER_HEIGHT_PX = 50 + KW_VERMERK_ROW_PX;
 const SECTION_STICKY_TOP_PX = KW_HEADER_HEIGHT_PX;
 
 // Set der KWs, die jeweils die LETZTE KW ihres Monats (Abrechnungsperiode)
@@ -314,6 +324,9 @@ function PlanungContent() {
   const [protokollModal, setProtokollModal] = useState<
     'austraeger-ausfall' | 'dauerhafter-wechsel' | null
   >(null);
+  // KW-Vermerke (Kopfzeilen-Hinweise: Sonderseiten-Themen, Ferien, …).
+  const [kwVermerke, setKwVermerke] = useState<KwVermerk[]>([]);
+  const [vermerkModalKw, setVermerkModalKw] = useState<number | null>(null);
 
   // Vereinheitlichte Liste der Wechsel-Sektion: enthält ALLE Zeilen,
   // die in „🔁 Standard-Wechsel" angezeigt werden — sowohl persistierte
@@ -365,8 +378,16 @@ function PlanungContent() {
     // Wechselplan ist jahresübergreifend — kein Filter.
     const u7 = austraegerwechselPlanListener(setWechselplan);
     const u8 = auditLogListener(setAuditLog);
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
+    const u9 = kwVermerkeListener(jahr, setKwVermerke);
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); };
   }, [jahr]);
+
+  // Lookup KW → Vermerk (max. ein Vermerk je KW).
+  const vermerkNachKw = useMemo(() => {
+    const m = new Map<number, KwVermerk>();
+    for (const v of kwVermerke) m.set(v.kw, v);
+    return m;
+  }, [kwVermerke]);
 
   // Beilagen (live) — für die Soll-Zeit-Berechnung pro KW und die
   // Beilagen-Sektion. Dazu die Auftragsvorlagen (bestellte Beilagen).
@@ -928,6 +949,8 @@ function PlanungContent() {
             aktuelleKw={currentKW.jahr === jahr ? currentKW.kw : null}
             ausgabeNachKw={ausgabeNachKw}
             periodeNachKw={periodeNachKw}
+            vermerkNachKw={vermerkNachKw}
+            onVermerkKlick={(kw) => setVermerkModalKw(kw)}
           />
 
           {/* Zeile: Ferien (Niedersachsen) + Feiertage (DE + NDS) je KW. */}
@@ -1845,6 +1868,17 @@ function PlanungContent() {
         />
       )}
 
+      {/* ---- KW-Vermerk-Modal ---- */}
+      {vermerkModalKw !== null && (
+        <KwVermerkModal
+          jahr={jahr}
+          kw={vermerkModalKw}
+          existing={vermerkNachKw.get(vermerkModalKw)}
+          bearbeiterName={adminName || 'Unbekannt'}
+          onClose={() => setVermerkModalKw(null)}
+        />
+      )}
+
       {/* ---- Änderungsprotokoll-Modal ---- */}
       {protokollModal && (
         <AenderungsProtokollModal
@@ -1867,12 +1901,16 @@ function KwHeader({
   aktuelleKw,
   ausgabeNachKw,
   periodeNachKw,
+  vermerkNachKw,
+  onVermerkKlick,
 }: {
   kws: number[];
   jahr: number;
   aktuelleKw: number | null;
   ausgabeNachKw: Map<number, Ausgabe>;
   periodeNachKw: Map<number, { id: string; bezeichnung: string; monat: number; abgeschlossen: boolean }>;
+  vermerkNachKw: Map<number, KwVermerk>;
+  onVermerkKlick: (kw: number) => void;
 }) {
   // Alternierende Periode-Hintergründe — durch zwei Töne sortiert nach
   // dem Auftreten der Perioden im Jahr. Erkennen welche KW die letzte
@@ -1904,7 +1942,10 @@ function KwHeader({
         className="sticky left-0 z-30 bg-white border-r-2 border-gray-300 px-3 py-2 text-xs font-semibold text-gray-500"
         style={{ width: LABEL_COL_PX, minWidth: LABEL_COL_PX }}
       >
-        KW / {jahr}
+        <div>KW / {jahr}</div>
+        <div className="text-[9px] font-normal normal-case text-gray-400 mt-0.5">
+          untere Zeile: Vermerk je KW (klicken)
+        </div>
       </div>
       {kws.map((kw) => {
         const hatAusgabe = ausgabeNachKw.has(kw);
@@ -1914,6 +1955,8 @@ function KwHeader({
         const istLetzte = istLetzteKwDerPeriode(kw);
         const prev = periodeNachKw.get(kw - 1);
         const istErsteDerPeriode = periode && (!prev || prev.id !== periode.id);
+        const vermerk = vermerkNachKw.get(kw);
+        const vermerkStyle = vermerk ? KW_VERMERK_KATEGORIE_STYLE[vermerk.kategorie] : null;
 
         // Hintergrund: aktuelle KW > Sperre > alternierend pro Periode.
         let bgCls = '';
@@ -1953,10 +1996,187 @@ function KwHeader({
             <div className={`text-[10px] ${hatAusgabe ? 'text-green-700' : 'text-gray-400'}`}>
               {d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })}
             </div>
+            {/* Vermerk-Zeile — immer vorhanden (auch leer), damit die
+                Kopfhöhe konstant bleibt. Klick öffnet den Editor. */}
+            <button
+              type="button"
+              onClick={() => onVermerkKlick(kw)}
+              style={{ height: KW_VERMERK_ROW_PX }}
+              className={
+                `group mt-0.5 w-full rounded px-0.5 text-[9px] leading-none flex items-center justify-center gap-0.5 border ` +
+                (vermerkStyle
+                  ? `${vermerkStyle.chip} font-medium`
+                  : 'border-transparent text-gray-300 hover:border-gray-300 hover:text-gray-500')
+              }
+              title={
+                vermerk
+                  ? `${KW_VERMERK_KATEGORIE_LABELS[vermerk.kategorie]} — KW ${kw}\n\n${vermerk.text}` +
+                    (vermerk.bearbeiterName ? `\n\n(${vermerk.bearbeiterName})` : '') +
+                    '\n\nKlicken zum Bearbeiten'
+                  : `KW ${kw}: Vermerk hinzufügen (Sonderseite, Ferien, Hinweis …)`
+              }
+            >
+              {vermerk ? (
+                <>
+                  <span className="shrink-0">{vermerkStyle!.icon}</span>
+                  <span className="truncate">{vermerk.text}</span>
+                </>
+              ) : (
+                <span className="opacity-0 group-hover:opacity-100">＋ Vermerk</span>
+              )}
+            </button>
           </div>
         );
       })}
     </div>
+  );
+}
+
+// ============================================================
+// KW-Vermerk-Modal
+// ============================================================
+//
+// Freitext-Hinweis für genau eine Kalenderwoche — erscheint danach im
+// Tabellenkopf unter dem Datum. Gedacht für Sonderseiten-Themen (zu
+// denen Anzeigenakquise läuft), Ferienhinweise und sonstige Wochen mit
+// besonderem Abstimmungsbedarf.
+
+const KW_VERMERK_KATEGORIEN: KwVermerkKategorie[] = ['sonderseite', 'ferien', 'hinweis'];
+
+function KwVermerkModal({
+  jahr,
+  kw,
+  existing,
+  bearbeiterName,
+  onClose,
+}: {
+  jahr: number;
+  kw: number;
+  existing?: KwVermerk;
+  bearbeiterName: string;
+  onClose: () => void;
+}) {
+  const [text, setText] = useState(existing?.text ?? '');
+  const [kategorie, setKategorie] = useState<KwVermerkKategorie>(
+    existing?.kategorie ?? 'sonderseite',
+  );
+  const [saving, setSaving] = useState(false);
+  const d = donnerstagDerKW(kw, jahr);
+
+  async function speichern() {
+    setSaving(true);
+    try {
+      await setzeKwVermerk(jahr, kw, text, kategorie, bearbeiterName);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function loeschen() {
+    if (!confirm(`Vermerk für KW ${kw}/${jahr} wirklich löschen?`)) return;
+    setSaving(true);
+    try {
+      await loescheKwVermerk(jahr, kw);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={`Vermerk — KW ${kw}/${jahr} (Do ${d.toLocaleDateString('de-DE')})`}
+      size="md"
+    >
+      <div className="space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Art des Vermerks</label>
+          <div className="flex flex-wrap gap-2">
+            {KW_VERMERK_KATEGORIEN.map((k) => {
+              const st = KW_VERMERK_KATEGORIE_STYLE[k];
+              const aktiv = k === kategorie;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setKategorie(k)}
+                  className={
+                    `px-3 py-1.5 rounded-lg border text-sm ` +
+                    (aktiv
+                      ? `${st.chip} font-semibold ring-2 ring-offset-1 ring-gray-400`
+                      : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50')
+                  }
+                >
+                  {st.icon} {KW_VERMERK_KATEGORIE_LABELS[k]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">
+            Vermerktext
+          </label>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={3}
+            autoFocus
+            placeholder={'z. B. Sonderseite „Frühlingsmarkt Uslar“ — Anzeigenakquise bis KW 12'}
+            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+          />
+          <p className="mt-1 text-[11px] text-gray-500">
+            Erscheint im Tabellenkopf unter dem Datum. Da die Spalte schmal ist,
+            wird der Text dort gekürzt — die vollständige Fassung zeigt der
+            Tooltip beim Überfahren mit der Maus. Kurze Formulierungen sind also
+            am besten lesbar.
+          </p>
+        </div>
+
+        {existing && (
+          <div className="text-[11px] text-gray-500">
+            Zuletzt geändert am {new Date(existing.aktualisiertAm).toLocaleString('de-DE')}
+            {existing.bearbeiterName ? ` von ${existing.bearbeiterName}` : ''}
+          </div>
+        )}
+
+        <div className="flex justify-between gap-2 pt-2 border-t border-gray-200">
+          <div>
+            {existing && (
+              <button
+                type="button"
+                onClick={loeschen}
+                disabled={saving}
+                className="text-red-600 hover:text-red-700 disabled:text-gray-400 text-sm font-medium px-3 py-2"
+              >
+                Löschen
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Abbrechen
+            </button>
+            <button
+              type="button"
+              onClick={speichern}
+              disabled={saving}
+              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white text-sm font-medium px-4 py-2 rounded-lg"
+            >
+              Speichern
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
