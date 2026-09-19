@@ -1820,6 +1820,13 @@ export async function schreibeAuditLog(
   });
 }
 
+/** Komplettes Änderungsprotokoll einmalig laden, neueste zuerst. */
+export async function ladeAuditLog(): Promise<AuditLog[]> {
+  const q = query(collection(db, 'auditlog'), orderBy('zeitstempel', 'desc'));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as AuditLog));
+}
+
 /** Live-Listener über das komplette Änderungsprotokoll, neueste zuerst. */
 export function auditLogListener(cb: (list: AuditLog[]) => void): Unsubscribe {
   const q = query(collection(db, 'auditlog'), orderBy('zeitstempel', 'desc'));

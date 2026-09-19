@@ -2,11 +2,12 @@
 // Änderungsprotokoll — geteilte Verlaufsansicht
 // ============================================================
 //
-// Read-only Verlaufsansicht der Collection `auditlog`, gefiltert auf einen
-// Bereich (Austräger-Ausfälle / Standard-Wechsel / Teilgebietsanpassung).
-// Ermöglicht bei Reklamationen die Nachvollziehbarkeit, wer wann was
-// geändert hat. Wird sowohl aus der Personalplanung als auch aus der
-// Teilgebiete-Verwaltung geöffnet.
+// Read-only Verlaufsansicht der Collection `auditlog`. Gefiltert wird entweder
+// auf einen Bereich (Austräger-Ausfälle / Standard-Wechsel / Teilgebiets-
+// anpassung / Teilgebietsdaten) oder — mit eigenem Titel — auf ein einzelnes
+// Teilgebiet. Ermöglicht bei Reklamationen die Nachvollziehbarkeit, wer wann
+// was geändert hat. Wird aus der Personalplanung und aus der Teilgebiete-
+// Verwaltung geöffnet.
 
 import { useMemo, useState } from 'react';
 import Modal from './Modal';
@@ -22,6 +23,7 @@ const PROTOKOLL_BEREICH_TITEL: Record<AuditLog['bereich'], string> = {
   'austraeger-ausfall': 'Änderungsprotokoll — Austräger-Ausfälle / Springer',
   'dauerhafter-wechsel': 'Änderungsprotokoll — Planung dauerhafter Ausfälle / Standard-Wechsel',
   'teilgebiets-anpassung': 'Änderungsprotokoll — Teilgebietsanpassung (Stückzahl)',
+  'teilgebiet-stammdaten': 'Änderungsprotokoll — Teilgebietsdaten (Mengen, Straßen, Links)',
 };
 
 function formatZeitstempel(ts: number): string {
@@ -36,10 +38,14 @@ function formatZeitstempel(ts: number): string {
 
 export default function AenderungsProtokollModal({
   bereich,
+  titel,
   eintraege,
   onClose,
 }: {
-  bereich: AuditLog['bereich'];
+  /** Bereich, aus dem das Protokoll geöffnet wurde — steuert nur den Titel. */
+  bereich?: AuditLog['bereich'];
+  /** Eigener Titel (z. B. Protokoll eines einzelnen Teilgebiets). */
+  titel?: string;
   eintraege: AuditLog[];
   onClose: () => void;
 }) {
@@ -48,23 +54,32 @@ export default function AenderungsProtokollModal({
     const suchtext = filterText.trim().toLowerCase();
     if (!suchtext) return eintraege;
     return eintraege.filter((e) =>
-      [e.teilgebietName, e.mitarbeiterName ?? '', e.adminName, e.beschreibung]
+      [
+        e.teilgebietName,
+        e.mitarbeiterName ?? '',
+        e.adminName,
+        e.beschreibung,
+        e.feld ?? '',
+        e.altWert ?? '',
+        e.neuWert ?? '',
+      ]
         .join(' ')
         .toLowerCase()
         .includes(suchtext),
     );
   }, [eintraege, filterText]);
 
-  const titel = PROTOKOLL_BEREICH_TITEL[bereich] ?? 'Änderungsprotokoll';
+  const fensterTitel =
+    titel ?? (bereich ? PROTOKOLL_BEREICH_TITEL[bereich] : undefined) ?? 'Änderungsprotokoll';
 
   return (
-    <Modal isOpen={true} onClose={onClose} title={titel} size="lg">
+    <Modal isOpen={true} onClose={onClose} title={fensterTitel} size="lg">
       <div className="space-y-3">
         <input
           type="text"
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
-          placeholder="Filtern nach Teilgebiet, Mitarbeiter, Benutzer oder Text…"
+          placeholder="Filtern nach Teilgebiet, Mitarbeiter, Benutzer, Feld oder Text…"
           className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
         />
         <div className="text-[11px] text-gray-500">
@@ -104,7 +119,16 @@ export default function AenderungsProtokollModal({
                     </span>
                   )}
                 </div>
-                <div className="text-gray-500">{e.beschreibung}</div>
+                {/* Feldweise protokollierte Änderungen (Teilgebietsdoku): alt → neu */}
+                {e.feld && (
+                  <div className="text-gray-600">
+                    <span className="font-medium">{e.feld}:</span>{' '}
+                    <span className="line-through text-gray-400">{e.altWert || '—'}</span>
+                    {' → '}
+                    <span className="text-gray-800 font-medium">{e.neuWert || '—'}</span>
+                  </div>
+                )}
+                {!e.feld && <div className="text-gray-500">{e.beschreibung}</div>}
                 <div className="text-gray-400">von {e.adminName}</div>
               </div>
             ))

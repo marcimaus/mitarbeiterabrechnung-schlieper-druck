@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, useCallback, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -14,7 +14,22 @@ import {
   umgesetzteAnpassungenListener,
   schreibeAuditLog,
   auditLogListener,
+  speichereParameter,
 } from '../lib/db';
+import {
+  TEILGEBIETSDOKU_DRIVE_ORDNER_DEFAULT,
+  beschreibeNeuesTeilgebiet,
+  diffTeilgebiet,
+  protokolliereTeilgebietAenderungen,
+  sichereTeilgebietsdokuAktuell,
+  type TeilgebietDaten,
+} from '../lib/teilgebietsdoku';
+import {
+  dateizielVerfuegbar,
+  entferneZielordner,
+  waehleZielordner,
+  zielordnerName,
+} from '../lib/zielordner';
 import {
   austraegerwechselPlanListener,
 } from '../lib/planung';
@@ -117,6 +132,62 @@ function TeilgebieteInhalt() {
   const anpassungsProtokoll = useMemo(
     () => auditLog.filter((a) => a.bereich === 'teilgebiets-anpassung'),
     [auditLog],
+  );
+  // Protokoll eines einzelnen Teilgebiets (Link in jeder Zeile) — bewusst
+  // über ALLE Bereiche, damit Mengenanpassungen und Austräger-Wechsel
+  // zusammen mit der Stammdatenpflege in einer Historie stehen.
+  const [protokollTg, setProtokollTg] = useState<Teilgebiet | null>(null);
+  const protokollEinesTg = useMemo(
+    () => (protokollTg ? auditLog.filter((a) => a.teilgebietId === protokollTg.id) : []),
+    [auditLog, protokollTg],
+  );
+
+  // ---- Teilgebietsdoku: Sicherung nach jeder Änderung ----------------------
+  // Führende Quelle ist die App; nach jeder Änderung wird der komplette Stand
+  // als Excel-Datei in den konfigurierten Ordner (lokal synchronisiertes
+  // Google Drive) geschrieben. Ohne Zielordner fällt die App auf den
+  // normalen Browser-Download zurück.
+  const autoSicherung = parameter?.teilgebietsdokuAutoSicherung ?? true;
+  const [dokuStatus, setDokuStatus] = useState('');
+  const [dokuLaeuft, setDokuLaeuft] = useState(false);
+  const [zielordner, setZielordner] = useState<string | null>(null);
+  useEffect(() => {
+    void zielordnerName().then(setZielordner);
+  }, []);
+
+  const sichereDoku = useCallback(
+    async (anlass: string) => {
+      setDokuLaeuft(true);
+      setDokuStatus('… Teilgebietsdoku wird gesichert');
+      try {
+        const ergebnis = await sichereTeilgebietsdokuAktuell({ adminName, anlass });
+        setDokuStatus(
+          ergebnis.ziel === 'ordner'
+            ? `✓ Gesichert als ${ergebnis.dateiname} im Ordner „${ergebnis.ordnerName}"`
+            : `✓ ${ergebnis.dateiname} heruntergeladen — kein Zielordner hinterlegt, die Datei liegt im Download-Ordner und muss ins Drive verschoben werden.`,
+        );
+      } catch (e) {
+        console.error(e);
+        setDokuStatus('⚠ Sicherung fehlgeschlagen — bitte „Jetzt sichern" erneut versuchen.');
+      } finally {
+        setDokuLaeuft(false);
+      }
+    },
+    [adminName],
+  );
+
+  /** Nach einer Änderung an einem Teilgebiet: kompletten Stand sichern. */
+  const nachAenderung = useCallback(
+    (anlass: string) => {
+      if (!autoSicherung) {
+        setDokuStatus(
+          'ℹ Automatische Sicherung ist ausgeschaltet — der geänderte Stand wurde nicht gesichert.',
+        );
+        return;
+      }
+      void sichereDoku(anlass);
+    },
+    [autoSicherung, sichereDoku],
   );
 
   // Zeitwert (Stunden) aus Wegstrecke + Stückzahl
@@ -315,6 +386,18 @@ function TeilgebieteInhalt() {
 
       {hauptview === 'liste' && (
       <>
+      {/* Sicherung der Teilgebietsdoku */}
+      <TeilgebietsdokuBox
+        isAdmin={isAdmin}
+        driveOrdnerUrl={parameter?.teilgebietsdokuDriveOrdnerUrl ?? TEILGEBIETSDOKU_DRIVE_ORDNER_DEFAULT}
+        autoSicherung={autoSicherung}
+        zielordner={zielordner}
+        onZielordnerGeaendert={setZielordner}
+        status={dokuStatus}
+        laeuft={dokuLaeuft}
+        onJetztSichern={() => void sichereDoku('manuelle Sicherung')}
+      />
+
       {/* Filter */}
       <div className="flex flex-wrap gap-3 mb-4">
         <input
@@ -476,7 +559,14 @@ function TeilgebieteInhalt() {
                     getAustraeger(tg.standardAustraegerId)
                   )}
                 </td>
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <button
+                    onClick={() => setProtokollTg(tg)}
+                    className="text-gray-500 hover:text-blue-700 text-xs mr-3"
+                    title="Änderungsprotokoll dieses Teilgebiets (Mengen, Straßen, Links, Austräger-Wechsel)"
+                  >
+                    📋 Protokoll
+                  </button>
                   <button
                     onClick={() => {
                       setEditTarget(tg);
@@ -503,12 +593,274 @@ function TeilgebieteInhalt() {
           initial={editTarget}
           wechselplaene={wechselplaene}
           einsaetzeAktJahr={einsaetzeAktJahr}
-          onSave={() => setShowForm(false)}
+          onProtokollOeffnen={
+            editTarget
+              ? () => {
+                  setShowForm(false);
+                  setProtokollTg(editTarget);
+                }
+              : undefined
+          }
+          onSave={(stand, neuAngelegt) => {
+            setShowForm(false);
+            nachAenderung(
+              neuAngelegt
+                ? `Teilgebiet ${stand.name} angelegt`
+                : `Änderung an Teilgebiet ${stand.name}`,
+            );
+          }}
           onCancel={() => setShowForm(false)}
         />
       </Modal>
 
+      {protokollTg && (
+        <AenderungsProtokollModal
+          titel={`Änderungsprotokoll — Teilgebiet ${protokollTg.name}`}
+          eintraege={protokollEinesTg}
+          onClose={() => setProtokollTg(null)}
+        />
+      )}
+
       </>
+      )}
+    </div>
+  );
+}
+
+// =====================================================================
+// Sicherung der Teilgebietsdoku (Zielordner + Status)
+// =====================================================================
+//
+// Führende Quelle der Teilgebiets-Dokumentation ist die App. Nach jeder
+// Änderung wird der komplette Stand als Excel-Datei gesichert — Dateiname
+// mit vorangestelltem Zeitpunkt (JJJJ-MM-TT-HHMM).
+//
+// Ein Browser darf Downloads nicht selbst in einen beliebigen Ordner legen.
+// Der Admin wählt den (lokal synchronisierten) Google-Drive-Ordner deshalb
+// einmal über den Ordner-Dialog aus; danach schreibt die App jede Sicherung
+// ohne weitere Rückfrage dorthin. Ohne Ordnerwahl — oder in Browsern ohne
+// File System Access API — fällt die App auf den normalen Download zurück.
+
+function TeilgebietsdokuBox({
+  isAdmin,
+  driveOrdnerUrl,
+  autoSicherung,
+  zielordner,
+  onZielordnerGeaendert,
+  status,
+  laeuft,
+  onJetztSichern,
+}: {
+  isAdmin: boolean;
+  driveOrdnerUrl: string;
+  autoSicherung: boolean;
+  /** Name des lokal gewählten Zielordners, null = keiner hinterlegt. */
+  zielordner: string | null;
+  onZielordnerGeaendert: (name: string | null) => void;
+  status: string;
+  laeuft: boolean;
+  onJetztSichern: () => void;
+}) {
+  const [details, setDetails] = useState(false);
+  const [urlBearbeiten, setUrlBearbeiten] = useState(false);
+  const [urlDraft, setUrlDraft] = useState(driveOrdnerUrl);
+  const [fehler, setFehler] = useState('');
+
+  const verfuegbar = dateizielVerfuegbar();
+
+  async function waehlen() {
+    setFehler('');
+    const name = await waehleZielordner();
+    if (name) onZielordnerGeaendert(name);
+  }
+
+  async function entfernen() {
+    await entferneZielordner();
+    onZielordnerGeaendert(null);
+  }
+
+  async function urlSpeichern() {
+    try {
+      await speichereParameter({
+        teilgebietsdokuDriveOrdnerUrl: urlDraft.trim() || TEILGEBIETSDOKU_DRIVE_ORDNER_DEFAULT,
+      });
+      setUrlBearbeiten(false);
+    } catch (e) {
+      console.error(e);
+      setFehler('Der Drive-Ordner konnte nicht gespeichert werden.');
+    }
+  }
+
+  async function autoUmschalten(aktiv: boolean) {
+    try {
+      await speichereParameter({ teilgebietsdokuAutoSicherung: aktiv });
+    } catch (e) {
+      console.error(e);
+      setFehler('Die Einstellung konnte nicht gespeichert werden.');
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="font-medium text-sky-900">🗂 Teilgebietsdoku-Sicherung</span>
+        <span className="text-xs text-sky-800">
+          {autoSicherung ? 'nach jeder Änderung' : 'automatische Sicherung aus'} ·{' '}
+          {zielordner ? (
+            <>
+              Ziel: Ordner „<strong>{zielordner}</strong>"
+            </>
+          ) : (
+            'kein Zielordner hinterlegt (Download-Ordner)'
+          )}
+        </span>
+        <a
+          href={driveOrdnerUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs text-sky-700 underline hover:text-sky-900"
+          title="Google-Drive-Ordner der Sicherungen öffnen"
+        >
+          Drive-Ordner öffnen ↗
+        </a>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onJetztSichern}
+            disabled={laeuft}
+            className="text-xs bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white rounded px-3 py-1.5"
+          >
+            {laeuft ? '… sichert' : '⬇ Jetzt sichern'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setDetails((v) => !v)}
+            className="text-xs text-sky-700 hover:text-sky-900 underline"
+          >
+            {details ? 'Einstellungen ausblenden' : 'Einstellungen'}
+          </button>
+        </div>
+      </div>
+
+      {status && <div className="mt-1.5 text-xs text-sky-900">{status}</div>}
+      {fehler && <div className="mt-1.5 text-xs text-red-600">{fehler}</div>}
+
+      {details && (
+        <div className="mt-3 space-y-3 border-t border-sky-200 pt-3 text-xs text-sky-900">
+          <p className="text-sky-800">
+            Gesichert wird der komplette Stand aller Teilgebiete als Excel-Datei: ein Blatt je
+            Teilgebiet (Grunddaten, Straßenliste mit Menge je Straße, Sonderauslagen, Protokoll),
+            eine Übersicht aller Teilgebiete mit Mengen und das gesamte Änderungsprotokoll.
+            Dateiname: <code>JJJJ-MM-TT-HHMM_Teilgebietsdoku.xlsx</code>.
+          </p>
+
+          {/* Zielordner auf diesem Rechner */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">Zielordner auf diesem Rechner:</span>
+            <span>{zielordner ? `„${zielordner}"` : '— keiner gewählt —'}</span>
+            {isAdmin && verfuegbar && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void waehlen()}
+                  className="border border-sky-300 rounded px-2 py-1 hover:bg-sky-100"
+                >
+                  {zielordner ? '📁 Ordner ändern' : '📁 Ordner wählen'}
+                </button>
+                {zielordner && (
+                  <button
+                    type="button"
+                    onClick={() => void entfernen()}
+                    className="text-sky-700 underline hover:text-sky-900"
+                  >
+                    entfernen
+                  </button>
+                )}
+              </>
+            )}
+            {!verfuegbar && (
+              <span className="text-sky-700">
+                Dieser Browser kann nicht direkt in einen Ordner schreiben — die Datei landet im
+                Download-Ordner (Chrome/Edge empfohlen).
+              </span>
+            )}
+          </div>
+          <p className="text-sky-700">
+            Zu wählen ist der lokal synchronisierte Google-Drive-Ordner (Laufwerk „Google Drive"
+            → Ordner der Teilgebietsdoku). Die Auswahl gilt pro Browser und Rechner; nach einem
+            Browser-Neustart fragt der Browser einmalig nach der Schreib-Erlaubnis.
+          </p>
+
+          {/* Google-Drive-Ordner (Link) */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">Google-Drive-Ordner:</span>
+            {!urlBearbeiten ? (
+              <>
+                <a
+                  href={driveOrdnerUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline text-sky-700 hover:text-sky-900 truncate max-w-[32rem]"
+                  title={driveOrdnerUrl}
+                >
+                  {driveOrdnerUrl}
+                </a>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUrlDraft(driveOrdnerUrl);
+                      setUrlBearbeiten(true);
+                    }}
+                    className="border border-sky-300 rounded px-2 py-1 hover:bg-sky-100"
+                  >
+                    ✎ ändern
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <input
+                  type="url"
+                  value={urlDraft}
+                  onChange={(e) => setUrlDraft(e.target.value)}
+                  className="flex-1 min-w-[20rem] border border-gray-300 rounded px-2 py-1"
+                  placeholder="https://drive.google.com/drive/folders/…"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => void urlSpeichern()}
+                  className="bg-sky-600 hover:bg-sky-700 text-white rounded px-3 py-1"
+                >
+                  Übernehmen
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUrlDraft(driveOrdnerUrl);
+                    setUrlBearbeiten(false);
+                  }}
+                  className="text-sky-700 underline hover:text-sky-900"
+                >
+                  Abbrechen
+                </button>
+              </>
+            )}
+          </div>
+
+          {isAdmin && (
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={autoSicherung}
+                onChange={(e) => void autoUmschalten(e.target.checked)}
+                className="rounded"
+              />
+              Nach jeder Änderung an einem Teilgebiet automatisch sichern
+            </label>
+          )}
+        </div>
       )}
     </div>
   );
@@ -827,16 +1179,20 @@ function TeilgebietForm({
   initial,
   wechselplaene,
   einsaetzeAktJahr,
+  onProtokollOeffnen,
   onSave,
   onCancel,
 }: {
   initial: Teilgebiet | null;
   wechselplaene: StandardAustraegerWechselPlan[];
   einsaetzeAktJahr: Einsatz[];
-  onSave: () => void;
+  /** Öffnet das Änderungsprotokoll dieses Teilgebiets (nur beim Bearbeiten). */
+  onProtokollOeffnen?: () => void;
+  /** Meldet den gespeicherten Stand zurück — Grundlage der Doku-Sicherung. */
+  onSave: (stand: Teilgebiet, neuAngelegt: boolean) => void;
   onCancel: () => void;
 }) {
-  const { touren, mitarbeiter, userRole } = useApp();
+  const { touren, mitarbeiter, userRole, adminName } = useApp();
   const isAdmin = userRole === 'admin';
 
   // F: Standardausträger-Select sperren, wenn in der Personalplanung noch
@@ -980,7 +1336,7 @@ function TeilgebietForm({
     setSaving(true);
     setError('');
     try {
-      const payload = {
+      const payload: TeilgebietDaten = {
         ...form,
         stueckzahl: stueckzahlFinal,
         strassen,
@@ -1021,7 +1377,41 @@ function TeilgebietForm({
       }
       await Promise.all(updates);
 
-      onSave();
+      // ---- Änderungsprotokoll (Teilgebietsdoku) ----
+      // Feldweise, damit im Protokoll und in der Excel-Doku sichtbar ist,
+      // WAS geändert wurde (Stückzahl, Wegstrecke, Straßenliste inkl. Menge
+      // je Straße, externe Links …) — und nicht nur, DASS gespeichert wurde.
+      if (initial) {
+        const aenderungen = diffTeilgebiet(initial, payload, { touren, mitarbeiter });
+        if (aenderungen.length > 0) {
+          await protokolliereTeilgebietAenderungen({
+            teilgebietId: tgId,
+            teilgebietName: payload.name,
+            adminName,
+            aenderungen,
+          });
+        }
+      } else {
+        await schreibeAuditLog({
+          adminName: adminName || 'Unbekannt',
+          bereich: 'teilgebiet-stammdaten',
+          aktion: 'erstellt',
+          teilgebietId: tgId,
+          teilgebietName: payload.name,
+          mitarbeiterId: null,
+          mitarbeiterName: null,
+          beschreibung: beschreibeNeuesTeilgebiet(payload, { touren, mitarbeiter }),
+        });
+      }
+
+      const jetzt = Date.now();
+      const stand: Teilgebiet = {
+        ...payload,
+        id: tgId,
+        erstelltAm: initial?.erstelltAm ?? jetzt,
+        aktualisiertAm: jetzt,
+      };
+      onSave(stand, !initial);
     } catch (err) {
       setError('Fehler beim Speichern.');
       console.error(err);
@@ -1108,6 +1498,16 @@ function TeilgebietForm({
             )}
           </button>
         ))}
+        {onProtokollOeffnen && (
+          <button
+            type="button"
+            onClick={onProtokollOeffnen}
+            className="ml-auto self-center text-xs text-gray-500 hover:text-blue-700 underline px-2"
+            title="Änderungsprotokoll dieses Teilgebiets ansehen (schließt das Formular)"
+          >
+            📋 Protokoll dieses Teilgebiets
+          </button>
+        )}
       </div>
 
       {/* ---- Tab: Grunddaten ---- */}

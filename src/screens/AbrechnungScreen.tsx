@@ -34,6 +34,7 @@ import {
   loescheEinsatz,
   schreibeAuditLog,
 } from '../lib/db';
+import { sichereTeilgebietsdokuAktuell } from '../lib/teilgebietsdoku';
 import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
 import { getISOWeek, getISOYear } from '../lib/kalender';
@@ -2002,6 +2003,24 @@ function AbrechnungInhalt() {
   );
 }
 
+/**
+ * Teilgebietsdoku nach einer halb-automatisch umgesetzten Änderung sichern
+ * (Monatswechsel: Standardausträger-Wechsel, Mengenanpassung). Ein Fehler
+ * beim Sichern darf den Monatswechsel nicht abbrechen — die Änderung selbst
+ * ist da bereits gespeichert und protokolliert.
+ */
+async function sichereDokuNachUmsetzung(adminName: string, anlass: string): Promise<void> {
+  try {
+    await sichereTeilgebietsdokuAktuell({ adminName, anlass });
+  } catch (e) {
+    console.error('Sicherung der Teilgebietsdoku fehlgeschlagen:', e);
+    alert(
+      'Die Änderung wurde gespeichert und protokolliert, die Sicherung der Teilgebietsdoku ist ' +
+        'aber fehlgeschlagen. Bitte unter „Teilgebiete" → „Jetzt sichern" nachholen.',
+    );
+  }
+}
+
 // ---- Modal: Wechselplan-Übernahme (PlanungScreen-Quelle) ----
 //
 // Nach „Monatswechsel durchführen" werden Wechselpläne aus der
@@ -2083,6 +2102,9 @@ function WechselplanUebernahmeDialog({
       kwVon: p.abAusgabeKw ?? p.letzteAusgabeKw,
       kwBis: p.abAusgabeKw ?? p.letzteAusgabeKw,
       automatisch: true,
+      feld: 'Standardausträger',
+      altWert: bisher?.name ?? '— (unbesetzt)',
+      neuWert: neuer?.name ?? '— (unbesetzt)',
       beschreibung:
         `🤖 Automatisch durch die App umgesetzt (manuell angestoßen über „Monatswechsel" → „Übernehmen"): ` +
         `zuvor in der Personalplanung hinterlegter Wechselplan — Standardausträger ${
@@ -2112,6 +2134,10 @@ function WechselplanUebernahmeDialog({
       await protokolliereWechsel(p, tg, null);
       await aktualisiereTeilgebiet(tg.id, { standardAustraegerId: null });
       await loescheAustraegerwechselPlan(p.teilgebietId);
+      await sichereDokuNachUmsetzung(
+        adminName,
+        `Monatswechsel ${periode.bezeichnung}: ${tg.name} als unbesetzt übernommen`,
+      );
     } catch (e: any) {
       alert('Fehler beim Übernehmen: ' + (e.message ?? e));
     } finally {
@@ -2157,6 +2183,10 @@ function WechselplanUebernahmeDialog({
         await loescheEinsatz(e.id);
       }
       await loescheAustraegerwechselPlan(p.teilgebietId);
+      await sichereDokuNachUmsetzung(
+        adminName,
+        `Monatswechsel ${periode.bezeichnung}: Standardausträger-Wechsel ${tg.name}`,
+      );
     } catch (e: any) {
       alert('Fehler beim Übernehmen: ' + (e.message ?? e));
     } finally {
@@ -2368,11 +2398,18 @@ function StueckzahlAnpassungDialog({
         mitarbeiterName: null,
         jahr: periode.jahr,
         automatisch: true,
+        feld: 'Stückzahl',
+        altWert: `${tg.stueckzahl.toLocaleString('de-DE')} Stk`,
+        neuWert: `${w.neueStueckzahl.toLocaleString('de-DE')} Stk`,
         beschreibung:
           `🤖 Automatisch durch die App umgesetzt (manuell angestoßen über „Monatswechsel" → „Übernehmen"): ` +
           `zuvor vorgemerkte Stückzahl-Anpassung — ${tg.stueckzahl} → ${w.neueStueckzahl} Stk (Periode ${periode.bezeichnung})` +
           (w.bemerkung ? `; Bemerkung: "${w.bemerkung}"` : ''),
       });
+      await sichereDokuNachUmsetzung(
+        adminName,
+        `Monatswechsel ${periode.bezeichnung}: Mengenanpassung ${tg.name}`,
+      );
     } catch (e: any) {
       alert('Fehler beim Übernehmen: ' + (e.message ?? e));
     } finally {

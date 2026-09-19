@@ -1016,6 +1016,18 @@ export interface Parameter {
   // Restmenge eingegeben UND Meldung eingereicht (alles über QR-Code).
   // Wert in EUR. 0 = deaktiviert.
   bonusZeiterfassungEur?: number;
+  // ---- Teilgebietsdoku (Sicherung nach jeder Änderung) ----------------
+  /**
+   * Google-Drive-Ordner, in dem die Teilgebietsdoku gesichert wird. Dient als
+   * Anlaufstelle (Link in der App) und als Hinweis darauf, welcher lokal
+   * synchronisierte Ordner als Datei-Ziel zu wählen ist.
+   */
+  teilgebietsdokuDriveOrdnerUrl?: string;
+  /**
+   * Wenn true (Standard), wird nach jeder Änderung an einem Teilgebiet
+   * automatisch die komplette Teilgebietsdoku als Excel-Datei gesichert.
+   */
+  teilgebietsdokuAutoSicherung?: boolean;
 }
 
 // ---- Lohnkonto -----------------------------------------------
@@ -1485,7 +1497,12 @@ export interface AuditLog {
   zeitstempel: number;
   /** Name des angemeldeten Admin/Abrechnung-Benutzers (adminName aus AppContext). */
   adminName: string;
-  bereich: 'austraeger-ausfall' | 'dauerhafter-wechsel' | 'teilgebiets-anpassung';
+  bereich:
+    | 'austraeger-ausfall'
+    | 'dauerhafter-wechsel'
+    | 'teilgebiets-anpassung'
+    /** Direkte Pflege der Teilgebietsdaten (Stammdaten, Straßenliste, Links). */
+    | 'teilgebiet-stammdaten';
   aktion: 'erstellt' | 'geaendert' | 'geloescht';
   teilgebietId: string;
   /** Snapshot — Teilgebiet kann später umbenannt/gelöscht werden. */
@@ -1498,6 +1515,17 @@ export interface AuditLog {
   kwBis?: number;
   /** Menschenlesbare Zusammenfassung der Änderung (inkl. alt → neu, falls zutreffend). */
   beschreibung: string;
+  /**
+   * Strukturierte Angabe der geänderten Eigenschaft (z. B. "Stückzahl",
+   * "Wegstrecke", "Straßenliste", "Straße — Stückzahl", "Karten-Link").
+   * Nur bei feldweise protokollierten Änderungen gesetzt (Teilgebietsdoku);
+   * ältere Einträge tragen die Information nur in `beschreibung`.
+   */
+  feld?: string;
+  /** Wert vor der Änderung (bereits formatiert), '' = vorher nicht vorhanden. */
+  altWert?: string;
+  /** Wert nach der Änderung (bereits formatiert), '' = entfernt. */
+  neuWert?: string;
   /**
    * true = die Änderung wurde nicht direkt manuell eingegeben, sondern von der
    * App ausgeführt — z. B. die Übernahme eines Wechselplans/einer Stückzahl-
