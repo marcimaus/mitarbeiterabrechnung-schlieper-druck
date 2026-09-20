@@ -172,6 +172,19 @@ export default function AustraegerMeldungScreen() {
         setLoading(false);
         return;
       }
+      // Online-Erfassung ist nur für freigeschaltete Mitarbeiter vorgesehen.
+      // Ohne das Kennzeichen zeigt der Lieferschein weder QR-Code noch die
+      // gemeldeten Werte — eine Meldung über einen alten Link/Bookmark würde
+      // also unsichtbar bleiben. Darum hier sauber abweisen.
+      if (!ma.onlineErfassungAktiv) {
+        setFehler(
+          'Für dich ist die Online-Erfassung nicht freigeschaltet. Bitte trage die Zeiten '
+          + 'auf dem Lieferschein ein und sende ihn zurück (oder schicke ein Foto per '
+          + 'WhatsApp / E-Mail).'
+        );
+        setLoading(false);
+        return;
+      }
       setMitarbeiter(ma);
 
       // Explizite Einsätze des MA laden (Springer, manuell erfasste Standards …)

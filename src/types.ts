@@ -109,6 +109,16 @@ export interface Mitarbeiter {
    */
   istAbholer?: boolean;
   /**
+   * „Online-Erfassung aktiv": nur Mitarbeiter mit diesem Kennzeichen nutzen
+   * die Selbstmeldung (Zeiten + Restmengen) über den QR-Code / Meldungslink.
+   * Wirkt sich auf den Lieferschein aus — nur bei ihnen werden der
+   * Online-Erfassungs-QR-Code, der zugehörige Hinweistext und die bereits
+   * online gemeldeten Werte (Von/Bis/Pause/Restmenge) gedruckt. Alle anderen
+   * bekommen einen reinen Papier-Bogen zum Ausfüllen und Zurücksenden.
+   * Standard: deaktiviert (undefined/false) — auch für Bestandsmitarbeiter.
+   */
+  onlineErfassungAktiv?: boolean;
+  /**
    * „Drucksaal": Mitarbeiter ist im Drucksaal einsetzbar (Drucken, Falzen,
    * Schneiden, Verpacken). Nur diese erscheinen in der Drucksaal-Planung
    * der Personalplanungs-Maske. Nur Admin darf das Flag pflegen.

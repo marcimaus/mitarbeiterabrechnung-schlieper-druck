@@ -832,6 +832,7 @@ function MitarbeiterForm({
         ...(initial.fahrtkostenerstattung ? { fahrtkostenerstattung: true } : {}),
         ...(initial.fahrkostenEurProKm !== undefined ? { fahrkostenEurProKm: initial.fahrkostenEurProKm } : {}),
         ...(initial.istAbholer ? { istAbholer: true } : {}),
+        ...(initial.onlineErfassungAktiv ? { onlineErfassungAktiv: true } : {}),
         ...(initial.istDrucksaal ? { istDrucksaal: true } : {}),
         ...(initial.kuerzel ? { kuerzel: initial.kuerzel } : {}),
         ...(initial.vorlaeufigNichtAbmelden ? { vorlaeufigNichtAbmelden: true } : {}),
@@ -2505,6 +2506,27 @@ function MitarbeiterForm({
         </label>
       </FormField>
 
+      {/* Online-Erfassung — steuert QR-Code + gemeldete Werte auf dem Lieferschein */}
+      <FormField
+        label="Online-Erfassung"
+        hint="Nur wenn aktiv, trägt der Lieferschein den QR-Code zur Online-Erfassung, den Hinweistext dazu und die bereits gemeldeten Werte (Zeiten, Restmengen). Ohne das Kennzeichen ist der Lieferschein ein reiner Papier-Bogen zum Ausfüllen und Zurücksenden. Standard: deaktiviert."
+      >
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={(form as any).onlineErfassungAktiv ?? false}
+            onChange={(e) => setForm((f) => ({
+              ...f,
+              onlineErfassungAktiv: e.target.checked ? true : undefined,
+            } as any))}
+            className="w-4 h-4"
+          />
+          <span className="text-sm text-gray-700">
+            Online-Erfassung aktiv — meldet Zeiten und Restmengen selbst per QR-Code
+          </span>
+        </label>
+      </FormField>
+
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
       {/* PIN-Verwaltung (nur bei bestehenden Mitarbeitern) */}
@@ -2537,8 +2559,11 @@ function MitarbeiterForm({
         </div>
       </div>
 
-      {/* QR-Code / Meldungslink — für alle Mitarbeiter mit Teilgebietsfreigaben */}
-      {initial && freigaben.length > 0 && (
+      {/* QR-Code / Meldungslink — nur für Mitarbeiter mit Teilgebietsfreigaben,
+          die für die Online-Erfassung freigeschaltet sind. Ohne das Kennzeichen
+          gibt es keinen Meldungslink zum Teilen (und auch keinen QR-Code auf
+          dem Lieferschein). */}
+      {initial && freigaben.length > 0 && (form as any).onlineErfassungAktiv && (
         <AustraegerMeldungsLink mitarbeiterId={initial.id} name={form.name} />
       )}
 

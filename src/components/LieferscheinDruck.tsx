@@ -498,8 +498,15 @@ function LieferscheinSeite({
   // soll diesen Stapel NICHT mitnehmen.
   const istAbholer = ma.istAbholer === true;
 
+  // Online-Erfassung nur für freigeschaltete Mitarbeiter: sonst kein
+  // QR-Code, kein Hinweistext dazu und keine bereits gemeldeten Werte
+  // (Zeiten, Restmengen) — der Schein bleibt ein reiner Papier-Bogen.
+  const onlineErfassung = ma.onlineErfassungAktiv === true;
+
   // Prüfe ob es bereits Online-Meldungen gibt
-  const mitMeldung = zeilen.filter((z) => z.einsatz?.meldungEingereichtAm).length;
+  const mitMeldung = onlineErfassung
+    ? zeilen.filter((z) => z.einsatz?.meldungEingereichtAm).length
+    : 0;
 
   return (
     <div
@@ -539,21 +546,23 @@ function LieferscheinSeite({
             Abrechnungsperiode: <strong>{periode.bezeichnung}</strong>
           </div>
         </div>
-        {/* QR-Codes rechts oben: Online-Erfassung + Straßenliste */}
+        {/* QR-Codes rechts oben: Online-Erfassung (nur bei Freischaltung) + Straßenliste */}
         <div style={{ display: 'flex', gap: '8px' }}>
-          <div style={{ textAlign: 'center' }}>
-            <img
-              src={qrUrl}
-              alt="QR-Code Online-Erfassung"
-              width={90}
-              height={90}
-              style={{ display: 'block', border: '1px solid #e5e7eb', borderRadius: '4px' }}
-              loading="lazy"
-            />
-            <div style={{ fontSize: '8px', color: '#6b7280', marginTop: '2px', maxWidth: '90px' }}>
-              Online-Erfassung
+          {onlineErfassung && (
+            <div style={{ textAlign: 'center' }}>
+              <img
+                src={qrUrl}
+                alt="QR-Code Online-Erfassung"
+                width={90}
+                height={90}
+                style={{ display: 'block', border: '1px solid #e5e7eb', borderRadius: '4px' }}
+                loading="lazy"
+              />
+              <div style={{ fontSize: '8px', color: '#6b7280', marginTop: '2px', maxWidth: '90px' }}>
+                Online-Erfassung
+              </div>
             </div>
-          </div>
+          )}
           <div style={{ textAlign: 'center' }}>
             <img
               src={strassenQrUrl}
@@ -641,7 +650,7 @@ function LieferscheinSeite({
             {tg.plz && <span style={{ fontWeight: 400, color: '#6b7280', marginLeft: '6px' }}>{tg.plz}</span>}
           </div>
           <div style={{ color: '#374151' }}>
-            <span className="ls-icon">📦</span> {tg.stueckzahl} Stück &nbsp;·&nbsp; <span className="ls-icon">🛣️</span> {formatKm(tg.wegstreckeM)}
+            {tg.stueckzahl} Stück &nbsp;·&nbsp; {formatKm(tg.wegstreckeM)}
           </div>
           {mitMeldung > 0 && (
             <div style={{ color: '#374151', fontSize: '10px', marginTop: '4px' }}>
@@ -734,7 +743,9 @@ function LieferscheinSeite({
             }
 
             // Standard-Zeile (kein Einsatz-Dokument = Standard-Austräger)
-            const az = z.einsatz?.arbeitszeit; // eventuell bereits online gemeldet
+            // Gemeldete Zeiten nur bei freigeschalteter Online-Erfassung
+            // ausweisen — sonst bleiben die Felder zum Ausfüllen leer.
+            const az = onlineErfassung ? z.einsatz?.arbeitszeit : undefined;
             const beilagenText = z.beilagen.length > 0
               ? z.beilagen.map((b) => b.arbeitstitel || b.kundenname).join(', ')
               : '';
@@ -782,7 +793,7 @@ function LieferscheinSeite({
                 </td>
                 {/* Restmenge */}
                 <td style={{ textAlign: 'center' }}>
-                  {z.einsatz?.meldungEingereichtAm != null ? (
+                  {onlineErfassung && z.einsatz?.meldungEingereichtAm != null ? (
                     <span style={{ color: z.einsatz.restmenge ? '#f97316' : '#059669', fontWeight: 600 }}>
                       {z.einsatz.restmenge ?? 0}
                     </span>
@@ -856,10 +867,20 @@ function LieferscheinSeite({
           fontSize: '9px',
           color: '#374151',
         }}>
-          <strong style={{ fontSize: '10px' }}><span className="ls-icon">📱</span> Online-Erfassung (empfohlen)</strong><br />
-          QR-Code rechts oben scannen — Zeiten direkt im Browser eingeben, kein Login nötig.<br /><br />
-          <strong><span className="ls-icon">📷</span> Alternativ per WhatsApp / E-Mail:</strong><br />
-          Ausgefüllten Zettel fotografieren und zurücksenden.
+          {onlineErfassung ? (
+            <>
+              <strong style={{ fontSize: '10px' }}>Online-Erfassung (empfohlen)</strong><br />
+              QR-Code rechts oben scannen — Zeiten direkt im Browser eingeben, kein Login nötig.<br /><br />
+              <strong>Alternativ per WhatsApp / E-Mail:</strong><br />
+              Ausgefüllten Zettel fotografieren und zurücksenden.
+            </>
+          ) : (
+            <>
+              <strong style={{ fontSize: '10px' }}>Zettel ausfüllen und zurücksenden</strong><br />
+              Zeiten und Restmengen eintragen, Zettel einsenden — oder per WhatsApp / E-Mail
+              fotografiert zurückschicken.
+            </>
+          )}
         </div>
       </div>
 
