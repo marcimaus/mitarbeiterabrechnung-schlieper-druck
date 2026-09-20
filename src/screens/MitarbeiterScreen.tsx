@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -25,7 +25,7 @@ import {
 } from '../lib/db';
 import VerdienstbescheinigungDruck from '../components/VerdienstbescheinigungDruck';
 import type { LohnbueroAbrechnung, LohnbueroDriveLink, VerdienstbescheinigungWert, VerdienstbescheinigungFrage, VerdienstbescheinigungAntwortTyp } from '../types';
-import { hashPin } from '../lib/auth';
+import { hashPin, ermittlePinAusHash } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
 import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse } from '../types';
 // Re-Export, damit die Tab-Komponente unten den selben Typen-Pfad nutzt.
@@ -3040,7 +3040,7 @@ function MitarbeiterForm({
 
 function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter }) {
   // Immer die aktuellen Daten aus dem Context holen (wird per Real-time-Listener aktualisiert)
-  const { mitarbeiter: alleMitarbeiter } = useApp();
+  const { mitarbeiter: alleMitarbeiter, userRole } = useApp();
   const mitarbeiter = alleMitarbeiter.find((m) => m.id === initialMa.id) ?? initialMa;
 
   const [neuerPin, setNeuerPin] = useState('');
@@ -3050,6 +3050,60 @@ function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter })
   const [message, setMessage] = useState('');
 
   const hatPin = !!mitarbeiter.pinHash;
+
+  // ---- PIN anzeigen (nur Admin) ----------------------------
+  // In der Datenbank steht nur der SHA-256-Hash. Für die Anzeige wird
+  // der PIN durch Probieren aller 4- bis 6-stelligen Zahlen
+  // rekonstruiert (siehe ermittlePinAusHash) — so bleibt der Klartext
+  // weiterhin nirgends gespeichert.
+  const istAdmin = userRole === 'admin';
+  const [klartextPin, setKlartextPin] = useState<string | null>(null);
+  const [sucheLaeuft, setSucheLaeuft] = useState(false);
+  const [suchFortschritt, setSuchFortschritt] = useState(0);
+  const [suchMeldung, setSuchMeldung] = useState('');
+  const abbruchRef = useRef(false);
+
+  // Angezeigten PIN verwerfen, wenn der PIN geändert/gelöscht wird oder
+  // ein anderer Mitarbeiter geöffnet ist.
+  useEffect(() => {
+    setKlartextPin(null);
+    setSuchMeldung('');
+    setSuchFortschritt(0);
+  }, [mitarbeiter.id, mitarbeiter.pinHash]);
+
+  // Angezeigten PIN nach 60 Sekunden automatisch wieder ausblenden.
+  useEffect(() => {
+    if (!klartextPin) return;
+    const id = setTimeout(() => setKlartextPin(null), 60_000);
+    return () => clearTimeout(id);
+  }, [klartextPin]);
+
+  // Laufende Suche beim Verlassen abbrechen.
+  useEffect(() => () => { abbruchRef.current = true; }, []);
+
+  async function handlePinAnzeigen() {
+    if (!mitarbeiter.pinHash) return;
+    abbruchRef.current = false;
+    setSucheLaeuft(true);
+    setSuchMeldung('');
+    setSuchFortschritt(0);
+    try {
+      const gefunden = await ermittlePinAusHash(mitarbeiter.pinHash, {
+        onFortschritt: setSuchFortschritt,
+        abbruch: () => abbruchRef.current,
+      });
+      if (abbruchRef.current) { setSuchMeldung('Suche abgebrochen.'); return; }
+      if (gefunden) {
+        setKlartextPin(gefunden);
+      } else {
+        setSuchMeldung('PIN nicht ermittelbar (länger als 6 Stellen). Bitte neu setzen.');
+      }
+    } catch {
+      setSuchMeldung('Fehler beim Ermitteln des PINs.');
+    } finally {
+      setSucheLaeuft(false);
+    }
+  }
 
   async function handlePinSetzen() {
     if (neuerPin.length < 4) { setMessage('PIN muss mindestens 4 Stellen haben.'); return; }
@@ -3108,6 +3162,25 @@ function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter })
         >
           {hatPin ? 'PIN ändern' : 'PIN setzen'}
         </button>
+        {hatPin && istAdmin && !klartextPin && (
+          <button
+            type="button"
+            onClick={handlePinAnzeigen}
+            disabled={sucheLaeuft}
+            className="text-xs text-blue-600 hover:text-blue-800 underline disabled:opacity-50"
+          >
+            {sucheLaeuft ? 'PIN wird ermittelt…' : 'PIN anzeigen'}
+          </button>
+        )}
+        {hatPin && istAdmin && klartextPin && (
+          <button
+            type="button"
+            onClick={() => setKlartextPin(null)}
+            className="text-xs text-gray-500 hover:text-gray-700 underline"
+          >
+            PIN verbergen
+          </button>
+        )}
         {hatPin && (
           <button
             type="button"
@@ -3119,6 +3192,40 @@ function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter })
           </button>
         )}
       </div>
+
+      {/* Ermittelten PIN anzeigen — nur Admin */}
+      {sucheLaeuft && (
+        <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
+          <p className="text-xs text-blue-800 mb-2">PIN wird ermittelt… {suchFortschritt} %</p>
+          <div className="h-1.5 bg-blue-100 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 transition-all"
+              style={{ width: `${suchFortschritt}%` }}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => { abbruchRef.current = true; }}
+            className="text-xs text-gray-500 hover:text-gray-700 underline mt-2"
+          >
+            Abbrechen
+          </button>
+        </div>
+      )}
+      {klartextPin && (
+        <div className="mt-3 bg-amber-50 border border-amber-300 rounded-lg p-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs text-amber-800">PIN von {mitarbeiter.name}</p>
+            <p className="text-2xl font-mono tracking-widest text-gray-900">{klartextPin}</p>
+          </div>
+          <p className="text-xs text-amber-700 text-right max-w-[12rem]">
+            Wird nach 60 Sekunden automatisch ausgeblendet.
+          </p>
+        </div>
+      )}
+      {suchMeldung && !sucheLaeuft && (
+        <p className="text-xs text-red-600 mt-2">{suchMeldung}</p>
+      )}
 
       {showPinForm && (
         <div className="mt-3 bg-gray-50 rounded-lg p-3 space-y-2">

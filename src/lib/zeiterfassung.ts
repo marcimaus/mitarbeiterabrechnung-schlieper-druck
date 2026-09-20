@@ -8,6 +8,7 @@ import {
   query,
   where,
   getDocs,
+  getDocsFromServer,
   orderBy,
   onSnapshot,
   type Unsubscribe,
@@ -72,14 +73,49 @@ function berlinWanduhrMs(
 
 // ---- Aktive Sessions laden ---------------------------------
 
-export function aktiveSessions(cb: (list: Arbeitszeit[]) => void): Unsubscribe {
-  const q = query(
+/** Woher die zuletzt gelieferten Daten stammen. */
+export interface DatenStand {
+  /** Zeitpunkt der Lieferung (Geräte-Uhr). */
+  zeitpunkt: number;
+  /** true ⇒ Daten kommen aus dem lokalen Zwischenspeicher, nicht vom Server. */
+  ausCache: boolean;
+  /** true ⇒ eigene Änderungen sind noch nicht beim Server bestätigt. */
+  offeneSchreibvorgaenge: boolean;
+}
+
+function aktiveSessionsQuery() {
+  return query(
     collection(db, 'arbeitszeiten'),
     where('status', 'in', ['aktiv', 'pause'])
   );
-  return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit)));
+}
+
+export function aktiveSessions(
+  cb: (list: Arbeitszeit[], stand: DatenStand) => void
+): Unsubscribe {
+  // includeMetadataChanges: sonst meldet der Listener keinen Wechsel
+  // Cache → Server, und die Stempeluhr könnte unbemerkt veraltete Daten
+  // aus dem Offline-Cache anzeigen.
+  return onSnapshot(aktiveSessionsQuery(), { includeMetadataChanges: true }, (snap) => {
+    cb(
+      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit)),
+      {
+        zeitpunkt: Date.now(),
+        ausCache: snap.metadata.fromCache,
+        offeneSchreibvorgaenge: snap.metadata.hasPendingWrites,
+      }
+    );
   });
+}
+
+/**
+ * Erzwingt einen Server-Abruf der aktiven Sessions (umgeht den
+ * Offline-Cache). Für den „Aktualisieren"-Knopf der Stempeluhr: der
+ * Live-Listener erhält dadurch ebenfalls frische Daten.
+ */
+export async function ladeAktiveSessionsVomServer(): Promise<Arbeitszeit[]> {
+  const snap = await getDocsFromServer(aktiveSessionsQuery());
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
 }
 
 /**

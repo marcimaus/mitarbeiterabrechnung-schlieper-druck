@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import { istEinsatzbereit } from '../utils';
 import {
   aktiveSessions,
+  ladeAktiveSessionsVomServer,
   verarbeiteNfcScan,
   ausstempelnMitPausenabschluss,
   pauseStarten,
@@ -20,6 +21,7 @@ import {
   formatierZeit,
   formatierDatum,
   formatierDauer,
+  type DatenStand,
 } from '../lib/zeiterfassung';
 import type { Arbeitszeit, ArbeitszeitsTyp, Ausgabe, Mitarbeiter, Rolle } from '../types';
 import { TYP_LABELS } from '../types';
@@ -34,6 +36,30 @@ const TYP_FARBEN: Record<ArbeitszeitsTyp, string> = {
   sonstige: 'bg-gray-100 text-gray-700',
 };
 
+/**
+ * Alter einer Datenlieferung in Worten. Wird bei jedem Render neu
+ * berechnet — der 30-Sekunden-Tick der Stempeluhr hält den Text aktuell.
+ */
+function altersText(zeitpunkt: number): string {
+  const min = Math.floor((Date.now() - zeitpunkt) / 60_000);
+  if (min < 1) return 'gerade eben';
+  if (min === 1) return 'vor 1 Minute';
+  if (min < 60) return `vor ${min} Minuten`;
+  const std = Math.floor(min / 60);
+  return std === 1 ? 'vor 1 Stunde' : `vor ${std} Stunden`;
+}
+
+/** true, wenn der Zeitpunkt auf den heutigen Kalendertag fällt. */
+function istHeute(zeitpunkt: number): boolean {
+  const d = new Date(zeitpunkt);
+  const heute = new Date();
+  return (
+    d.getFullYear() === heute.getFullYear() &&
+    d.getMonth() === heute.getMonth() &&
+    d.getDate() === heute.getDate()
+  );
+}
+
 /** Gibt die für einen Mitarbeiter möglichen Tätigkeiten zurück. */
 function tätigkeitenFuerMitarbeiter(rollen: Rolle[]): ArbeitszeitsTyp[] {
   const result: ArbeitszeitsTyp[] = [];
@@ -44,7 +70,7 @@ function tätigkeitenFuerMitarbeiter(rollen: Rolle[]): ArbeitszeitsTyp[] {
 }
 
 export default function ZeiterfassungScreen() {
-  const { mitarbeiter, userRole, mitarbeiterId } = useApp();
+  const { mitarbeiter, userRole, mitarbeiterId, isOnline } = useApp();
   const istAngemeldet = userRole !== null;
   const istMitarbeiter = userRole === 'mitarbeiter';
   const eigenerMa = mitarbeiterId
@@ -128,11 +154,53 @@ export default function ZeiterfassungScreen() {
     [vorarbeitAusgabeId]
   );
 
-  // Aktive Sessions live
+  // Aktive Sessions live. Der Datenstand (Zeitpunkt + Herkunft) wird
+  // mitgeführt, damit sichtbar ist, ob gerade Server- oder nur
+  // Cache-Daten angezeigt werden.
+  const [stand, setStand] = useState<DatenStand | null>(null);
+  const [aktualisiert, setAktualisiert] = useState(false);
+  const [aktualisierLaeuft, setAktualisierLaeuft] = useState(false);
+  const [aktualisierFehler, setAktualisierFehler] = useState('');
+  // Zählt hoch, um den Listener neu aufzusetzen (Aktualisieren-Knopf).
+  const [listenerNeu, setListenerNeu] = useState(0);
   useEffect(() => {
-    const unsub = aktiveSessions(setAktiveSess);
+    // listenerNeu erzwingt ein Neu-Abonnieren durch „Aktualisieren".
+    void listenerNeu;
+    const unsub = aktiveSessions((list, s) => {
+      setAktiveSess(list);
+      setStand(s);
+    });
     return unsub;
-  }, []);
+  }, [listenerNeu]);
+
+  /**
+   * Aktualisieren: erzwingt einen Server-Abruf (umgeht den Offline-Cache),
+   * räumt vergessene Sessions auf und setzt den Live-Listener neu auf.
+   */
+  async function handleAktualisieren() {
+    if (aktualisierLaeuft) return;
+    setAktualisierLaeuft(true);
+    setAktualisiert(false);
+    setAktualisierFehler('');
+    try {
+      const frisch = await ladeAktiveSessionsVomServer();
+      setAktiveSess(frisch);
+      const geschlossen = await schliesseAbgelaufeneSessions();
+      if (geschlossen.length > 0) {
+        setAutoCloseSweep(geschlossen);
+        setAutoCloseSweepDismissed(false);
+      }
+      setListenerNeu((n) => n + 1);
+      setStand({ zeitpunkt: Date.now(), ausCache: false, offeneSchreibvorgaenge: false });
+      setAktualisiert(true);
+      setTimeout(() => setAktualisiert(false), 3000);
+    } catch (err) {
+      console.error('Aktualisieren fehlgeschlagen:', err);
+      setAktualisierFehler('Server nicht erreichbar — angezeigt werden die zuletzt bekannten Daten.');
+    } finally {
+      setAktualisierLaeuft(false);
+    }
+  }
 
   const getMitarbeiter = useCallback(
     (id: string) => mitarbeiter.find((m) => m.id === id),
@@ -446,6 +514,64 @@ export default function ZeiterfassungScreen() {
         )}
       </div>
 
+      {/* Datenstand + Aktualisieren. Zeigt, von wann die unten
+          angezeigten Stempelungen sind und ob sie vom Server oder nur
+          aus dem Offline-Zwischenspeicher stammen. */}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 bg-white rounded-xl border border-gray-200 px-4 py-2.5">
+        <div
+          className="text-xs text-gray-600 flex flex-wrap items-center gap-2"
+          title="Zeitpunkt der letzten Datenlieferung. Solange „Live vom Server“ angezeigt wird, kommen Änderungen anderer Geräte automatisch an."
+        >
+          <span>
+            Stand:{' '}
+            <strong className="text-gray-800">
+              {stand ? `${formatierZeit(stand.zeitpunkt)} Uhr` : '—'}
+            </strong>
+            {stand && (
+              <span className="text-gray-400"> ({altersText(stand.zeitpunkt)})</span>
+            )}
+          </span>
+          {!isOnline ? (
+            <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+              ⚠ Offline — Daten können veraltet sein
+            </span>
+          ) : !stand ? (
+            /* Noch kein Datenpaket eingetroffen — nicht vorschnell
+               „live" melden, sonst wirkt ein leerer Bildschirm bestätigt. */
+            <span className="bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">
+              Verbinde…
+            </span>
+          ) : stand.ausCache ? (
+            <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+              ⚠ Aus Zwischenspeicher
+            </span>
+          ) : (
+            <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+              ● Live vom Server
+            </span>
+          )}
+          {stand?.offeneSchreibvorgaenge && (
+            <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+              Änderung wird noch übertragen
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {aktualisiert && <span className="text-xs text-green-600">✓ Aktualisiert</span>}
+          <button
+            type="button"
+            onClick={handleAktualisieren}
+            disabled={aktualisierLaeuft}
+            className="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-colors"
+          >
+            {aktualisierLaeuft ? 'Aktualisiere…' : '🔄 Aktualisieren'}
+          </button>
+        </div>
+      </div>
+      {aktualisierFehler && (
+        <p className="text-xs text-red-600 mb-3">{aktualisierFehler}</p>
+      )}
+
       {/* Aktive Mitarbeiter */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Eingestempelt */}
@@ -732,6 +858,13 @@ function SessionKarte({
         <div className="text-right">
           <div className="text-sm font-semibold text-gray-800">{formatierDauer(nettoMin)}</div>
           <div className="text-xs text-gray-400">seit {formatierZeit(session.startTime)}</div>
+          {/* Stempelung von einem früheren Tag — häufigste Ursache für
+              scheinbar falsche Werte („der ist doch längst weg"). */}
+          {!istHeute(session.startTime) && (
+            <div className="text-xs text-amber-600 font-medium">
+              ⚠ vom {formatierDatum(session.startTime)}
+            </div>
+          )}
         </div>
       </div>
     </div>
