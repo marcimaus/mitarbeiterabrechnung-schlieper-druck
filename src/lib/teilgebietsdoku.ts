@@ -24,6 +24,7 @@ import {
   ladeTouren,
   schreibeAuditLog,
 } from './db';
+import { buchbareTeilgebiete } from './beilagenVorlagen';
 import { browserDownload, schreibeInZielordner, zielordnerName } from './zielordner';
 import type { AuditLog, Mitarbeiter, Strasse, Teilgebiet, Tour } from '../types';
 
@@ -395,6 +396,67 @@ const BEREICH_LABEL: Record<AuditLog['bereich'], string> = {
 
 const quelle = (e: AuditLog) => (e.automatisch ? 'App (Monatswechsel)' : 'manuell');
 
+/** Auswertungsblatt direkt nach der Übersicht. */
+const BLATT_MENGEN_STRECKEN = 'Mengen & Strecken';
+
+// ---- Auswertung: Mengen- und Streckenänderungen ----------------------------
+//
+// Für das gleichnamige Blatt werden aus dem Protokoll genau die Einträge
+// herausgezogen, die die Stückzahl oder die Wegstrecke eines Teilgebiets
+// verändert haben — egal ob manuell gepflegt oder beim Monatswechsel
+// umgesetzt. Vorgemerkte und wieder verworfene Anpassungen zählen nicht,
+// da sie den Wert am Teilgebiet nicht verändern.
+
+type MengenArt = 'menge' | 'strecke';
+
+interface MengenAenderung {
+  eintrag: AuditLog;
+  art: MengenArt;
+  vorher: number;
+  nachher: number;
+}
+
+/** Zahl aus einem protokollierten Wert lesen („1.234 Stk", „3.400 m"). */
+function parseZahl(wert: string | undefined | null): number | null {
+  if (!wert) return null;
+  const treffer = wert.match(/-?\d[\d.]*(?:,\d+)?/);
+  if (!treffer) return null;
+  const n = Number(treffer[0].replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : null;
+}
+
+function mengenUndStreckenAenderungen(auditLog: AuditLog[]): MengenAenderung[] {
+  const out: MengenAenderung[] = [];
+  for (const e of auditLog) {
+    if (e.aktion !== 'geaendert') continue;
+    let art: MengenArt | null = null;
+    let vorher: number | null = null;
+    let nachher: number | null = null;
+    if (e.feld === 'Stückzahl') {
+      art = 'menge';
+      vorher = parseZahl(e.altWert);
+      nachher = parseZahl(e.neuWert);
+    } else if (e.feld === 'Wegstrecke') {
+      art = 'strecke';
+      vorher = parseZahl(e.altWert);
+      nachher = parseZahl(e.neuWert);
+    } else if (!e.feld && e.bereich === 'teilgebiets-anpassung') {
+      // Altbestand aus der Zeit vor den Feld-Spalten: die beim Monatswechsel
+      // umgesetzten Mengenanpassungen stehen dort nur in der Beschreibung
+      // („… — 340 → 360 Stk (Periode …)").
+      const m = e.beschreibung.match(/(\d[\d.]*)\s*→\s*(\d[\d.]*)\s*Stk/);
+      if (m) {
+        art = 'menge';
+        vorher = parseZahl(m[1]);
+        nachher = parseZahl(m[2]);
+      }
+    }
+    if (!art || vorher == null || nachher == null || vorher === nachher) continue;
+    out.push({ eintrag: e, art, vorher, nachher });
+  }
+  return out.sort((a, b) => b.eintrag.zeitstempel - a.eintrag.zeitstempel);
+}
+
 export interface TeilgebietsdokuKontext {
   teilgebiete: Teilgebiet[];
   touren: Tour[];
@@ -469,7 +531,11 @@ export async function baueTeilgebietsdoku(ktx: TeilgebietsdokuKontext): Promise<
     ueSpalten.map((s) => s.header),
   );
 
-  const blattNamen = new Set<string>(['übersicht', 'änderungsprotokoll']);
+  const blattNamen = new Set<string>([
+    'übersicht',
+    'änderungsprotokoll',
+    BLATT_MENGEN_STRECKEN.toLowerCase(),
+  ]);
   const blattJeTg = new Map<string, string>();
   for (const tg of sortiert) blattJeTg.set(tg.id, blattName(tg.name, blattNamen));
 
@@ -541,6 +607,118 @@ export async function baueTeilgebietsdoku(ktx: TeilgebietsdokuKontext): Promise<
     };
   }
   wsUe.views = [{ state: 'frozen', ySplit: 5 }];
+
+  // ---- Blatt „Mengen & Strecken" (Auswertung direkt nach der Übersicht) ----
+  // Zeigt nur Änderungen der Stückzahl und der Wegstrecke, neueste zuerst.
+  // Die Verteilplan-Summe wird vom heutigen Stand rückwärts fortgeschrieben:
+  // die jüngste Änderung endet auf der aktuellen Gesamtmenge, jede ältere
+  // Zeile auf dem Stand vor der jeweils jüngeren Änderung.
+  const wsMS = wb.addWorksheet(BLATT_MENGEN_STRECKEN);
+  const imVerteilplan = new Set(buchbareTeilgebiete(teilgebiete, touren).map((t) => t.id));
+  const gesamtmengeAktuell = teilgebiete
+    .filter((t) => imVerteilplan.has(t.id))
+    .reduce((s, t) => s + (t.stueckzahl || 0), 0);
+  const aenderungen = mengenUndStreckenAenderungen(auditLog);
+
+  wsMS.getCell('A1').value = 'Mengen- und Streckenänderungen';
+  wsMS.getCell('A1').font = { bold: true, size: 14 };
+  wsMS.getCell('A2').value = `Stand: ${formatiereZeitstempel(jetzt)} · neueste Änderung zuerst`;
+  wsMS.getCell('A2').font = { size: 10, color: { argb: 'FF6B7280' } };
+  wsMS.getCell('A3').value =
+    `Aktuelle Gesamtmenge im Verteilplan: ${gesamtmengeAktuell.toLocaleString('de-DE')} Stk ` +
+    `aus ${imVerteilplan.size} buchbaren Teilgebieten (aktiv und im Verteilplan).`;
+  wsMS.getCell('A3').font = { bold: true, size: 11 };
+  wsMS.getCell('A4').value =
+    'Die Verteilplan-Summen sind vom heutigen Stand zurückgerechnet. Teilgebiete, die zwischenzeitlich ' +
+    'angelegt, stillgelegt oder aus dem Verteilplan genommen wurden, können ältere Summen verschieben. ' +
+    'Streckenänderungen verändern die Menge nicht — dort steht die Summe zum Zeitpunkt der Änderung.';
+  wsMS.getCell('A4').font = { size: 10, italic: true, color: { argb: 'FF6B7280' } };
+
+  const msSpalten: { header: string; width: number }[] = [
+    { header: 'Zeitpunkt', width: 18 },
+    { header: 'Teilgebiet', width: 22 },
+    { header: 'Tour', width: 14 },
+    { header: 'Art der Änderung', width: 18 },
+    { header: 'Wert vorher', width: 13 },
+    { header: 'Wert nachher', width: 13 },
+    { header: 'Differenz', width: 12 },
+    { header: 'Gesamtmenge Verteilplan vorher (Stk)', width: 22 },
+    { header: 'Gesamtmenge Verteilplan nachher (Stk)', width: 22 },
+    { header: 'Im Verteilplan', width: 14 },
+    { header: 'Benutzer', width: 18 },
+    { header: 'Quelle', width: 20 },
+  ];
+  msSpalten.forEach((s, i) => {
+    wsMS.getColumn(i + 1).width = s.width;
+  });
+  kopfzeile(
+    wsMS,
+    6,
+    msSpalten.map((s) => s.header),
+  );
+  wsMS.getRow(6).alignment = { wrapText: true, vertical: 'bottom' };
+
+  const tgNachId = new Map(teilgebiete.map((t) => [t.id, t]));
+  let laufendeSumme = gesamtmengeAktuell;
+  let summeMengeVerteilplan = 0;
+  let summeStrecke = 0;
+  let msZeile = 7;
+  for (const a of aenderungen) {
+    const e = a.eintrag;
+    const tg = tgNachId.get(e.teilgebietId);
+    const zaehltMit = a.art === 'menge' && imVerteilplan.has(e.teilgebietId);
+    const summeNachher = laufendeSumme;
+    const summeVorher = zaehltMit ? laufendeSumme - (a.nachher - a.vorher) : laufendeSumme;
+    laufendeSumme = summeVorher;
+    if (zaehltMit) summeMengeVerteilplan += a.nachher - a.vorher;
+    if (a.art === 'strecke') summeStrecke += a.nachher - a.vorher;
+
+    const row = wsMS.getRow(msZeile);
+    row.values = [
+      formatiereZeitstempel(e.zeitstempel),
+      e.teilgebietName,
+      tg ? tourName(tg.tourId, touren) : '— (nicht mehr vorhanden)',
+      a.art === 'menge' ? 'Menge (Stk)' : 'Wegstrecke (m)',
+      a.vorher,
+      a.nachher,
+      a.nachher - a.vorher,
+      summeVorher,
+      summeNachher,
+      tg ? (zaehltMit || imVerteilplan.has(tg.id) ? 'ja' : 'nein') : '— (gelöscht)',
+      e.adminName,
+      quelle(e),
+    ];
+    [5, 6, 8, 9].forEach((c) => {
+      row.getCell(c).numFmt = '#,##0';
+    });
+    row.getCell(7).numFmt = '+#,##0;-#,##0;0';
+    if (a.nachher < a.vorher) row.getCell(7).font = { color: { argb: 'FFB91C1C' } };
+    else if (a.nachher > a.vorher) row.getCell(7).font = { color: { argb: 'FF15803D' } };
+    msZeile++;
+  }
+
+  if (aenderungen.length === 0) {
+    hinweisZeile(wsMS, msZeile, '— bislang keine Mengen- oder Streckenänderungen protokolliert —');
+    msZeile++;
+  } else {
+    const summenZeile = wsMS.getRow(msZeile + 1);
+    summenZeile.getCell(1).value = `Summe über ${aenderungen.length} Änderungen`;
+    summenZeile.getCell(4).value = 'Menge (Verteilplan) / Wegstrecke';
+    summenZeile.getCell(7).value = summeMengeVerteilplan;
+    summenZeile.getCell(7).numFmt = '+#,##0;-#,##0;0';
+    summenZeile.getCell(8).value = laufendeSumme;
+    summenZeile.getCell(9).value = gesamtmengeAktuell;
+    [8, 9].forEach((c) => {
+      summenZeile.getCell(c).numFmt = '#,##0';
+    });
+    summenZeile.getCell(10).value = `Wegstrecke gesamt: ${summeStrecke >= 0 ? '+' : ''}${summeStrecke.toLocaleString('de-DE')} m`;
+    summenZeile.font = { bold: true };
+    wsMS.autoFilter = {
+      from: { row: 6, column: 1 },
+      to: { row: msZeile - 1, column: msSpalten.length },
+    };
+  }
+  wsMS.views = [{ state: 'frozen', ySplit: 6 }];
 
   // ---- Ein Blatt je Teilgebiet ----
   for (const tg of sortiert) {
