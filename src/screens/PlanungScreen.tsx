@@ -54,8 +54,10 @@ import {
   loescheKwVermerk,
 } from '../lib/planung';
 import { getISOWeek, getISOYear } from '../lib/kalender';
-import { ferienInKw, feiertageInKw } from '../lib/ferien';
+import { ferienInKw, feiertageInKw, setzeFerienkalender } from '../lib/ferien';
+import { ferienkalenderListener } from '../lib/ferienkalender';
 import FerienlisterZusammentraeger from '../components/FerienlisterZusammentraeger';
+import FerienkalenderModal from '../components/FerienkalenderModal';
 
 /**
  * Werktagsverteilung pro ISO-Woche für einen Datumsbereich.
@@ -221,6 +223,7 @@ import {
   type Teilgebiet,
   type Ausgabe,
   type AuditLog,
+  type FerienkalenderEintrag,
 } from '../types';
 import { ausgabenListener, beilagenListener, beilagenVorlagenListener, schreibeAuditLog, auditLogListener } from '../lib/db';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
@@ -808,6 +811,21 @@ function PlanungContent() {
   // ---- Ferienliste-Druckansicht ----
   const [showFerienliste, setShowFerienliste] = useState(false);
 
+  // ---- Ferienkalender (Schulferien + Feiertage, pflegbar) ----
+  // Der komplette Kalender wird geladen (kleine Collection, und Zeiträume
+  // laufen über Jahresgrenzen) und in den Lookup-Store von `lib/ferien`
+  // geschoben, aus dem die Tabellenzellen synchron lesen.
+  const [ferienkalender, setFerienkalender] = useState<FerienkalenderEintrag[]>([]);
+  const [showFerienkalender, setShowFerienkalender] = useState(false);
+  useEffect(
+    () =>
+      ferienkalenderListener((list) => {
+        setzeFerienkalender(list);
+        setFerienkalender(list);
+      }),
+    [],
+  );
+
   // ---- Klappzustand der Sektionen ----
   // Alle Sektionen starten eingeklappt — außer „Teilgebiet dauerhaft
   // unbesetzt / Standard-Wechsel".
@@ -953,12 +971,20 @@ function PlanungContent() {
             onVermerkKlick={(kw) => setVermerkModalKw(kw)}
           />
 
-          {/* Zeile: Ferien (Niedersachsen) + Feiertage (DE + NDS) je KW. */}
+          {/* Zeile: Ferien (Niedersachsen) + Feiertage (DE + NDS) je KW.
+              Klick auf die Beschriftung öffnet die Verwaltung der
+              hinterlegten Ferien/Feiertage (Übersicht, Pflege, Import). */}
           <TaetigkeitRow
             label={
-              <span className="flex items-baseline gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowFerienkalender(true)}
+                className="flex items-baseline gap-1.5 text-left hover:underline decoration-dotted underline-offset-2"
+                title="Hinterlegte Ferien und Feiertage ansehen, bearbeiten oder importieren"
+              >
                 <span className="font-semibold text-gray-700">🏫 Ferien / Feiertage</span>
-              </span>
+                <span className="text-[10px] text-gray-400">⚙</span>
+              </button>
             }
             sublabel="Niedersachsen"
             kws={kws}
@@ -1795,6 +1821,16 @@ function PlanungContent() {
         </div>
         </MonatsGrenzeContext.Provider>
       </div>
+
+      {/* ---- Ferien/Feiertage verwalten (Übersicht, Pflege, Import) ---- */}
+      <FerienkalenderModal
+        isOpen={showFerienkalender}
+        onClose={() => setShowFerienkalender(false)}
+        jahr={jahr}
+        eintraege={ferienkalender}
+        darfBearbeiten={darfWechselplanPflegen}
+        bearbeiterName={adminName || 'Unbekannt'}
+      />
 
       {/* ---- Ferienliste Zusammenträger (Druckansicht) ---- */}
       {showFerienliste && (
@@ -5110,17 +5146,22 @@ function FerienFeiertagZelle({ jahr, kw }: { jahr: number; kw: number }) {
   );
 }
 
+// Kürzel für die enge KW-Spalte. Namen, die hier nicht stehen (etwa
+// einzelne Ferientage der Ferienordnung oder von Hand angelegte
+// Einträge), werden am Wortende abgeschnitten statt wegzulaufen —
+// der volle Name steht im Tooltip der Zelle.
 function kuerzeFerienname(name: string): string {
-  return (
-    {
-      Winterferien: 'Winter',
-      Osterferien: 'Ostern',
-      Pfingstferien: 'Pfingsten',
-      Sommerferien: 'Sommer',
-      Herbstferien: 'Herbst',
-      Weihnachtsferien: 'Weihn.',
-    } as Record<string, string>
-  )[name] ?? name;
+  const kuerzel: Record<string, string> = {
+    Winterferien: 'Winter',
+    Halbjahresferien: 'Halbjahr',
+    Osterferien: 'Ostern',
+    Pfingstferien: 'Pfingsten',
+    Sommerferien: 'Sommer',
+    Herbstferien: 'Herbst',
+    Weihnachtsferien: 'Weihn.',
+  };
+  if (kuerzel[name]) return kuerzel[name];
+  return name.length > 12 ? name.slice(0, 11) + '…' : name;
 }
 
 function kuerzeFeiertagname(name: string): string {

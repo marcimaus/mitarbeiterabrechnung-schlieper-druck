@@ -1849,3 +1849,40 @@ export interface KwVermerk {
   erstelltAm: number;
   aktualisiertAm: number;
 }
+
+/**
+ * Ferienkalender-Eintrag — Schulferien (Niedersachsen) und gesetzliche
+ * Feiertage, gepflegt in Firestore (Collection `ferienkalender`).
+ *
+ * Die App bringt eine eingebaute Vorlage mit (`src/lib/ferien.ts`).
+ * Sobald für ein Jahr + Art mindestens ein Datensatz in Firestore
+ * liegt, gilt ausschließlich dieser — die Vorlage wird dann für
+ * dieses Jahr/diese Art nicht mehr herangezogen. So bleibt eine
+ * bewusste Korrektur (gelöschter Eintrag) auch wirklich gelöscht.
+ *
+ * docId = `${art}-${jahr}-${slug(name)}`, damit ein erneuter Import
+ * einen bestehenden Eintrag aktualisiert statt zu duplizieren —
+ * auch wenn sich die Daten korrigiert haben.
+ */
+export type FerienkalenderArt = 'ferien' | 'feiertag';
+
+export interface FerienkalenderEintrag {
+  id: string;
+  art: FerienkalenderArt;
+  /** Kalenderjahr des Beginns — Gruppierungsschlüssel (Weihnachtsferien zählen zum Startjahr). */
+  jahr: number;
+  name: string;
+  /** ISO-Datum Beginn (inkl.) */
+  von: string;
+  /** ISO-Datum Ende (inkl.). Bei Feiertagen identisch mit `von`. */
+  bis: string;
+  /** Nur bei `art: 'feiertag'` — bundesweit oder nur Niedersachsen. */
+  scope?: 'de' | 'nds';
+  /** `import` = aus offizieller Quelle geholt, `manuell` = von Hand gepflegt. */
+  quelle: 'import' | 'manuell';
+  /** Herkunftsvermerk des Imports (z. B. „OpenHolidays API (KMK/NDS)"). */
+  importQuelle?: string;
+  bearbeiterName?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
