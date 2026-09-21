@@ -33,6 +33,7 @@ import {
   kwAuswahlOptionen,
   stueckzahlVon,
   vorlageKwLabel,
+  vorlageFuerKw,
   vorlageLink,
   vorlageTeilgebietIds,
   vorlageUebernahmeVermerken,
@@ -1306,12 +1307,14 @@ function VorlagenAuswahl({
   const treffer = (vorlagen ?? [])
     .filter((v) => !v.archiviert)
     .filter((v) => !s || [v.arbeitstitel, v.kundenname, v.memo].some((x) => x?.toLowerCase().includes(s)))
+    // Dauerbestellung mit Termin in dieser KW → Werte des Termins (Format, Gewicht …).
+    .map((v) => (v.istDauervorlage && vorlageFuerKw(v, ausgabe.kw, ausgabe.jahr)) || v)
     .sort((a, b) =>
       (a.arbeitstitel || a.kundenname).localeCompare(b.arbeitstitel || b.kundenname, 'de', { numeric: true }),
     );
   const istDieseKw = (v: BeilagenVorlage) => v.kw === ausgabe.kw && v.jahr === ausgabe.jahr;
-  const fuerDieseKw = treffer.filter((v) => !v.istDauervorlage && istDieseKw(v));
-  const dauer = treffer.filter((v) => v.istDauervorlage);
+  const fuerDieseKw = treffer.filter((v) => istDieseKw(v));
+  const dauer = treffer.filter((v) => v.istDauervorlage && !istDieseKw(v));
   const andere = treffer
     .filter((v) => !v.istDauervorlage && !istDieseKw(v))
     .sort((a, b) => (a.jahr ?? 9999) - (b.jahr ?? 9999) || (a.kw ?? 99) - (b.kw ?? 99));
@@ -1378,6 +1381,8 @@ function VorlagenGruppe({
           const tgIds = vorlageTeilgebietIds(v, teilgebiete, touren);
           const stk = stueckzahlVon(tgIds, teilgebiete);
           const schonUebernommen = vorlageUebernommenFuer(v, ausgabe.kw, ausgabe.jahr);
+          // Dauerbestellung: je KW nur ein Auftrag (sonst doppelt angelegt).
+          const gesperrt = schonUebernommen && v.istDauervorlage;
           return (
             <div
               key={v.id}
@@ -1420,7 +1425,9 @@ function VorlagenGruppe({
                 <button
                   type="button"
                   onClick={() => onWaehlen(v)}
-                  className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium hover:bg-blue-700"
+                  disabled={gesperrt}
+                  className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium hover:bg-blue-700 disabled:bg-gray-200 disabled:text-gray-500 disabled:cursor-not-allowed"
+                  title={gesperrt ? 'Für diese KW wurde bereits ein Auftrag aus der Dauerbestellung angelegt.' : undefined}
                 >
                   Übernehmen
                 </button>

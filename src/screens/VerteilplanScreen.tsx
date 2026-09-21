@@ -9,7 +9,14 @@ import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
-import type { BeilagenFormat, BeilagenKennzeichen, BeilagenVorlage, Teilgebiet, Tour } from '../types';
+import type {
+  BeilagenFormat,
+  BeilagenKennzeichen,
+  BeilagenVorlage,
+  BeilagenVorlageTermin,
+  Teilgebiet,
+  Tour,
+} from '../types';
 import {
   beilagenVorlagenListener,
   erstelleBeilagenVorlage,
@@ -30,8 +37,9 @@ import {
   vorlageUebernommenFuer,
   vorlageKwLabel,
   vorlageTeilgebietIds,
+  vorlageTermine,
 } from '../lib/beilagenVorlagen';
-import { kwLabel } from '../lib/kalender';
+import { getCurrentKW, kwLabel, maxKWinJahr } from '../lib/kalender';
 import { berechneBeilagenPreis, eur, type BeilagenPreisErgebnis } from '../lib/beilagenPreis';
 
 export default function VerteilplanScreen() {
@@ -76,6 +84,54 @@ interface Kundendaten {
   /** Kennzeichen „Beilage angeliefert" — bei Neuanlage gesetzt. */
   beilageAngeliefert: boolean;
   istDauervorlage: boolean;
+  /** Nur Dauerbestellung: geplante KWs mit eigenem Format/Gewicht/Anlieferung. */
+  termine: TerminForm[];
+}
+
+/** Eingabezeile eines Dauerbestellungs-Termins (gleiche Feldnamen wie Kundendaten). */
+interface TerminForm {
+  /** "jahr-kw" */
+  kwKey: string;
+  format: BeilagenFormat;
+  gewichtGStk: string;
+  beilageAngeliefert: boolean;
+}
+
+const gewichtText = (g: number | undefined) => (g ? String(g).replace('.', ',') : '');
+const gewichtZahl = (s: string) => parseFloat(s.replace(',', '.')) || 0;
+const aktuellerKwKey = () => {
+  const { kw, jahr } = getCurrentKW();
+  return `${jahr}-${kw}`;
+};
+
+function naechsterKwKey(key: string): string {
+  const { kw, jahr } = kwKeyParse(key);
+  if (kw == null || jahr == null) return aktuellerKwKey();
+  return kw >= maxKWinJahr(jahr) ? `${jahr + 1}-1` : `${jahr}-${kw + 1}`;
+}
+
+const kwKeySort = (a: string, b: string) => {
+  const x = kwKeyParse(a);
+  const y = kwKeyParse(b);
+  return (x.jahr ?? 0) - (y.jahr ?? 0) || (x.kw ?? 0) - (y.kw ?? 0);
+};
+
+/**
+ * Vorgewählter Termin beim Öffnen: KW aus dem Link, sonst die aktuelle KW,
+ * sonst der nächste noch nicht übernommene Termin, sonst der letzte.
+ */
+function vorgewaehlterTermin(termine: TerminForm[], v: BeilagenVorlage | null, wunschKey: string | null): number {
+  if (termine.length === 0) return -1;
+  for (const key of [wunschKey, aktuellerKwKey()]) {
+    const i = key ? termine.findIndex((t) => t.kwKey === key) : -1;
+    if (i >= 0) return i;
+  }
+  const heute = aktuellerKwKey();
+  const offen = termine.findIndex((t) => {
+    const { kw, jahr } = kwKeyParse(t.kwKey);
+    return kwKeySort(t.kwKey, heute) >= 0 && !(v && kw != null && jahr != null && vorlageUebernommenFuer(v, kw, jahr));
+  });
+  return offen >= 0 ? offen : termine.length - 1;
 }
 
 const leereKundendaten = (): Kundendaten => ({
@@ -92,6 +148,7 @@ const leereKundendaten = (): Kundendaten => ({
   externerLink: '',
   beilageAngeliefert: true,
   istDauervorlage: false,
+  termine: [],
 });
 
 function kwKeyParse(key: string): { kw: number | null; jahr: number | null } {
@@ -100,13 +157,30 @@ function kwKeyParse(key: string): { kw: number | null; jahr: number | null } {
 }
 
 function kundendatenAusVorlage(v: BeilagenVorlage): Kundendaten {
+  const kwKey = v.kw != null && v.jahr != null ? `${v.jahr}-${v.kw}` : '';
+  let termine: TerminForm[] = vorlageTermine(v).map((t) => ({
+    kwKey: `${t.jahr}-${t.kw}`,
+    format: t.format ?? '',
+    gewichtGStk: gewichtText(t.gewichtGStk),
+    beilageAngeliefert: t.beilageAngeliefert !== false,
+  }));
+  // Ältere Dauerbestellungen ohne Termine: bisherige KW als ersten Termin.
+  if (v.istDauervorlage && termine.length === 0 && kwKey) {
+    termine = [{
+      kwKey,
+      format: v.format ?? '',
+      gewichtGStk: gewichtText(v.gewichtGStk),
+      beilageAngeliefert: v.beilageAngeliefert !== false,
+    }];
+  }
   return {
+    termine,
     arbeitstitel: v.arbeitstitel ?? '',
     kundenname: v.kundenname ?? '',
     ansprechpartner: v.ansprechpartner ?? '',
     telefon: v.telefon ?? '',
     datum: v.datum ?? '',
-    kwKey: v.kw != null && v.jahr != null ? `${v.jahr}-${v.kw}` : '',
+    kwKey: v.istDauervorlage ? '' : kwKey,
     format: v.format ?? '',
     kennzeichen: v.kennzeichen ?? 'int',
     gewichtGStk: v.gewichtGStk ? String(v.gewichtGStk).replace('.', ',') : '',
@@ -173,6 +247,11 @@ function VerteilplanInhalt() {
   const [archivOffen, setArchivOffen] = useState(false);
   useEffect(() => beilagenVorlagenListener(setVorlagen), []);
   const aktiveVorlage = vorlageId ? vorlagen?.find((v) => v.id === vorlageId) ?? null : null;
+  // Archivierte Bestellungen sind erledigt → schreibgeschützt (kein Speichern,
+  // kein Löschen). Ändern nur nach „Aus Archiv holen" oder als Kopie.
+  const gesperrt = !!aktiveVorlage?.archiviert;
+  // Dauerbestellung: Index des Termins, der in einen Auftrag übernommen wird.
+  const [gewaehlterTermin, setGewaehlterTermin] = useState(-1);
 
   // Stand beim Laden/Speichern — für den „ungespeichert"-Hinweis.
   const [gespeicherterStand, setGespeicherterStand] = useState(() => standVon(leereKundendaten(), new Set()));
@@ -193,26 +272,55 @@ function VerteilplanInhalt() {
     const a = new Set(vorlageTeilgebietIds(v, teilgebiete, touren));
     setKunde(k);
     setAuswahl(a);
+    setGewaehlterTermin(vorgewaehlterTermin(k.termine, v, searchParams.get('kw')));
     setGespeicherterStand(standVon(k, a));
     setMeldung(null);
+    // searchParams bewusst nicht als Abhängigkeit: nur beim Laden auswerten.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vorlageId, vorlagen, teilgebiete, touren]);
 
+  // Was wird übernommen? Normale Bestellung: die Auftragsdaten selbst;
+  // Dauerbestellung: der gewählte Termin (KW/Format/Gewicht/Anlieferung).
+  const auftragsTeil: TerminForm | null = kunde.istDauervorlage ? kunde.termine[gewaehlterTermin] ?? null : kunde;
+
+  const fehlendeAngabenVon = (t: TerminForm | null) =>
+    fehlendeAngabenFuerAuftrag(
+      {
+        ...(t ? kwKeyParse(t.kwKey) : { kw: null, jahr: null }),
+        format: t?.format ?? '',
+        gewichtGStk: gewichtZahl(t?.gewichtGStk ?? ''),
+        kundenname: kunde.kundenname,
+        arbeitstitel: kunde.arbeitstitel,
+        beilageAngeliefert: t?.beilageAngeliefert,
+      },
+      auswahl.size,
+    );
   // Was fehlt für die Übernahme in Aufträge? (steuert den grünen Knopf)
-  const fehlendeAngaben = useMemo(
-    () =>
-      fehlendeAngabenFuerAuftrag(
-        {
-          ...kwKeyParse(kunde.kwKey),
-          format: kunde.format,
-          gewichtGStk: parseFloat(kunde.gewichtGStk.replace(',', '.')) || 0,
-          kundenname: kunde.kundenname,
-          arbeitstitel: kunde.arbeitstitel,
-          beilageAngeliefert: kunde.beilageAngeliefert,
-        },
-        auswahl.size,
-      ),
-    [kunde, auswahl],
-  );
+  const fehlendeAngaben = fehlendeAngabenVon(auftragsTeil);
+  /**
+   * Übernahme eines Dauerbestellungs-Termins (laut gespeicherter Bestellung).
+   * Übernommene Termine sind fixiert: keine zweite Übernahme (sonst doppelter
+   * Auftrag), keine Änderung von KW/Format/Gewicht/Anlieferung, kein Entfernen.
+   */
+  const uebernommeneKwKeys = new Set((aktiveVorlage?.uebernahmen ?? []).map((u) => `${u.jahr}-${u.kw}`));
+  const terminUebernahme = (t: TerminForm) => {
+    const { kw, jahr } = kwKeyParse(t.kwKey);
+    return aktiveVorlage?.uebernahmen?.find((u) => u.kw === kw && u.jahr === jahr);
+  };
+  // Warum der Übernahme-Knopf gesperrt ist (null = Übernahme möglich).
+  const uebernahmeSperrGrund: string | null = speichern
+    ? ' '
+    : aktiveVorlage?.archiviert
+    ? 'Bereits übernommen und archiviert — für eine erneute Übernahme zuerst „↩ Aus Archiv holen".'
+    : geaendert
+    ? 'Bitte zuerst die Bestellung speichern.'
+    : kunde.istDauervorlage && !auftragsTeil
+    ? 'Bitte einen Termin (Kalenderwoche) wählen.'
+    : kunde.istDauervorlage && auftragsTeil && terminUebernahme(auftragsTeil)
+    ? 'Für diese KW wurde bereits ein Auftrag angelegt — eine zweite Übernahme ist nicht möglich.'
+    : fehlendeAngaben.length > 0
+    ? `⚠ Dafür fehlt noch: ${fehlendeAngaben.join(', ')}`
+    : null;
 
   // Archiv (nur Admin): erledigte Bestellungen, jüngste zuerst.
   const archivierteVorlagen = useMemo(
@@ -240,7 +348,54 @@ function VerteilplanInhalt() {
     const k = leereKundendaten();
     setKunde(k);
     setAuswahl(new Set());
+    setGewaehlterTermin(-1);
     setGespeicherterStand(standVon(k, new Set()));
+  }
+
+  // ---- Termine der Dauerbestellung ----
+  function terminAendern(i: number, patch: Partial<TerminForm>) {
+    setKunde((k) => ({ ...k, termine: k.termine.map((t, j) => (j === i ? { ...t, ...patch } : t)) }));
+  }
+
+  /** Neuer Termin: ohne Angabe die KW nach dem letzten Termin (bzw. die aktuelle KW). */
+  function terminHinzufuegen(kwKey?: string) {
+    const liste = kunde.termine;
+    const letzter = [...liste].sort((a, b) => kwKeySort(a.kwKey, b.kwKey)).at(-1);
+    const heute = aktuellerKwKey();
+    let key = kwKey;
+    if (!key) {
+      key = !letzter || kwKeySort(letzter.kwKey, heute) < 0 ? heute : naechsterKwKey(letzter.kwKey);
+      while (liste.some((t) => t.kwKey === key)) key = naechsterKwKey(key);
+    }
+    // Format/Gewicht vom letzten Termin vorschlagen; Anlieferung erst bei Eingang.
+    const neu: TerminForm = {
+      kwKey: key,
+      format: letzter?.format ?? '',
+      gewichtGStk: letzter?.gewichtGStk ?? '',
+      beilageAngeliefert: false,
+    };
+    setKunde((k) => ({ ...k, termine: [...k.termine, neu] }));
+    setGewaehlterTermin(liste.length);
+  }
+
+  function terminEntfernen(i: number) {
+    if (terminUebernahme(kunde.termine[i])) return;
+    setKunde((k) => ({ ...k, termine: k.termine.filter((_, j) => j !== i) }));
+    setGewaehlterTermin((g) => (g === i ? -1 : g > i ? g - 1 : g));
+  }
+
+  /** Beim Umschalten die KW-Angaben zwischen Einzel- und Dauerbestellung mitnehmen. */
+  function dauerUmschalten(an: boolean) {
+    if (an && kunde.termine.length === 0 && kunde.kwKey) {
+      const { kwKey, format, gewichtGStk, beilageAngeliefert } = kunde;
+      setKunde({ ...kunde, istDauervorlage: true, termine: [{ kwKey, format, gewichtGStk, beilageAngeliefert }] });
+      setGewaehlterTermin(0);
+    } else if (!an && !kunde.kwKey && kunde.termine.length > 0) {
+      const t = kunde.termine[gewaehlterTermin] ?? kunde.termine[0];
+      setKunde({ ...kunde, ...t, istDauervorlage: false });
+    } else {
+      setKunde({ ...kunde, istDauervorlage: an });
+    }
   }
 
   function vorlageOeffnen(id: string | null) {
@@ -262,12 +417,37 @@ function VerteilplanInhalt() {
   }
 
   async function vorlageSpeichern() {
+    if (gesperrt) return;
     if (!kunde.arbeitstitel.trim() && !kunde.kundenname.trim()) {
       setMeldung({ text: 'Bitte Arbeitstitel oder Kundenname angeben.', fehler: true });
       return;
     }
+    const termine: BeilagenVorlageTermin[] = [];
+    if (kunde.istDauervorlage) {
+      const keys = new Set<string>();
+      for (const t of kunde.termine) {
+        const p = kwKeyParse(t.kwKey);
+        if (p.kw == null || p.jahr == null) continue;
+        if (keys.has(t.kwKey)) {
+          setMeldung({ text: `${kwLabel(p.kw, p.jahr)} ist doppelt eingetragen.`, fehler: true });
+          return;
+        }
+        keys.add(t.kwKey);
+        termine.push({
+          kw: p.kw,
+          jahr: p.jahr,
+          format: t.format,
+          gewichtGStk: gewichtZahl(t.gewichtGStk),
+          beilageAngeliefert: t.beilageAngeliefert,
+        });
+      }
+      termine.sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
+    }
+    // Dauerbestellung: KW/Format/Gewicht/Anlieferung stehen je Termin —
+    // auf der Bestellung selbst nur die Werte des ersten Termins (Anzeige).
+    const erster = termine[0];
     const gewicht = parseFloat(kunde.gewichtGStk.replace(',', '.'));
-    const { kw, jahr } = kwKeyParse(kunde.kwKey);
+    const { kw, jahr } = kunde.istDauervorlage ? { kw: null, jahr: null } : kwKeyParse(kunde.kwKey);
     const daten = {
       arbeitstitel: kunde.arbeitstitel.trim(),
       kundenname: kunde.kundenname.trim(),
@@ -276,13 +456,16 @@ function VerteilplanInhalt() {
       datum: kunde.datum || undefined,
       kw,
       jahr,
-      format: kunde.format,
+      format: kunde.istDauervorlage ? erster?.format ?? '' : kunde.format,
       kennzeichen: kunde.kennzeichen,
-      gewichtGStk: Number.isFinite(gewicht) && gewicht > 0 ? gewicht : 0,
+      gewichtGStk: kunde.istDauervorlage
+        ? erster?.gewichtGStk ?? 0
+        : Number.isFinite(gewicht) && gewicht > 0 ? gewicht : 0,
       memo: kunde.memo.trim() || undefined,
       externerLink: kunde.externerLink.trim() || undefined,
-      beilageAngeliefert: kunde.beilageAngeliefert,
+      beilageAngeliefert: kunde.istDauervorlage ? erster?.beilageAngeliefert ?? true : kunde.beilageAngeliefert,
       istDauervorlage: kunde.istDauervorlage,
+      termine,
       ...auswahlStruktur(auswahl, teilgebiete, touren),
     };
     setSpeichern(true);
@@ -301,7 +484,12 @@ function VerteilplanInhalt() {
         setSearchParams({ vorlage: id });
         setMeldung({ text: 'Neue Bestellung angelegt.' });
       }
-      setGespeicherterStand(standVon(kunde, auswahl));
+      // Termine chronologisch anzeigen, gewählter Termin bleibt gewählt.
+      const sortiert = [...kunde.termine].sort((a, b) => kwKeySort(a.kwKey, b.kwKey));
+      const kNeu = { ...kunde, termine: sortiert };
+      setGewaehlterTermin(sortiert.indexOf(kunde.termine[gewaehlterTermin]));
+      setKunde(kNeu);
+      setGespeicherterStand(standVon(kNeu, auswahl));
     } catch (err) {
       console.error(err);
       setMeldung({ text: 'Fehler beim Speichern.', fehler: true });
@@ -314,11 +502,13 @@ function VerteilplanInhalt() {
    * Übernimmt die gespeicherte Bestellung als Beilagenauftrag in die Ausgabe
    * der gewählten KW — gleiche Wirkung wie „Beilage hinzufügen" → „Übernehmen"
    * in „Ausgaben & Beilagen". Die Bestellung wird dabei archiviert (außer
-   * Dauerbestellungen).
+   * Dauerbestellungen). Bei Dauerbestellungen wird der gewählte Termin
+   * (KW/Format/Gewicht) übernommen.
    */
   async function inAuftragUebernehmen() {
-    if (!aktiveVorlage || aktiveVorlage.archiviert || fehlendeAngaben.length > 0 || !parameter) return;
-    const { kw, jahr } = kwKeyParse(kunde.kwKey);
+    const t = auftragsTeil;
+    if (!aktiveVorlage || aktiveVorlage.archiviert || !t || fehlendeAngaben.length > 0 || !parameter) return;
+    const { kw, jahr } = kwKeyParse(t.kwKey);
     if (kw == null || jahr == null) return;
 
     // Abgeschlossene Periode / Monatswechsel: dort sind Beilagen fixiert.
@@ -330,6 +520,11 @@ function VerteilplanInhalt() {
         text: `${kwLabel(kw, jahr)} gehört zu „${periode.bezeichnung}" — die Beilagen sind dort bereits fixiert. Übernahme nicht möglich.`,
         fehler: true,
       });
+      return;
+    }
+    // Dauerbestellung: je KW nur ein Auftrag.
+    if (aktiveVorlage.istDauervorlage && vorlageUebernommenFuer(aktiveVorlage, kw, jahr)) {
+      setMeldung({ text: `Für ${kwLabel(kw, jahr)} wurde bereits ein Auftrag angelegt.`, fehler: true });
       return;
     }
     if (
@@ -348,8 +543,8 @@ function VerteilplanInhalt() {
         // Ohne Arbeitstitel wird vereinfachend der Kundenname verwendet.
         arbeitstitel: kunde.arbeitstitel.trim() || kunde.kundenname.trim(),
         kundenname: kunde.kundenname.trim(),
-        gewichtGStk: parseFloat(kunde.gewichtGStk.replace(',', '.')) || 0,
-        format: kunde.format,
+        gewichtGStk: gewichtZahl(t.gewichtGStk),
+        format: t.format,
         kennzeichen: kunde.kennzeichen,
         teilgebietIds: tgIds,
         vorlageId: aktiveVorlage.id,
@@ -381,7 +576,7 @@ function VerteilplanInhalt() {
   }
 
   async function vorlageLoeschen() {
-    if (!aktiveVorlage) return;
+    if (!aktiveVorlage || gesperrt) return;
     if (!confirm(`Bestellung „${vorlagenLabel(aktiveVorlage)}" endgültig löschen?`)) return;
     await loescheBeilagenVorlage(aktiveVorlage.id);
     zuruecksetzen();
@@ -430,13 +625,14 @@ function VerteilplanInhalt() {
 
   const gesamt = summe(aktiveTGs);
   const auswahlSumme = summeAuswahl(aktiveTGs, auswahl);
-  // Verkaufspreis der Bestellung laut Parametern (netto/brutto).
-  const gewichtZahl = parseFloat(kunde.gewichtGStk.replace(',', '.')) || 0;
+  // Verkaufspreis der Bestellung laut Parametern (netto/brutto) — bei
+  // Dauerbestellungen je Verteilung des gewählten Termins.
+  const preisGewicht = gewichtZahl(auftragsTeil?.gewichtGStk ?? '');
   const preis = berechneBeilagenPreis(
     {
-      format: kunde.format,
+      format: auftragsTeil?.format ?? '',
       kennzeichen: kunde.kennzeichen,
-      gewichtGStk: gewichtZahl,
+      gewichtGStk: preisGewicht,
       stueckzahl: auswahlSumme,
     },
     parameter,
@@ -445,6 +641,7 @@ function VerteilplanInhalt() {
 
   /** Setzt/entfernt eine Menge TGs: sind alle gewählt → abwählen, sonst alle wählen. */
   function toggleMenge(tgs: Teilgebiet[]) {
+    if (gesperrt) return;
     setAuswahl((prev) => {
       const next = new Set(prev);
       const alle = tgs.every((tg) => next.has(tg.id));
@@ -541,8 +738,9 @@ function VerteilplanInhalt() {
           )}
           <button
             onClick={() => vorlageSpeichern()}
-            disabled={speichern || (!!aktiveVorlage && !geaendert)}
+            disabled={speichern || gesperrt || (!!aktiveVorlage && !geaendert)}
             className="px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-40"
+            title={gesperrt ? 'Archivierte Bestellungen können nicht geändert werden.' : undefined}
           >
             💾 Bestellung speichern
           </button>
@@ -564,7 +762,9 @@ function VerteilplanInhalt() {
               </button>
               <button
                 onClick={vorlageLoeschen}
-                className="px-3 py-1.5 text-sm text-red-600 hover:text-red-800"
+                disabled={gesperrt}
+                className="px-3 py-1.5 text-sm text-red-600 hover:text-red-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-red-600"
+                title={gesperrt ? 'Archivierte Bestellungen können nicht gelöscht werden.' : undefined}
               >
                 Löschen
               </button>
@@ -578,6 +778,8 @@ function VerteilplanInhalt() {
           <p className="mt-2 text-sm bg-amber-50 border border-amber-200 text-amber-900 rounded px-3 py-1.5">
             🗄 Archiviert{aktiveVorlage.archiviertAm ? ` am ${new Date(aktiveVorlage.archiviertAm).toLocaleDateString('de-DE')}` : ''} —
             nicht mehr für neue Aufträge auswählbar, nur über diesen Link einsehbar.
+            <b> Schreibgeschützt:</b> Speichern und Löschen sind gesperrt. Zum Ändern „↩ Aus Archiv holen" oder
+            „Als neue Bestellung" (Kopie) verwenden.
           </p>
         )}
         {aktiveVorlage && (aktiveVorlage.uebernahmen?.length ?? 0) > 0 && (
@@ -602,7 +804,7 @@ function VerteilplanInhalt() {
       {/* Auftragsdaten */}
       <div className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 mb-4">
         <div className="text-xs font-semibold text-gray-500 uppercase">Auftragsdaten</div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+        <fieldset disabled={gesperrt} className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 disabled:opacity-70">
           <Eingabe label="Arbeitstitel" value={kunde.arbeitstitel} placeholder="REWE Prospekt"
             onChange={(v) => setKunde({ ...kunde, arbeitstitel: v })} />
           <Eingabe label="Kundenname / Firma" value={kunde.kundenname} placeholder="REWE Uslar GmbH"
@@ -613,6 +815,8 @@ function VerteilplanInhalt() {
             onChange={(v) => setKunde({ ...kunde, telefon: v })} />
           <Eingabe label="Datum" type="date" value={kunde.datum}
             onChange={(v) => setKunde({ ...kunde, datum: v })} />
+          {/* Dauerbestellung: KW, Format, Gewicht und Anlieferung je Termin (siehe unten). */}
+          {!kunde.istDauervorlage && (<>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Kalenderwoche</label>
             <select
@@ -641,6 +845,7 @@ function VerteilplanInhalt() {
           </div>
           <Eingabe label="Gewicht (g/Stk)" value={kunde.gewichtGStk} placeholder="28"
             onChange={(v) => setKunde({ ...kunde, gewichtGStk: v })} />
+          </>)}
           <div>
             <label className="block text-xs text-gray-500 mb-1">Einlegen</label>
             <div className="flex gap-1.5">
@@ -691,74 +896,190 @@ function VerteilplanInhalt() {
             </div>
             <p className="text-[11px] text-gray-400 mt-1">Memo und Link stehen nicht im Ausdruck.</p>
           </div>
-          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
-            <input
-              type="checkbox"
-              checked={kunde.beilageAngeliefert}
-              onChange={(e) => setKunde({ ...kunde, beilageAngeliefert: e.target.checked })}
-              className="w-4 h-4 accent-blue-600"
-            />
-            <span>
-              Beilage angeliefert
-              <span className="block text-[11px] text-gray-500">Voraussetzung für die Übernahme in Aufträge</span>
-            </span>
-          </label>
+          {!kunde.istDauervorlage && (
+            <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
+              <input
+                type="checkbox"
+                checked={kunde.beilageAngeliefert}
+                onChange={(e) => setKunde({ ...kunde, beilageAngeliefert: e.target.checked })}
+                className="w-4 h-4 accent-blue-600"
+              />
+              <span>
+                Beilage angeliefert
+                <span className="block text-[11px] text-gray-500">Voraussetzung für die Übernahme in Aufträge</span>
+              </span>
+            </label>
+          )}
           <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
             <input
               type="checkbox"
               checked={kunde.istDauervorlage}
-              onChange={(e) => setKunde({ ...kunde, istDauervorlage: e.target.checked })}
+              onChange={(e) => dauerUmschalten(e.target.checked)}
               className="w-4 h-4 accent-blue-600"
             />
             <span>
               Dauerbestellung
-              <span className="block text-[11px] text-gray-500">wiederkehrend — wird nach Übernahme nicht archiviert</span>
+              <span className="block text-[11px] text-gray-500">wiederkehrend in mehreren KWs — wird nach Übernahme nicht archiviert</span>
             </span>
           </label>
-        </div>
+        </fieldset>
       </div>
+
+      {/* Dauerbestellung: geplante Kalenderwochen. Je KW eigenes Format,
+          Gewicht und Anlieferung; der Übernahme-Knopf steht in der Zeile des
+          gewählten Termins, damit klar ist, welcher Teil übernommen wird. */}
+      {kunde.istDauervorlage && (
+        <div className="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <div className="text-xs font-semibold text-gray-500 uppercase">Termine der Dauerbestellung</div>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Kalenderwochen, in denen die Beilage planmäßig gestreut wird — erscheinen in der Personalplanung als
+                Bestellung. {aktiveVorlage && !gesperrt && 'Termin anklicken, um ihn in einen Auftrag zu übernehmen.'}
+              </p>
+            </div>
+          </div>
+          <fieldset disabled={gesperrt} className="mt-2 space-y-1.5">
+            {kunde.termine.map((t, i) => {
+              const gewaehlt = i === gewaehlterTermin;
+              const uebernahme = terminUebernahme(t);
+              // Übernommener Termin: KW/Format/Gewicht/Anlieferung fixiert.
+              const fixiert = !!uebernahme;
+              const istAktuell = t.kwKey === aktuellerKwKey();
+              const doppelt = kunde.termine.some((x, j) => j !== i && x.kwKey === t.kwKey);
+              return (
+                <div
+                  key={i}
+                  onClick={() => setGewaehlterTermin(i)}
+                  className={`flex flex-wrap items-end gap-x-3 gap-y-2 rounded-lg border px-3 py-2 cursor-pointer ${
+                    gewaehlt ? 'border-green-400 bg-green-50 ring-1 ring-green-400' : 'border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    checked={gewaehlt}
+                    onChange={() => setGewaehlterTermin(i)}
+                    className="w-4 h-4 accent-green-600 mb-2"
+                    title="Diesen Termin für die Übernahme wählen"
+                  />
+                  <fieldset disabled={fixiert} className="contents">
+                  <div className="w-44">
+                    <label className="block text-[11px] text-gray-500 mb-0.5">
+                      Kalenderwoche {istAktuell && <span className="text-green-700 font-semibold">· aktuell</span>}
+                    </label>
+                    <select
+                      value={t.kwKey}
+                      onChange={(e) => terminAendern(i, { kwKey: e.target.value })}
+                      className={`${auswahlKlasse} ${doppelt ? 'border-red-400' : ''}`}
+                    >
+                      {kwAuswahlOptionen(t.kwKey).map((j) => (
+                        <optgroup key={j.jahr} label={String(j.jahr)}>
+                          {/* Bereits übernommene KWs sind für andere Termine nicht wählbar. */}
+                          {j.kws
+                            .filter((o) => fixiert || o.key === t.kwKey || !uebernommeneKwKeys.has(o.key))
+                            .map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="w-36">
+                    <label className="block text-[11px] text-gray-500 mb-0.5">Format</label>
+                    <select
+                      value={t.format}
+                      onChange={(e) => terminAendern(i, { format: e.target.value })}
+                      className={auswahlKlasse}
+                    >
+                      <option value="">— offen —</option>
+                      {BEILAGEN_FORMATE.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+                    </select>
+                  </div>
+                  <div className="w-24">
+                    <label className="block text-[11px] text-gray-500 mb-0.5">Gewicht (g/Stk)</label>
+                    <input
+                      value={t.gewichtGStk}
+                      onChange={(e) => terminAendern(i, { gewichtGStk: e.target.value })}
+                      placeholder="28"
+                      className={auswahlKlasse}
+                    />
+                  </div>
+                  <label className="flex items-center gap-1.5 text-sm text-gray-700 select-none pb-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={t.beilageAngeliefert}
+                      onChange={(e) => terminAendern(i, { beilageAngeliefert: e.target.checked })}
+                      className="w-4 h-4 accent-blue-600"
+                    />
+                    angeliefert
+                  </label>
+                  </fieldset>
+                  {uebernahme && (
+                    <span className="text-xs text-green-700 pb-2" title="Für diese KW wurde bereits ein Auftrag angelegt">
+                      ✓ übernommen {new Date(uebernahme.am).toLocaleDateString('de-DE')}
+                    </span>
+                  )}
+                  {doppelt && <span className="text-xs text-red-600 pb-2">KW doppelt</span>}
+                  <div className="ml-auto flex items-end gap-2">
+                    {gewaehlt && aktiveVorlage && (
+                      <UebernahmeKnopf
+                        onClick={inAuftragUebernehmen}
+                        sperrGrund={uebernahmeSperrGrund}
+                        klein
+                      />
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); terminEntfernen(i); }}
+                      disabled={fixiert}
+                      className="text-gray-400 hover:text-red-600 text-sm px-1.5 pb-1.5 disabled:invisible"
+                      title="Termin entfernen"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  {gewaehlt && aktiveVorlage && uebernahmeSperrGrund && (
+                    <div className="basis-full text-xs text-amber-700 pl-7">{uebernahmeSperrGrund}</div>
+                  )}
+                </div>
+              );
+            })}
+            {kunde.termine.length === 0 && (
+              <p className="text-sm text-gray-400">Noch keine Kalenderwochen geplant.</p>
+            )}
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => terminHinzufuegen()}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:hidden"
+              >
+                + Kalenderwoche hinzufügen
+              </button>
+              {!kunde.termine.some((t) => t.kwKey === aktuellerKwKey()) && (
+                <button
+                  type="button"
+                  onClick={() => terminHinzufuegen(aktuellerKwKey())}
+                  className="px-3 py-1.5 text-sm border border-green-300 bg-green-50 text-green-800 rounded-lg hover:bg-green-100 disabled:hidden"
+                >
+                  + aktuelle {kwLabel(getCurrentKW().kw, getCurrentKW().jahr)} hinzufügen
+                </button>
+              )}
+            </div>
+          </fieldset>
+        </div>
+      )}
 
       {/* Übernahme in Aufträge — bewusst unter den Eingabefeldern, weil es
           der abschließende Schritt ist. Archivierte Bestellungen sind
           erledigt und werden gesperrt (kein zweiter Auftrag). */}
-      {aktiveVorlage && (
+      {aktiveVorlage && !kunde.istDauervorlage && (
         <div className="mb-4 flex flex-wrap items-center gap-3">
-          <button
-            onClick={inAuftragUebernehmen}
-            disabled={speichern || geaendert || aktiveVorlage.archiviert || fehlendeAngaben.length > 0}
-            className={`px-6 py-3 text-base rounded-lg font-semibold shadow-sm ${
-              !speichern && !geaendert && !aktiveVorlage.archiviert && fehlendeAngaben.length === 0
-                ? 'bg-green-600 text-white hover:bg-green-700'
-                : 'bg-gray-200 text-gray-500 cursor-not-allowed'
-            }`}
-            title={
-              aktiveVorlage.archiviert
-                ? 'Bereits übernommen und archiviert — für eine erneute Übernahme zuerst „Aus Archiv holen".'
-                : geaendert
-                ? 'Bitte zuerst die Bestellung speichern.'
-                : fehlendeAngaben.length > 0
-                ? `Bestellung unvollständig — es fehlt: ${fehlendeAngaben.join(', ')}`
-                : 'Bestellung als Beilagenauftrag in „Ausgaben & Beilagen" übernehmen'
-            }
-          >
-            ➡ Bestellung in Aufträge übernehmen
-          </button>
-          {aktiveVorlage.archiviert ? (
-            <span className="text-xs text-gray-500">
-              Bereits übernommen und archiviert — für eine erneute Übernahme zuerst „↩ Aus Archiv holen".
-            </span>
-          ) : geaendert ? (
-            <span className="text-xs text-amber-700">Bitte zuerst die Bestellung speichern.</span>
-          ) : fehlendeAngaben.length > 0 ? (
-            <span className="text-xs text-amber-700">
-              ⚠ Dafür fehlt noch: {fehlendeAngaben.join(', ')}
+          <UebernahmeKnopf onClick={inAuftragUebernehmen} sperrGrund={uebernahmeSperrGrund} />
+          {uebernahmeSperrGrund ? (
+            <span className={`text-xs ${aktiveVorlage.archiviert ? 'text-gray-500' : 'text-amber-700'}`}>
+              {uebernahmeSperrGrund}
             </span>
           ) : (
             <span className="text-xs text-gray-500">
-              Legt die Beilage in „Ausgaben & Beilagen" an
-              {aktiveVorlage.istDauervorlage
-                ? ' (Dauerbestellung — bleibt verfügbar).'
-                : ' und archiviert die Bestellung.'}
+              Legt die Beilage in „Ausgaben & Beilagen" an und archiviert die Bestellung.
             </span>
           )}
         </div>
@@ -767,7 +1088,11 @@ function VerteilplanInhalt() {
       {/* Preisermittlung (Verkaufspreis laut Parametern) */}
       <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 mb-4">
         <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
-          <span className="text-xs font-semibold text-emerald-800 uppercase">Preis der Bestellung</span>
+          <span className="text-xs font-semibold text-emerald-800 uppercase">
+            {kunde.istDauervorlage
+              ? `Preis je Verteilung${auftragsTeil ? ` (${vorlageKwLabel(kwKeyParse(auftragsTeil.kwKey))})` : ''}`
+              : 'Preis der Bestellung'}
+          </span>
           <span className="text-sm text-emerald-900">
             netto <b className="text-lg tabular-nums">{eur(preis.nettoEur)}</b>
           </span>
@@ -785,11 +1110,11 @@ function VerteilplanInhalt() {
           )}
           {' '}· <b>{eur(preis.proTausendEur)} je 1.000</b> × {nf(auswahlSumme)} Stück
         </div>
-        {(preis.unvollstaendig || auswahlSumme === 0 || gewichtZahl <= 0) && (
+        {(preis.unvollstaendig || auswahlSumme === 0 || preisGewicht <= 0) && (
           <div className="text-xs text-amber-800 mt-1">
             ⚠ Noch unvollständig:
             {preis.unvollstaendig && ' Format wählen.'}
-            {gewichtZahl <= 0 && ' Gewicht (g/Stk) eintragen — sonst ohne Gewichtszuschlag gerechnet.'}
+            {preisGewicht <= 0 && ' Gewicht (g/Stk) eintragen — sonst ohne Gewichtszuschlag gerechnet.'}
             {auswahlSumme === 0 && ' Teilgebiete auswählen.'}
           </div>
         )}
@@ -812,7 +1137,7 @@ function VerteilplanInhalt() {
           </button>
           <button
             onClick={() => setAuswahl(new Set())}
-            disabled={auswahl.size === 0}
+            disabled={auswahl.size === 0 || gesperrt}
             className="px-3 py-1 text-xs border border-blue-300 bg-white rounded hover:bg-blue-100 disabled:opacity-40"
           >
             Auswahl leeren
@@ -904,7 +1229,9 @@ function VerteilplanInhalt() {
             <tr>
               <th className="px-3 py-2 w-10" />
               <th className="px-3 py-2 text-left">PLZ</th>
-              <th className="px-3 py-2 text-left">Orte</th>
+              <th className="px-3 py-2 text-left">
+                Teilgebiete <span className="normal-case font-normal">(ausgewählte <b>fett</b>)</span>
+              </th>
               <th className="px-3 py-2 text-right">TG</th>
               <th className="px-3 py-2 text-right">Ausgewählt</th>
               <th className="px-3 py-2 text-right">Stückzahl</th>
@@ -924,7 +1251,9 @@ function VerteilplanInhalt() {
                     <Checkbox status={st} onChange={() => toggleMenge(p.tgs)} />
                   </td>
                   <td className="px-3 py-1.5 font-medium tabular-nums">{p.plz}</td>
-                  <td className="px-3 py-1.5 text-gray-600">{p.orte}</td>
+                  <td className="px-3 py-1.5 text-gray-500" title={p.orte}>
+                    <TgNamen tgs={p.tgs} auswahl={auswahl} />
+                  </td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{p.tgs.length}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums text-blue-700">{gew > 0 ? nf(gew) : ''}</td>
                   <td className="px-3 py-1.5 text-right font-semibold tabular-nums">{nf(p.summe)}</td>
@@ -1053,6 +1382,37 @@ function ArchivListe({
 }
 
 // ── Bildschirm-Hilfskomponenten ───────────────────────────────────────────────
+
+/** TG-Namen einer PLZ; ausgewählte fett, damit die Auswahl auf einen Blick sichtbar ist. */
+function TgNamen({ tgs, auswahl }: { tgs: Teilgebiet[]; auswahl: Set<string> | null }) {
+  return (
+    <>
+      {tgs.map((tg, i) => (
+        <span key={tg.id}>
+          {i > 0 && ', '}
+          {auswahl?.has(tg.id) ? <b style={{ color: '#111' }}>{tg.name}</b> : tg.name}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** „Bestellung in Auftrag übernehmen" — gesperrt, solange `sperrGrund` gesetzt ist. */
+function UebernahmeKnopf({ onClick, sperrGrund, klein }: { onClick: () => void; sperrGrund: string | null; klein?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={sperrGrund != null}
+      className={`rounded-lg font-semibold shadow-sm ${klein ? 'px-4 py-2 text-sm' : 'px-6 py-3 text-base'} ${
+        sperrGrund == null ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+      }`}
+      title={sperrGrund?.trim() || 'Als Beilagenauftrag in „Ausgaben & Beilagen" übernehmen'}
+    >
+      ➡ Bestellung in Auftrag übernehmen
+    </button>
+  );
+}
 
 function Checkbox({ status, onChange, hell }: { status: Status; onChange: () => void; hell?: boolean }) {
   const ref = useRef<HTMLInputElement>(null);
@@ -1213,6 +1573,21 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
   };
 
   const datum = voll && kunde.datum ? new Date(kunde.datum).toLocaleDateString('de-DE') : '';
+  // Dauerbestellung: alle geplanten KWs; Format/Gewicht je Kombination.
+  const teile: TerminForm[] = kunde.istDauervorlage
+    ? [...kunde.termine].sort((a, b) => kwKeySort(a.kwKey, b.kwKey))
+    : [kunde];
+  const kwText = teile
+    .filter((t) => t.kwKey)
+    .map((t) => vorlageKwLabel(kwKeyParse(t.kwKey)))
+    .join(', ');
+  const formatGewichtText = [
+    ...new Set(
+      teile.map((t) => [formatLabel(t.format), t.gewichtGStk && `${t.gewichtGStk} g`].filter(Boolean).join(' · ')),
+    ),
+  ]
+    .filter(Boolean)
+    .join(' / ');
 
   return (
     <div className="vp-sheet">
@@ -1236,8 +1611,8 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
         <DruckFeld label="Ansprechpartner" value={voll ? kunde.ansprechpartner : ''} />
         <DruckFeld label="Telefon" value={voll ? kunde.telefon : ''} />
         <DruckFeld label="Datum" value={datum} />
-        <DruckFeld label="Kalenderwoche" value={voll && kunde.kwKey ? vorlageKwLabel(kwKeyParse(kunde.kwKey)) : ''} />
-        <DruckFeld label="Format / Gewicht (g/Stk)" value={voll ? [formatLabel(kunde.format), kunde.gewichtGStk && `${kunde.gewichtGStk} g`].filter(Boolean).join(' · ') : ''} />
+        <DruckFeld label="Kalenderwoche" value={voll ? kwText : ''} />
+        <DruckFeld label="Format / Gewicht (g/Stk)" value={voll ? formatGewichtText : ''} />
       </div>
 
       <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '3px', padding: '0.8mm 2mm', marginBottom: '2mm', fontSize: '6.5pt', color: '#1e40af' }}>
@@ -1310,7 +1685,7 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
           <tr>
             <th className="c">✓</th>
             <th style={{ width: '18mm' }}>PLZ</th>
-            <th>Orte</th>
+            <th>Teilgebiete</th>
             <th className="r" style={{ width: '12mm' }}>TG</th>
             <th className="r" style={{ width: '22mm' }}>Stückzahl</th>
             <th className="r" style={{ width: '24mm' }}>Bestellmenge</th>
@@ -1321,7 +1696,9 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
             <tr key={p.plz}>
               <td className="c">{box(p.tgs)}</td>
               <td style={{ fontWeight: 'bold' }}>{p.plz}</td>
-              <td style={{ color: '#444' }}>{p.orte}</td>
+              <td style={{ color: '#555' }}>
+                <TgNamen tgs={p.tgs} auswahl={voll ? auswahl : null} />
+              </td>
               <td className="r">{p.tgs.length}</td>
               <td className="r">{nf(p.summe)}</td>
               <td className="r">{gew(p.tgs)}</td>

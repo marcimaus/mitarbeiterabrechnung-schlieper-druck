@@ -234,6 +234,7 @@ import {
   formatLabel,
   stueckzahlVon,
   vorlageLink,
+  vorlageFuerKw,
   vorlageTeilgebietIds,
   vorlageUebernommenFuer,
 } from '../lib/beilagenVorlagen';
@@ -517,10 +518,18 @@ function PlanungContent() {
 
   const beilagenBestelltNachKw = useMemo(() => {
     const m = new Map<number, BeilagenVorlage[]>();
+    // Dauerbestellungen mit Terminen erscheinen in jeder geplanten KW —
+    // mit den Werten (Format, Gewicht, Anlieferung) des jeweiligen Termins.
     for (const v of beilagenVorlagen) {
-      if (v.archiviert || v.jahr !== jahr || v.kw == null) continue;
-      if (vorlageUebernommenFuer(v, v.kw, jahr)) continue;
-      m.set(v.kw, [...(m.get(v.kw) ?? []), v]);
+      if (v.archiviert) continue;
+      const kwsDerVorlage = v.istDauervorlage && (v.termine?.length ?? 0) > 0
+        ? v.termine!.filter((t) => t.jahr === jahr).map((t) => t.kw)
+        : v.jahr === jahr && v.kw != null ? [v.kw] : [];
+      for (const kw of kwsDerVorlage) {
+        const fuerKw = vorlageFuerKw(v, kw, jahr);
+        if (!fuerKw || vorlageUebernommenFuer(v, kw, jahr)) continue;
+        m.set(kw, [...(m.get(kw) ?? []), fuerKw]);
+      }
     }
     return m;
   }, [beilagenVorlagen, jahr]);
@@ -1077,7 +1086,7 @@ function PlanungContent() {
                       return (
                         <Link
                           key={v.id}
-                          to={vorlageLink(v.id)}
+                          to={vorlageLink(v.id, v)}
                           className={`block rounded border border-dashed px-1 py-0.5 text-[10px] leading-tight ${
                             fehlt.length > 0
                               ? 'border-red-400 bg-red-50 hover:bg-red-100 text-red-900'

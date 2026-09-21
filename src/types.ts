@@ -579,6 +579,21 @@ export interface BeilagenVorlageUebernahme {
   am: number;
 }
 
+/**
+ * Geplante Verteilung einer Dauerbestellung in einer bestimmten KW. Format,
+ * Gewicht und Anlieferung können je KW abweichen — pro Termin wird ein
+ * eigener Auftrag erzeugt.
+ */
+export interface BeilagenVorlageTermin {
+  kw: number;
+  jahr: number;
+  /** '' = noch nicht festgelegt */
+  format: BeilagenFormat;
+  /** Gramm je Stück — 0 = noch nicht bekannt */
+  gewichtGStk: number;
+  beilageAngeliefert: boolean;
+}
+
 export interface BeilagenVorlage {
   id: string;
   arbeitstitel: string;
@@ -615,6 +630,13 @@ export interface BeilagenVorlage {
   beilageAngeliefert?: boolean;
   /** Wiederkehrender Auftrag — wird bei Übernahme NICHT automatisch archiviert. */
   istDauervorlage: boolean;
+  /**
+   * Nur Dauerbestellungen: Kalenderwochen, in denen die Beilage planmäßig
+   * gestreut wird (je KW eigenes Format/Gewicht/Anlieferung). kw/jahr,
+   * format, gewichtGStk und beilageAngeliefert der Vorlage selbst sind
+   * dann ohne Bedeutung.
+   */
+  termine?: BeilagenVorlageTermin[];
   /** Archiviert: nicht mehr auswählbar, nur per Link einsehbar. */
   archiviert: boolean;
   archiviertAm?: number;

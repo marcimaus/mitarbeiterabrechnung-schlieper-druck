@@ -10,6 +10,7 @@
 import type {
   BeilagenFormat,
   BeilagenVorlage,
+  BeilagenVorlageTermin,
   Teilgebiet,
   Tour,
 } from '../types';
@@ -118,8 +119,10 @@ export function kwAuswahlOptionen(ausgewaehlt?: string): { jahr: number; kws: { 
   return gruppen;
 }
 
-export function vorlageLink(id: string): string {
-  return `/verteilplan?vorlage=${encodeURIComponent(id)}`;
+/** Link auf die Bestellung; mit KW wird bei Dauerbestellungen dieser Termin vorgewählt. */
+export function vorlageLink(id: string, termin?: { kw: number | null; jahr: number | null }): string {
+  const kw = termin?.kw != null && termin.jahr != null ? `&kw=${termin.jahr}-${termin.kw}` : '';
+  return `/verteilplan?vorlage=${encodeURIComponent(id)}${kw}`;
 }
 
 export function vorlageKwLabel(v: Pick<BeilagenVorlage, 'kw' | 'jahr'>): string {
@@ -151,6 +154,28 @@ export function fehlendeAngabenFuerAuftrag(
   if (teilgebietAnzahl === 0) fehlt.push('Teilgebiete');
   if (v.beilageAngeliefert === false) fehlt.push('Kennzeichen „Beilage angeliefert“');
   return fehlt;
+}
+
+/** Termine einer Dauerbestellung, chronologisch sortiert. */
+export function vorlageTermine(v: Pick<BeilagenVorlage, 'istDauervorlage' | 'termine'>): BeilagenVorlageTermin[] {
+  if (!v.istDauervorlage) return [];
+  return [...(v.termine ?? [])].sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
+}
+
+/**
+ * Die Bestellung, wie sie für eine bestimmte KW gilt: bei Dauerbestellungen
+ * mit Terminen die Werte (Format, Gewicht, Anlieferung) des Termins dieser
+ * KW, sonst die Vorlage selbst, sofern sie für diese KW bestellt ist.
+ * null = für diese KW nicht bestellt.
+ */
+export function vorlageFuerKw(v: BeilagenVorlage, kw: number, jahr: number): BeilagenVorlage | null {
+  if (v.istDauervorlage && (v.termine?.length ?? 0) > 0) {
+    const t = v.termine!.find((x) => x.kw === kw && x.jahr === jahr);
+    return t
+      ? { ...v, kw, jahr, format: t.format, gewichtGStk: t.gewichtGStk, beilageAngeliefert: t.beilageAngeliefert }
+      : null;
+  }
+  return v.kw === kw && v.jahr === jahr ? v : null;
 }
 
 /** Wurde die Vorlage bereits für diese KW in einen Auftrag übernommen? */
