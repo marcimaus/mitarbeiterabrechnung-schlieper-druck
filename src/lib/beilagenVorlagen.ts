@@ -8,6 +8,7 @@
 // TGs fallen heraus.
 
 import type {
+  Abrechnungsperiode,
   BeilagenFormat,
   BeilagenVorlage,
   BeilagenVorlageTermin,
@@ -15,7 +16,7 @@ import type {
   Tour,
 } from '../types';
 import { aktualisiereBeilagenVorlage } from './db';
-import { donnerstagDerKW, getCurrentKW, kwLabel, maxKWinJahr } from './kalender';
+import { donnerstagDerKW, getCurrentKW, getISOWeek, getISOYear, kwLabel, maxKWinJahr } from './kalender';
 
 export const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
   { value: 'A4', label: 'DIN A4' },
@@ -86,60 +87,77 @@ export function stueckzahlVon(tgIds: string[], teilgebiete: Teilgebiet[]): numbe
 }
 
 /**
- * KW-Auswahl für Bestellungen: beginnt kurz vor der aktuellen KW (damit die
- * nächsten Wochen oben stehen und man nicht scrollen muss) und reicht gut
- * ein Jahr in die Zukunft. Ältere Wochen (ein halbes Jahr zurück) folgen in
- * der Gruppe „Frühere Wochen" am Ende. Eine gewählte KW außerhalb beider
- * Bereiche wird vorne ergänzt. Schlüssel: "jahr-kw".
+ * KWs, deren Abrechnungsperiode abgeschlossen ist oder in der der
+ * Monatswechsel durchgeführt wurde — dort sind die Beilagen fixiert, es
+ * darf nichts mehr geändert werden. Schlüssel: "jahr-kw".
+ */
+export function gesperrteKwKeys(perioden: Abrechnungsperiode[]): Set<string> {
+  const s = new Set<string>();
+  for (const p of perioden) {
+    if (p.status !== 'abgeschlossen' && !p.monatswechselSnapshot && !p.monatswechselDurchgefuehrtAm) continue;
+    for (const kw of p.kalenderwochen) s.add(`${p.jahr}-${kw}`);
+  }
+  return s;
+}
+
+/** Erste KW des laufenden Monats (Abrechnungsperiode der aktuellen KW). */
+function ersteKwAktuellerMonat(perioden: Abrechnungsperiode[]): { jahr: number; kw: number } {
+  const heute = getCurrentKW();
+  const periode = perioden.find((p) => p.jahr === heute.jahr && p.kalenderwochen.includes(heute.kw));
+  if (periode && periode.kalenderwochen.length > 0) {
+    return { jahr: periode.jahr, kw: Math.min(...periode.kalenderwochen) };
+  }
+  // Keine Periode angelegt: KW des ersten Donnerstags im Kalendermonat.
+  const d = new Date();
+  const ersterDo = new Date(d.getFullYear(), d.getMonth(), 1);
+  while (ersterDo.getDay() !== 4) ersterDo.setDate(ersterDo.getDate() + 1);
+  const kandidat = { jahr: getISOYear(ersterDo), kw: getISOWeek(ersterDo) };
+  // Nie nach der aktuellen KW beginnen.
+  return kandidat.jahr * 100 + kandidat.kw > heute.jahr * 100 + heute.kw ? heute : kandidat;
+}
+
+/**
+ * KW-Auswahl für Bestellungen: beginnt bei der ersten KW des laufenden
+ * Monats (Abrechnungsperiode der aktuellen KW) und reicht gut ein Jahr in die
+ * Zukunft. KWs abgeschlossener Monate (bzw. nach dem Monatswechsel) sind
+ * nicht wählbar. Eine bereits gespeicherte KW außerhalb der Liste wird vorne
+ * ergänzt, damit ältere Bestellungen korrekt angezeigt werden.
+ * Schlüssel: "jahr-kw".
  */
 export function kwAuswahlOptionen(
-  ausgewaehlt?: string,
-): { jahr: number; titel?: string; kws: { key: string; label: string }[] }[] {
+  ausgewaehlt: string | undefined,
+  perioden: Abrechnungsperiode[],
+): { jahr: number; kws: { key: string; label: string }[] }[] {
   const label = (kw: number, jahr: number) =>
     `${kwLabel(kw, jahr)} · Do ${donnerstagDerKW(kw, jahr).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })}`;
-  const zurueck = (x: { jahr: number; kw: number }) =>
-    x.kw > 1 ? { jahr: x.jahr, kw: x.kw - 1 } : { jahr: x.jahr - 1, kw: maxKWinJahr(x.jahr - 1) };
+  const key = (y: { jahr: number; kw: number }) => `${y.jahr}-${y.kw}`;
+  const gesperrt = gesperrteKwKeys(perioden);
 
-  // Hauptliste: 2 Wochen zurück bis gut ein Jahr voraus — die nächsten
-  // Wochen stehen oben, man muss nicht scrollen.
-  let start = getCurrentKW();
-  for (let i = 0; i < 2; i++) start = zurueck(start);
+  const start = ersteKwAktuellerMonat(perioden);
   let { kw, jahr } = start;
-  const liste: { jahr: number; kw: number }[] = [];
+  const liste: { jahr: number; kw: number; hinweis?: string }[] = [];
   for (let i = 0; i < 66; i++) {
-    liste.push({ jahr, kw });
+    if (!gesperrt.has(key({ jahr, kw }))) liste.push({ jahr, kw });
     kw++;
     if (kw > maxKWinJahr(jahr)) { jahr++; kw = 1; }
   }
+
   const m = ausgewaehlt ? /^(\d{4})-(\d{1,2})$/.exec(ausgewaehlt) : null;
-  const gewaehlt = m ? { jahr: Number(m[1]), kw: Number(m[2]) } : null;
-
-  // Frühere Wochen (z. B. nachträglich erfasste Bestellungen) stehen in einer
-  // eigenen Gruppe am Ende, neueste zuerst.
-  const frueher: { jahr: number; kw: number }[] = [];
-  let x = zurueck(start);
-  for (let i = 0; i < 26; i++) {
-    frueher.push(x);
-    x = zurueck(x);
+  if (m && !liste.some((y) => key(y) === ausgewaehlt)) {
+    const y = { jahr: Number(m[1]), kw: Number(m[2]) };
+    const vorStart = y.jahr * 100 + y.kw < start.jahr * 100 + start.kw;
+    liste.unshift({
+      ...y,
+      hinweis: gesperrt.has(key(y)) ? ' · Monat abgeschlossen' : vorStart ? ' · vergangen' : '',
+    });
   }
 
-  const key = (y: { jahr: number; kw: number }) => `${y.jahr}-${y.kw}`;
-  // Gewählte KW außerhalb beider Bereiche → vorne ergänzen, damit sie sichtbar bleibt.
-  if (gewaehlt && ![...liste, ...frueher].some((y) => key(y) === ausgewaehlt)) {
-    liste.unshift(gewaehlt);
-  }
-
-  const gruppen: { jahr: number; titel?: string; kws: { key: string; label: string }[] }[] = [];
+  const gruppen: { jahr: number; kws: { key: string; label: string }[] }[] = [];
   for (const y of liste) {
     let g = gruppen[gruppen.length - 1];
     if (!g || g.jahr !== y.jahr) gruppen.push((g = { jahr: y.jahr, kws: [] }));
-    g.kws.push({ key: key(y), label: label(y.kw, y.jahr) });
+    g.kws.push({ key: key(y), label: label(y.kw, y.jahr) + (y.hinweis ?? '') });
   }
-  gruppen.push({
-    jahr: frueher[0].jahr,
-    titel: 'Frühere Wochen',
-    kws: frueher.map((y) => ({ key: key(y), label: label(y.kw, y.jahr) })),
-  });
   return gruppen;
 }
 

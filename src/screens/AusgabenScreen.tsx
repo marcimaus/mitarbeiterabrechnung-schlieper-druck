@@ -1451,7 +1451,7 @@ function VorlagenGruppe({
 // ---- Bestehende Beilage als Vorlage speichern ----------------
 
 function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone: () => void }) {
-  const { teilgebiete, touren } = useApp();
+  const { teilgebiete, touren, abrechnungsperioden } = useApp();
   const [istDauervorlage, setIstDauervorlage] = useState(true);
   const [kwKey, setKwKey] = useState('');
   const [memo, setMemo] = useState('');
@@ -1512,8 +1512,8 @@ function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone
           <label className="block text-sm font-medium text-gray-700 mb-1">Kalenderwoche (optional)</label>
           <select value={kwKey} onChange={(e) => setKwKey(e.target.value)} className={inputClass}>
             <option value="">— keine —</option>
-            {kwAuswahlOptionen(kwKey).map((g) => (
-              <optgroup key={g.titel ?? g.jahr} label={g.titel ?? String(g.jahr)}>
+            {kwAuswahlOptionen(kwKey, abrechnungsperioden).map((g) => (
+              <optgroup key={g.jahr} label={String(g.jahr)}>
                 {g.kws.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
               </optgroup>
             ))}

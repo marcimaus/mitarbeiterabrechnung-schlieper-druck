@@ -584,7 +584,7 @@ function VerteilplanInhalt() {
   }
 
   // KW-Auswahl ab kurz vor der aktuellen KW, unabhängig von angelegten Ausgaben.
-  const kwOptionen = useMemo(() => kwAuswahlOptionen(kunde.kwKey), [kunde.kwKey]);
+  const kwOptionen = useMemo(() => kwAuswahlOptionen(kunde.kwKey, abrechnungsperioden), [kunde.kwKey, abrechnungsperioden]);
 
   // Nicht buchbare Gebiete ausblenden: TG selbst markiert oder seine Tour markiert.
   const aktiveTGs = useMemo(
@@ -826,7 +826,7 @@ function VerteilplanInhalt() {
             >
               <option value="">— keine —</option>
               {kwOptionen.map((j) => (
-                <optgroup key={j.titel ?? j.jahr} label={j.titel ?? String(j.jahr)}>
+                <optgroup key={j.jahr} label={String(j.jahr)}>
                   {j.kws.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
                 </optgroup>
               ))}
@@ -972,8 +972,8 @@ function VerteilplanInhalt() {
                       onChange={(e) => terminAendern(i, { kwKey: e.target.value })}
                       className={`${auswahlKlasse} ${doppelt ? 'border-red-400' : ''}`}
                     >
-                      {kwAuswahlOptionen(t.kwKey).map((j) => (
-                        <optgroup key={j.titel ?? j.jahr} label={j.titel ?? String(j.jahr)}>
+                      {kwAuswahlOptionen(t.kwKey, abrechnungsperioden).map((j) => (
+                        <optgroup key={j.jahr} label={String(j.jahr)}>
                           {/* Bereits übernommene KWs sind für andere Termine nicht wählbar. */}
                           {j.kws
                             .filter((o) => fixiert || o.key === t.kwKey || !uebernommeneKwKeys.has(o.key))
