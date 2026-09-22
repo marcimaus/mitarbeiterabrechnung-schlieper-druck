@@ -9,6 +9,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
+import BestellungProtokollModal from '../components/BestellungProtokollModal';
 import type {
   BeilagenFormat,
   BeilagenKennzeichen,
@@ -32,6 +33,9 @@ import {
   formatLabel,
   fehlendeAngabenFuerAuftrag,
   kwAuswahlOptionen,
+  protokolliereVorlage,
+  vorlageAenderungen,
+  vorlageTitel,
   stueckzahlVon,
   vorlageUebernahmeVermerken,
   vorlageUebernommenFuer,
@@ -39,7 +43,7 @@ import {
   vorlageTeilgebietIds,
   vorlageTermine,
 } from '../lib/beilagenVorlagen';
-import { getCurrentKW, kwLabel, maxKWinJahr } from '../lib/kalender';
+import { donnerstagDerKW, getCurrentKW, kwLabel, maxKWinJahr } from '../lib/kalender';
 import { berechneBeilagenPreis, eur, type BeilagenPreisErgebnis } from '../lib/beilagenPreis';
 
 export default function VerteilplanScreen() {
@@ -227,7 +231,7 @@ function summeAuswahl(tgs: Teilgebiet[], auswahl: Set<string>): number {
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 function VerteilplanInhalt() {
-  const { teilgebiete, touren, parameter, userRole, abrechnungsperioden } = useApp();
+  const { teilgebiete, touren, parameter, userRole, adminName, abrechnungsperioden } = useApp();
   const istAdmin = userRole === 'admin';
 
   const [kunde, setKunde] = useState<Kundendaten>(leereKundendaten);
@@ -252,6 +256,12 @@ function VerteilplanInhalt() {
   const gesperrt = !!aktiveVorlage?.archiviert;
   // Dauerbestellung: Index des Termins, der in einen Auftrag übernommen wird.
   const [gewaehlterTermin, setGewaehlterTermin] = useState(-1);
+  const [protokollOffen, setProtokollOffen] = useState(false);
+  // Gespeicherte Dauerbestellung: Änderung der Teilgebiete wurde bestätigt
+  // (gilt bis zum nächsten Speichern/Laden).
+  const [tgAenderungBestaetigt, setTgAenderungBestaetigt] = useState(false);
+  // „Als neue Bestellung": Titel des Originals fürs Protokoll der Kopie.
+  const kopieVon = useRef<string | null>(null);
 
   // Stand beim Laden/Speichern — für den „ungespeichert"-Hinweis.
   const [gespeicherterStand, setGespeicherterStand] = useState(() => standVon(leereKundendaten(), new Set()));
@@ -274,6 +284,8 @@ function VerteilplanInhalt() {
     setAuswahl(a);
     setGewaehlterTermin(vorgewaehlterTermin(k.termine, v, searchParams.get('kw')));
     setGespeicherterStand(standVon(k, a));
+    setTgAenderungBestaetigt(false);
+    kopieVon.current = null;
     setMeldung(null);
     // searchParams bewusst nicht als Abhängigkeit: nur beim Laden auswerten.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -350,6 +362,34 @@ function VerteilplanInhalt() {
     setAuswahl(new Set());
     setGewaehlterTermin(-1);
     setGespeicherterStand(standVon(k, new Set()));
+    setTgAenderungBestaetigt(false);
+    kopieVon.current = null;
+  }
+
+  /**
+   * Teilgebiete einer gespeicherten Dauerbestellung ändern? Das betrifft die
+   * Bestellvorlage — also alle künftig daraus erzeugten Aufträge, nicht den
+   * Auftrag einer einzelnen KW. Einmal je Bearbeitung bestätigen lassen.
+   */
+  function tgAenderungErlaubt(): boolean {
+    if (gesperrt) return false;
+    if (!aktiveVorlage?.istDauervorlage || tgAenderungBestaetigt) return true;
+    const uebernommen = (aktiveVorlage.uebernahmen ?? [])
+      .slice()
+      .sort((a, b) => a.jahr - b.jahr || a.kw - b.kw)
+      .map((u) => kwLabel(u.kw, u.jahr));
+    const ok = confirm(
+      `⚠ Teilgebiete der Dauerbestellung „${vorlageTitel(aktiveVorlage)}" ändern?\n\n` +
+        'Sie passen damit die BESTELLVORLAGE an — nicht den Auftrag einer bestimmten Kalenderwoche.\n' +
+        'Die Änderung wirkt sich auf ALLE folgenden Beilagenaufträge aus, die aus dieser Bestellung erzeugt werden.\n\n' +
+        (uebernommen.length > 0
+          ? `Bereits angelegte Aufträge (${uebernommen.join(', ')}) bleiben unverändert. `
+          : '') +
+        'Einen einzelnen Auftrag ändern Sie in „Ausgaben & Beilagen".\n\n' +
+        'Bestellvorlage wirklich anpassen?',
+    );
+    if (ok) setTgAenderungBestaetigt(true);
+    return ok;
   }
 
   // ---- Termine der Dauerbestellung ----
@@ -411,6 +451,7 @@ function VerteilplanInhalt() {
    * — und dann als neue Bestellung. Das Original bleibt unverändert.
    */
   function alsNeueBestellungVorbereiten() {
+    if (aktiveVorlage) kopieVon.current = vorlageTitel(aktiveVorlage);
     setSearchParams({});
     setGespeicherterStand('');
     setMeldung({ text: 'Kopie vorbereitet — zum Anlegen auf „💾 Bestellung speichern" klicken.' });
@@ -472,6 +513,10 @@ function VerteilplanInhalt() {
     try {
       if (aktiveVorlage) {
         await aktualisiereBeilagenVorlage(aktiveVorlage.id, daten);
+        const aenderungen = vorlageAenderungen(aktiveVorlage, daten, teilgebiete, touren);
+        if (aenderungen.length > 0) {
+          await protokolliereVorlage({ id: aktiveVorlage.id, ...daten }, adminName, 'geaendert', { aenderungen });
+        }
         setMeldung({ text: 'Bestellung gespeichert.' });
       } else {
         const id = await erstelleBeilagenVorlage({
@@ -480,10 +525,16 @@ function VerteilplanInhalt() {
           uebernahmen: [],
           quelle: 'verteilplan',
         });
+        await protokolliereVorlage({ id, ...daten }, adminName, 'erstellt', {
+          aenderungen: vorlageAenderungen(null, daten, teilgebiete, touren),
+          hinweis: kopieVon.current ? `Kopie von „${kopieVon.current}".` : undefined,
+        });
+        kopieVon.current = null;
         geladeneVorlageId.current = id; // Zustand ist bereits aktuell
         setSearchParams({ vorlage: id });
         setMeldung({ text: 'Neue Bestellung angelegt.' });
       }
+      setTgAenderungBestaetigt(false);
       // Termine chronologisch anzeigen, gewählter Termin bleibt gewählt.
       const sortiert = [...kunde.termine].sort((a, b) => kwKeySort(a.kwKey, b.kwKey));
       const kNeu = { ...kunde, termine: sortiert };
@@ -549,7 +600,12 @@ function VerteilplanInhalt() {
         teilgebietIds: tgIds,
         vorlageId: aktiveVorlage.id,
       });
-      await vorlageUebernahmeVermerken(aktiveVorlage, { beilageId, ausgabeId, kw, jahr });
+      await vorlageUebernahmeVermerken(
+        aktiveVorlage,
+        { beilageId, ausgabeId, kw, jahr },
+        adminName,
+        stueckzahlVon(tgIds, teilgebiete),
+      );
       setMeldung({
         text:
           `Als Beilagenauftrag in ${kwLabel(kw, jahr)} übernommen (${tgIds.length} Teilgebiete, ` +
@@ -572,12 +628,17 @@ function VerteilplanInhalt() {
       archiviert,
       archiviertAm: archiviert ? Date.now() : undefined,
     });
+    await protokolliereVorlage(aktiveVorlage, adminName, archiviert ? 'archiviert' : 'reaktiviert');
     setMeldung({ text: archiviert ? 'Bestellung archiviert.' : 'Bestellung wieder aktiv.' });
   }
 
+  /** Endgültig löschen — nur Admin. Alle anderen archivieren. */
   async function vorlageLoeschen() {
-    if (!aktiveVorlage || gesperrt) return;
-    if (!confirm(`Bestellung „${vorlagenLabel(aktiveVorlage)}" endgültig löschen?`)) return;
+    if (!aktiveVorlage || gesperrt || !istAdmin) return;
+    if (!confirm(`Bestellung „${vorlagenLabel(aktiveVorlage)}" endgültig löschen?\n\nDas Protokoll der Bestellung bleibt erhalten.`)) return;
+    await protokolliereVorlage(aktiveVorlage, adminName, 'geloescht', {
+      hinweis: `Endgültig gelöscht (${vorlagenLabel(aktiveVorlage)}, ${aktiveVorlage.teilgebietIds.length} TG).`,
+    });
     await loescheBeilagenVorlage(aktiveVorlage.id);
     zuruecksetzen();
     setMeldung({ text: 'Bestellung gelöscht.' });
@@ -638,10 +699,28 @@ function VerteilplanInhalt() {
     parameter,
   );
   const auswahlAnzahl = aktiveTGs.filter((tg) => auswahl.has(tg.id)).length;
+  // Dauerbestellung: Preis je Termin (Format/Gewicht können je KW abweichen) — für den Ausdruck.
+  const terminPreise: TerminPreis[] = kunde.istDauervorlage
+    ? kunde.termine
+        .filter((t) => t.kwKey)
+        .sort((a, b) => kwKeySort(a.kwKey, b.kwKey))
+        .map((termin) => ({
+          termin,
+          preis: berechneBeilagenPreis(
+            {
+              format: termin.format,
+              kennzeichen: kunde.kennzeichen,
+              gewichtGStk: gewichtZahl(termin.gewichtGStk),
+              stueckzahl: auswahlSumme,
+            },
+            parameter,
+          ),
+        }))
+    : [];
 
   /** Setzt/entfernt eine Menge TGs: sind alle gewählt → abwählen, sonst alle wählen. */
   function toggleMenge(tgs: Teilgebiet[]) {
-    if (gesperrt) return;
+    if (!tgAenderungErlaubt()) return;
     setAuswahl((prev) => {
       const next = new Set(prev);
       const alle = tgs.every((tg) => next.has(tg.id));
@@ -757,17 +836,28 @@ function VerteilplanInhalt() {
               <button
                 onClick={() => archivSetzen(!aktiveVorlage.archiviert)}
                 className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+                title={aktiveVorlage.archiviert ? undefined : 'Bestellungen werden nicht gelöscht, sondern archiviert.'}
               >
                 {aktiveVorlage.archiviert ? '↩ Aus Archiv holen' : '🗄 Archivieren'}
               </button>
               <button
-                onClick={vorlageLoeschen}
-                disabled={gesperrt}
-                className="px-3 py-1.5 text-sm text-red-600 hover:text-red-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-red-600"
-                title={gesperrt ? 'Archivierte Bestellungen können nicht gelöscht werden.' : undefined}
+                onClick={() => setProtokollOffen(true)}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"
+                title="Wer hat wann was an dieser Bestellung geändert?"
               >
-                Löschen
+                📜 Protokoll
               </button>
+              {/* Löschen nur für den Admin — alle anderen archivieren. */}
+              {istAdmin && (
+                <button
+                  onClick={vorlageLoeschen}
+                  disabled={gesperrt}
+                  className="px-3 py-1.5 text-sm text-red-600 hover:text-red-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-red-600"
+                  title={gesperrt ? 'Archivierte Bestellungen können nicht gelöscht werden.' : 'Endgültig löschen (nur Admin)'}
+                >
+                  Löschen
+                </button>
+              )}
             </>
           )}
         </div>
@@ -1136,7 +1226,7 @@ function VerteilplanInhalt() {
             {alleAuf ? '▸ Alle zuklappen' : '▾ Alle aufklappen'}
           </button>
           <button
-            onClick={() => setAuswahl(new Set())}
+            onClick={() => tgAenderungErlaubt() && setAuswahl(new Set())}
             disabled={auswahl.size === 0 || gesperrt}
             className="px-3 py-1 text-xs border border-blue-300 bg-white rounded hover:bg-blue-100 disabled:opacity-40"
           >
@@ -1283,8 +1373,17 @@ function VerteilplanInhalt() {
           aktiveTGs={aktiveTGs}
           auswahl={auswahl}
           preis={preis}
+          terminPreise={terminPreise}
           onVariante={setVorschau}
           onClose={() => setVorschau(null)}
+        />
+      )}
+
+      {protokollOffen && aktiveVorlage && (
+        <BestellungProtokollModal
+          vorlageId={aktiveVorlage.id}
+          titel={vorlagenLabel(aktiveVorlage)}
+          onClose={() => setProtokollOffen(false)}
         />
       )}
 
@@ -1461,6 +1560,13 @@ interface DruckProps {
   auswahl: Set<string>;
   /** Verkaufspreis der Auswahl — wird nur im ausgefüllten Plan gedruckt. */
   preis: BeilagenPreisErgebnis;
+  /** Nur Dauerbestellung: Termine chronologisch mit Preis je Verteilung. */
+  terminPreise: TerminPreis[];
+}
+
+interface TerminPreis {
+  termin: TerminForm;
+  preis: BeilagenPreisErgebnis;
 }
 
 function DruckVorschau(props: DruckProps & { onVariante: (v: Variante) => void; onClose: () => void }) {
@@ -1556,7 +1662,7 @@ function DruckVorschau(props: DruckProps & { onVariante: (v: Variante) => void; 
   );
 }
 
-function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs, auswahl, preis }: DruckProps) {
+function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs, auswahl, preis, terminPreise }: DruckProps) {
   const voll = variante === 'ausgefuellt';
   const gesamt = summe(aktiveTGs);
   const gewGesamt = summeAuswahl(aktiveTGs, auswahl);
@@ -1588,6 +1694,21 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
   ]
     .filter(Boolean)
     .join(' / ');
+  // Dauerbestellung: KWs und Werte stehen ausführlich in der Terminaufstellung.
+  const dauer = kunde.istDauervorlage && terminPreise.length > 0;
+  const kwLabelVon = (t: TerminForm) => vorlageKwLabel(kwKeyParse(t.kwKey));
+  const kwFeld = dauer
+    ? `${terminPreise.length} Termin${terminPreise.length === 1 ? '' : 'e'}: ` +
+      (terminPreise.length === 1
+        ? kwLabelVon(terminPreise[0].termin)
+        : `${kwLabelVon(terminPreise[0].termin)} – ${kwLabelVon(terminPreise[terminPreise.length - 1].termin)}`)
+    : kwText;
+  const formatGewichtFeld = dauer && formatGewichtText.includes(' / ') ? 'je Termin — siehe Aufstellung' : formatGewichtText;
+  // Termine mit offenem Format haben noch keinen Preis → nicht in der Summe.
+  const bepreist = terminPreise.filter((x) => !x.preis.unvollstaendig);
+  const summeNetto = bepreist.reduce((s, x) => s + x.preis.nettoEur, 0);
+  const summeUst = bepreist.reduce((s, x) => s + x.preis.ustEur, 0);
+  const summeBrutto = bepreist.reduce((s, x) => s + x.preis.bruttoEur, 0);
 
   return (
     <div className="vp-sheet">
@@ -1611,9 +1732,70 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
         <DruckFeld label="Ansprechpartner" value={voll ? kunde.ansprechpartner : ''} />
         <DruckFeld label="Telefon" value={voll ? kunde.telefon : ''} />
         <DruckFeld label="Datum" value={datum} />
-        <DruckFeld label="Kalenderwoche" value={voll ? kwText : ''} />
-        <DruckFeld label="Format / Gewicht (g/Stk)" value={voll ? formatGewichtText : ''} />
+        <DruckFeld label={dauer && voll ? 'Kalenderwochen (Dauerbestellung)' : 'Kalenderwoche'} value={voll ? kwFeld : ''} />
+        <DruckFeld label="Format / Gewicht (g/Stk)" value={voll ? formatGewichtFeld : ''} />
       </div>
+
+      {/* Dauerbestellung: alle Termine mit ihren Werten und dem Preis je Verteilung */}
+      {voll && dauer && (
+        <div style={{ marginBottom: '2.5mm' }}>
+          <div style={{ fontSize: '8.5pt', fontWeight: 'bold', marginBottom: '1mm', breakAfter: 'avoid' }}>
+            Termine der Dauerbestellung
+          </div>
+          <table className="vp-t" style={{ width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ width: '6mm' }}>Nr.</th>
+                <th>Kalenderwoche</th>
+                <th>Verteilung</th>
+                <th>Format</th>
+                <th className="r">Gewicht</th>
+                <th className="r">Stückzahl</th>
+                <th className="r">je 1.000</th>
+                <th className="r">netto</th>
+                <th className="r">brutto</th>
+              </tr>
+            </thead>
+            <tbody>
+              {terminPreise.map(({ termin, preis: p }, i) => {
+                const { kw, jahr } = kwKeyParse(termin.kwKey);
+                return (
+                  <tr key={termin.kwKey}>
+                    <td>{i + 1}</td>
+                    <td>{kwLabelVon(termin)}</td>
+                    <td>
+                      {kw != null && jahr != null
+                        ? `Do ${donnerstagDerKW(kw, jahr).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })}`
+                        : ''}
+                    </td>
+                    <td>{formatLabel(termin.format) || 'offen'}</td>
+                    <td className="r">{termin.gewichtGStk ? `${termin.gewichtGStk} g` : 'offen'}</td>
+                    <td className="r">{nf(p.stueckzahl)}</td>
+                    <td className="r">{p.unvollstaendig ? '—' : eur(p.proTausendEur)}</td>
+                    <td className="r">{p.unvollstaendig ? '—' : eur(p.nettoEur)}</td>
+                    <td className="r">{p.unvollstaendig ? '—' : eur(p.bruttoEur)}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ background: '#1d4ed8', color: 'white', fontWeight: 'bold' }}>
+                <td />
+                <td colSpan={4}>
+                  Summe {terminPreise.length} Verteilung{terminPreise.length === 1 ? '' : 'en'}
+                </td>
+                <td className="r">{nf(terminPreise.reduce((s, x) => s + x.preis.stueckzahl, 0))}</td>
+                <td />
+                <td className="r">{eur(summeNetto)}</td>
+                <td className="r">{eur(summeBrutto)}</td>
+              </tr>
+            </tbody>
+          </table>
+          {terminPreise.some((x) => x.preis.unvollstaendig) && (
+            <div style={{ fontSize: '6pt', color: '#92400e', marginTop: '0.8mm' }}>
+              — = Format noch offen, Preis folgt; nicht in der Summe enthalten.
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '3px', padding: '0.8mm 2mm', marginBottom: '2mm', fontSize: '6.5pt', color: '#1e40af' }}>
         {voll
@@ -1714,8 +1896,38 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
         </tbody>
       </table>
 
+      {/* Dauerbestellung: Gesamtpreis aller Termine (Einzelpreise siehe Terminaufstellung) */}
+      {voll && dauer && (
+        <div className="vp-block" style={{ marginTop: '3mm' }}>
+          <div style={{ fontSize: '8.5pt', fontWeight: 'bold', marginBottom: '1mm' }}>Preis</div>
+          <table className="vp-t" style={{ width: '105mm' }}>
+            <tbody>
+              <tr>
+                <td>
+                  Summe netto — {bepreist.length} von {terminPreise.length} Verteilung{terminPreise.length === 1 ? '' : 'en'}
+                  {' '}à {nf(gewGesamt)} Stück
+                </td>
+                <td className="r" style={{ width: '30mm', fontWeight: 'bold' }}>{eur(summeNetto)}</td>
+              </tr>
+              <tr>
+                <td>zzgl. {preis.ustProzent.toLocaleString('de-DE')} % Umsatzsteuer</td>
+                <td className="r">{eur(summeUst)}</td>
+              </tr>
+              <tr style={{ background: '#1d4ed8', color: 'white', fontWeight: 'bold', fontSize: '8pt' }}>
+                <td>Gesamtpreis brutto</td>
+                <td className="r">{eur(summeBrutto)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style={{ fontSize: '6pt', color: '#666', marginTop: '0.8mm' }}>
+            Preis je Verteilung siehe „Termine der Dauerbestellung". Alle Preise gelten je angefangene
+            1.000 Stück. Angebotspreis — maßgeblich ist die Auftragsbestätigung.
+          </div>
+        </div>
+      )}
+
       {/* Preis — nur im ausgefüllten Plan (der Blanko-Bogen bleibt preisfrei) */}
-      {voll && (
+      {voll && !dauer && (
         <div className="vp-block" style={{ marginTop: '3mm' }}>
           <div style={{ fontSize: '8.5pt', fontWeight: 'bold', marginBottom: '1mm' }}>Preis</div>
           <table className="vp-t" style={{ width: '105mm' }}>

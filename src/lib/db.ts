@@ -27,6 +27,7 @@ import type {
   Ausgabe,
   Beilage,
   BeilagenVorlage,
+  BeilagenVorlageLog,
   Abrechnungsperiode,
   Einsatz,
   Arbeitszeit,
@@ -466,6 +467,33 @@ export async function aktualisiereBeilagenVorlage(
 
 export async function loescheBeilagenVorlage(id: string): Promise<void> {
   await deleteDoc(doc(db, 'beilagenVorlagen', id));
+}
+
+// ---- Protokoll der Bestellungen (nur schreiben, nie ändern/löschen) -
+
+export async function schreibeBeilagenVorlageLog(
+  data: Omit<BeilagenVorlageLog, 'id' | 'zeitstempel'>
+): Promise<void> {
+  await addDoc(collection(db, 'beilagenVorlagenLog'), {
+    ...stripUndef(data as Record<string, unknown>),
+    zeitstempel: now(),
+  });
+}
+
+/** Live-Listener über das Protokoll einer Bestellung, neueste zuerst. */
+export function beilagenVorlageLogListener(
+  vorlageId: string,
+  cb: (list: BeilagenVorlageLog[]) => void,
+): Unsubscribe {
+  // Ohne orderBy → kein zusammengesetzter Index nötig; sortiert wird hier.
+  const q = query(collection(db, 'beilagenVorlagenLog'), where('vorlageId', '==', vorlageId));
+  return onSnapshot(q, (snap) => {
+    cb(
+      snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as BeilagenVorlageLog))
+        .sort((a, b) => b.zeitstempel - a.zeitstempel),
+    );
+  });
 }
 
 // ---- Auslieferungs-Memos -----------------------------------

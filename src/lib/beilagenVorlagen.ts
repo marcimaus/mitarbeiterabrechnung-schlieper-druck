@@ -11,11 +11,12 @@ import type {
   Abrechnungsperiode,
   BeilagenFormat,
   BeilagenVorlage,
+  BeilagenVorlageLog,
   BeilagenVorlageTermin,
   Teilgebiet,
   Tour,
 } from '../types';
-import { aktualisiereBeilagenVorlage } from './db';
+import { aktualisiereBeilagenVorlage, schreibeBeilagenVorlageLog } from './db';
 import { donnerstagDerKW, getCurrentKW, getISOWeek, getISOYear, kwLabel, maxKWinJahr } from './kalender';
 
 export const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
@@ -225,17 +226,150 @@ export function vorlageUebernommenFuer(v: BeilagenVorlage, kw: number, jahr: num
   return (v.uebernahmen ?? []).some((u) => u.kw === kw && u.jahr === jahr);
 }
 
+/** Titel einer Bestellung für Protokoll und Meldungen. */
+export function vorlageTitel(v: Pick<BeilagenVorlage, 'arbeitstitel' | 'kundenname'>): string {
+  return [v.arbeitstitel, v.kundenname].filter(Boolean).join(' · ') || '(ohne Titel)';
+}
+
+// ---- Protokoll ----------------------------------------------
+
+type VorlageDaten = Omit<BeilagenVorlage, 'id' | 'erstelltAm' | 'aktualisiertAm' | 'archiviert' | 'quelle'>;
+export type VorlageAenderung = { feld: string; alt: string; neu: string };
+
+const gewichtFmt = (g: number | undefined) => (g ? `${String(g).replace('.', ',')} g` : '');
+const jaNein = (b: boolean | undefined) => (b === false ? 'nein' : 'ja');
+const kwFmt = (v: Pick<BeilagenVorlage, 'kw' | 'jahr'>) => (v.kw != null && v.jahr != null ? vorlageKwLabel(v) : '');
+const deSort = (x: string, y: string) => x.localeCompare(y, 'de', { numeric: true });
+const terminFmt = (t: BeilagenVorlageTermin) =>
+  [
+    formatLabel(t.format) || 'Format offen',
+    gewichtFmt(t.gewichtGStk) || 'Gewicht offen',
+    t.beilageAngeliefert ? 'angeliefert' : 'nicht angeliefert',
+  ].join(' · ');
+
 /**
- * Nach dem Anlegen eines Auftrags aus einer Vorlage: Übernahme protokollieren
- * und — außer bei Dauervorlagen — archivieren.
+ * Feldweise Unterschiede zwischen zwei Ständen einer Bestellung (formatiert
+ * fürs Protokoll). `alt` = null → Neuanlage (alle gesetzten Felder).
+ */
+export function vorlageAenderungen(
+  alt: VorlageDaten | null,
+  neu: VorlageDaten,
+  teilgebiete: Teilgebiet[],
+  touren: Tour[],
+): VorlageAenderung[] {
+  const leer: VorlageDaten = {
+    arbeitstitel: '', kundenname: '', kw: null, jahr: null, format: '', kennzeichen: neu.kennzeichen,
+    gewichtGStk: 0, gesamtgebiet: false, tourIds: [], teilgebietIds: [], istDauervorlage: false,
+  };
+  const a = alt ?? leer;
+  const liste: VorlageAenderung[] = [];
+  const feld = (name: string, x: string, y: string) => {
+    if (x !== y) liste.push({ feld: name, alt: x, neu: y });
+  };
+  const einlegen = (k: BeilagenVorlage['kennzeichen']) => (k === 'ext' ? 'extern' : 'intern');
+
+  feld('Arbeitstitel', a.arbeitstitel ?? '', neu.arbeitstitel ?? '');
+  feld('Kundenname', a.kundenname ?? '', neu.kundenname ?? '');
+  feld('Ansprechpartner', a.ansprechpartner ?? '', neu.ansprechpartner ?? '');
+  feld('Telefon', a.telefon ?? '', neu.telefon ?? '');
+  feld('Bestelldatum', a.datum ?? '', neu.datum ?? '');
+  feld('Dauerbestellung', alt ? jaNein(a.istDauervorlage) : '', jaNein(neu.istDauervorlage));
+  feld('Einlegen', alt ? einlegen(a.kennzeichen) : '', einlegen(neu.kennzeichen));
+
+  // Einzelbestellung: KW/Format/Gewicht/Anlieferung auf der Bestellung selbst.
+  const einzelAlt = alt && !a.istDauervorlage;
+  const einzelNeu = !neu.istDauervorlage;
+  feld('Kalenderwoche', einzelAlt ? kwFmt(a) : '', einzelNeu ? kwFmt(neu) : '');
+  feld('Format', einzelAlt ? formatLabel(a.format) : '', einzelNeu ? formatLabel(neu.format) : '');
+  feld('Gewicht', einzelAlt ? gewichtFmt(a.gewichtGStk) : '', einzelNeu ? gewichtFmt(neu.gewichtGStk) : '');
+  feld('Beilage angeliefert', einzelAlt ? jaNein(a.beilageAngeliefert) : '', einzelNeu ? jaNein(neu.beilageAngeliefert) : '');
+
+  // Dauerbestellung: je Termin (KW) eigene Werte.
+  const termineVon = (v: VorlageDaten) =>
+    new Map((v.istDauervorlage ? v.termine ?? [] : []).map((t) => [`${t.jahr}-${t.kw}`, t]));
+  const termineAlt = termineVon(a);
+  const termineNeu = termineVon(neu);
+  const terminKeys = [...new Set([...termineAlt.keys(), ...termineNeu.keys()])].sort((x, y) => {
+    const [jx, kx] = x.split('-').map(Number);
+    const [jy, ky] = y.split('-').map(Number);
+    return jx - jy || kx - ky;
+  });
+  for (const k of terminKeys) {
+    const x = termineAlt.get(k);
+    const y = termineNeu.get(k);
+    const t = (x ?? y)!;
+    feld(`Termin ${kwLabel(t.kw, t.jahr)}`, x ? terminFmt(x) : '', y ? terminFmt(y) : '');
+  }
+
+  // Teilgebiete: welche kamen dazu, welche fielen weg (Namen), dazu die Stückzahl.
+  const tgName = (id: string) => teilgebiete.find((tg) => tg.id === id)?.name ?? `(gelöschtes TG ${id})`;
+  const idsAlt = new Set(a.teilgebietIds ?? []);
+  const idsNeu = new Set(neu.teilgebietIds ?? []);
+  const dazu = [...idsNeu].filter((id) => !idsAlt.has(id)).map(tgName).sort(deSort);
+  const weg = [...idsAlt].filter((id) => !idsNeu.has(id)).map(tgName).sort(deSort);
+  if (dazu.length > 0) liste.push({ feld: 'Teilgebiete hinzugefügt', alt: '', neu: dazu.join(', ') });
+  if (weg.length > 0) liste.push({ feld: 'Teilgebiete entfernt', alt: weg.join(', '), neu: '' });
+  if (dazu.length > 0 || weg.length > 0) {
+    const stk = (n: number | undefined) => (n != null ? ` · ${n.toLocaleString('de-DE')} Stk` : '');
+    feld(
+      'Teilgebiete gesamt',
+      alt ? `${idsAlt.size} TG${stk(a.stueckzahlGespeichert)}` : '',
+      `${idsNeu.size} TG${stk(neu.stueckzahlGespeichert)}`,
+    );
+  }
+  feld('Gesamtgebiet', alt ? jaNein(a.gesamtgebiet) : '', neu.gesamtgebiet || alt ? jaNein(neu.gesamtgebiet) : '');
+  const tourNamen = (ids: string[] | undefined) =>
+    (ids ?? []).map((id) => touren.find((t) => t.id === id)?.name ?? id).sort(deSort).join(', ');
+  feld('Ganze Touren', tourNamen(a.tourIds), tourNamen(neu.tourIds));
+
+  feld('Memo', a.memo ?? '', neu.memo ?? '');
+  feld('Externer Link', a.externerLink ?? '', neu.externerLink ?? '');
+  return liste;
+}
+
+/**
+ * Protokolleintrag schreiben. Fehler werden nur geloggt — das Protokoll darf
+ * die eigentliche Aktion nicht verhindern.
+ */
+export async function protokolliereVorlage(
+  vorlage: { id: string; arbeitstitel: string; kundenname: string },
+  benutzer: string,
+  aktion: BeilagenVorlageLog['aktion'],
+  extra: { aenderungen?: VorlageAenderung[]; hinweis?: string } = {},
+): Promise<void> {
+  try {
+    await schreibeBeilagenVorlageLog({
+      vorlageId: vorlage.id,
+      vorlageTitel: vorlageTitel(vorlage),
+      benutzer: benutzer || '(unbekannt)',
+      aktion,
+      ...(extra.aenderungen && extra.aenderungen.length > 0 ? { aenderungen: extra.aenderungen } : {}),
+      ...(extra.hinweis ? { hinweis: extra.hinweis } : {}),
+    });
+  } catch (err) {
+    console.error('Protokoll der Bestellung konnte nicht geschrieben werden', err);
+  }
+}
+
+/**
+ * Nach dem Anlegen eines Auftrags aus einer Vorlage: Übernahme vermerken,
+ * protokollieren und — außer bei Dauervorlagen — archivieren.
  */
 export async function vorlageUebernahmeVermerken(
   vorlage: BeilagenVorlage,
   uebernahme: { beilageId: string; ausgabeId: string; kw: number; jahr: number },
+  benutzer: string,
+  stueckzahl?: number,
 ): Promise<void> {
   const ts = Date.now();
   await aktualisiereBeilagenVorlage(vorlage.id, {
     uebernahmen: [...(vorlage.uebernahmen ?? []), { ...uebernahme, am: ts }],
     ...(vorlage.istDauervorlage ? {} : { archiviert: true, archiviertAm: ts }),
+  });
+  await protokolliereVorlage(vorlage, benutzer, 'uebernommen', {
+    hinweis:
+      `Als Beilagenauftrag in ${kwLabel(uebernahme.kw, uebernahme.jahr)} übernommen` +
+      (stueckzahl != null ? ` (${stueckzahl.toLocaleString('de-DE')} Stück)` : '') +
+      (vorlage.istDauervorlage ? '.' : ' — Bestellung dadurch archiviert.'),
   });
 }

@@ -646,6 +646,27 @@ export interface BeilagenVorlage {
   aktualisiertAm: number;
 }
 
+/**
+ * Protokolleintrag einer Bestellung (Collection `beilagenVorlagenLog`) — nur
+ * schreiben, nie ändern/löschen. Bleibt auch nach dem Löschen der Bestellung
+ * erhalten.
+ */
+export interface BeilagenVorlageLog {
+  id: string;
+  vorlageId: string;
+  /** Snapshot „Arbeitstitel · Kunde" — die Bestellung kann umbenannt/gelöscht werden. */
+  vorlageTitel: string;
+  /** Date.now() zum Zeitpunkt der Änderung. */
+  zeitstempel: number;
+  /** Name des angemeldeten Benutzers (adminName aus AppContext). */
+  benutzer: string;
+  aktion: 'erstellt' | 'geaendert' | 'archiviert' | 'reaktiviert' | 'uebernommen' | 'geloescht';
+  /** Feldweise Änderungen (formatiert), '' = vorher/nachher nicht vorhanden. */
+  aenderungen?: { feld: string; alt: string; neu: string }[];
+  /** Freitext, z. B. KW und Stückzahl einer Übernahme. */
+  hinweis?: string;
+}
+
 // ---- Abrechnungsperiode (= Monat) --------------------------
 
 export type PeriodeStatus = 'offen' | 'abgeschlossen';

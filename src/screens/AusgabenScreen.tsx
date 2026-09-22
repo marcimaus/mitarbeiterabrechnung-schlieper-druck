@@ -35,6 +35,8 @@ import {
   vorlageKwLabel,
   vorlageFuerKw,
   vorlageLink,
+  protokolliereVorlage,
+  vorlageAenderungen,
   vorlageTeilgebietIds,
   vorlageUebernahmeVermerken,
   vorlageUebernommenFuer,
@@ -1451,7 +1453,7 @@ function VorlagenGruppe({
 // ---- Bestehende Beilage als Vorlage speichern ----------------
 
 function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone: () => void }) {
-  const { teilgebiete, touren, abrechnungsperioden } = useApp();
+  const { teilgebiete, touren, abrechnungsperioden, adminName } = useApp();
   const [istDauervorlage, setIstDauervorlage] = useState(true);
   const [kwKey, setKwKey] = useState('');
   const [memo, setMemo] = useState('');
@@ -1465,7 +1467,7 @@ function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone
     setError('');
     try {
       const [j, k] = !istDauervorlage && kwKey ? kwKey.split('-').map(Number) : [null, null];
-      await erstelleBeilagenVorlage({
+      const daten = {
         arbeitstitel: beilage.arbeitstitel,
         kundenname: beilage.kundenname,
         kw: k,
@@ -1479,7 +1481,12 @@ function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone
         istDauervorlage,
         archiviert: false,
         uebernahmen: [],
-        quelle: 'beilage',
+        quelle: 'beilage' as const,
+      };
+      const id = await erstelleBeilagenVorlage(daten);
+      await protokolliereVorlage({ id, ...daten }, adminName, 'erstellt', {
+        aenderungen: vorlageAenderungen(null, daten, teilgebiete, touren),
+        hinweis: `Aus Beilagenauftrag „${beilage.arbeitstitel}" gespeichert.`,
       });
       onDone();
     } catch (err) {
@@ -1575,7 +1582,7 @@ function BeilageForm({
   abbrechenLabel?: string;
 }) {
   const ausgabeId = ausgabe.id;
-  const { teilgebiete, touren } = useApp();
+  const { teilgebiete, touren, adminName } = useApp();
   const quelle = initial ? null : vorlage ?? null;
   const [arbeitstitel, setArbeitstitel] = useState(initial?.arbeitstitel ?? quelle?.arbeitstitel ?? '');
   const [kundenname, setKundenname] = useState(initial?.kundenname ?? quelle?.kundenname ?? '');
@@ -1677,7 +1684,7 @@ function BeilageForm({
             ausgabeId: ausgabe.id,
             kw: ausgabe.kw,
             jahr: ausgabe.jahr,
-          });
+          }, adminName, gesamtStueckzahl);
         }
         onSave(beilage);
       }
