@@ -826,7 +826,7 @@ function VerteilplanInhalt() {
             >
               <option value="">— keine —</option>
               {kwOptionen.map((j) => (
-                <optgroup key={j.jahr} label={String(j.jahr)}>
+                <optgroup key={j.titel ?? j.jahr} label={j.titel ?? String(j.jahr)}>
                   {j.kws.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
                 </optgroup>
               ))}
@@ -973,7 +973,7 @@ function VerteilplanInhalt() {
                       className={`${auswahlKlasse} ${doppelt ? 'border-red-400' : ''}`}
                     >
                       {kwAuswahlOptionen(t.kwKey).map((j) => (
-                        <optgroup key={j.jahr} label={String(j.jahr)}>
+                        <optgroup key={j.titel ?? j.jahr} label={j.titel ?? String(j.jahr)}>
                           {/* Bereits übernommene KWs sind für andere Termine nicht wählbar. */}
                           {j.kws
                             .filter((o) => fixiert || o.key === t.kwKey || !uebernommeneKwKeys.has(o.key))

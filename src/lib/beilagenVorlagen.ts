@@ -88,18 +88,23 @@ export function stueckzahlVon(tgIds: string[], teilgebiete: Teilgebiet[]): numbe
 /**
  * KW-Auswahl für Bestellungen: beginnt kurz vor der aktuellen KW (damit die
  * nächsten Wochen oben stehen und man nicht scrollen muss) und reicht gut
- * ein Jahr in die Zukunft. Eine bereits gewählte KW außerhalb des Bereichs
- * wird vorne ergänzt. Schlüssel: "jahr-kw".
+ * ein Jahr in die Zukunft. Ältere Wochen (ein halbes Jahr zurück) folgen in
+ * der Gruppe „Frühere Wochen" am Ende. Eine gewählte KW außerhalb beider
+ * Bereiche wird vorne ergänzt. Schlüssel: "jahr-kw".
  */
-export function kwAuswahlOptionen(ausgewaehlt?: string): { jahr: number; kws: { key: string; label: string }[] }[] {
+export function kwAuswahlOptionen(
+  ausgewaehlt?: string,
+): { jahr: number; titel?: string; kws: { key: string; label: string }[] }[] {
   const label = (kw: number, jahr: number) =>
     `${kwLabel(kw, jahr)} · Do ${donnerstagDerKW(kw, jahr).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })}`;
-  let { kw, jahr } = getCurrentKW();
-  // 2 Wochen zurück
-  for (let i = 0; i < 2; i++) {
-    kw--;
-    if (kw < 1) { jahr--; kw = maxKWinJahr(jahr); }
-  }
+  const zurueck = (x: { jahr: number; kw: number }) =>
+    x.kw > 1 ? { jahr: x.jahr, kw: x.kw - 1 } : { jahr: x.jahr - 1, kw: maxKWinJahr(x.jahr - 1) };
+
+  // Hauptliste: 2 Wochen zurück bis gut ein Jahr voraus — die nächsten
+  // Wochen stehen oben, man muss nicht scrollen.
+  let start = getCurrentKW();
+  for (let i = 0; i < 2; i++) start = zurueck(start);
+  let { kw, jahr } = start;
   const liste: { jahr: number; kw: number }[] = [];
   for (let i = 0; i < 66; i++) {
     liste.push({ jahr, kw });
@@ -107,15 +112,34 @@ export function kwAuswahlOptionen(ausgewaehlt?: string): { jahr: number; kws: { 
     if (kw > maxKWinJahr(jahr)) { jahr++; kw = 1; }
   }
   const m = ausgewaehlt ? /^(\d{4})-(\d{1,2})$/.exec(ausgewaehlt) : null;
-  if (m && !liste.some((x) => `${x.jahr}-${x.kw}` === ausgewaehlt)) {
-    liste.unshift({ jahr: Number(m[1]), kw: Number(m[2]) });
+  const gewaehlt = m ? { jahr: Number(m[1]), kw: Number(m[2]) } : null;
+
+  // Frühere Wochen (z. B. nachträglich erfasste Bestellungen) stehen in einer
+  // eigenen Gruppe am Ende, neueste zuerst.
+  const frueher: { jahr: number; kw: number }[] = [];
+  let x = zurueck(start);
+  for (let i = 0; i < 26; i++) {
+    frueher.push(x);
+    x = zurueck(x);
   }
-  const gruppen: { jahr: number; kws: { key: string; label: string }[] }[] = [];
-  for (const x of liste) {
+
+  const key = (y: { jahr: number; kw: number }) => `${y.jahr}-${y.kw}`;
+  // Gewählte KW außerhalb beider Bereiche → vorne ergänzen, damit sie sichtbar bleibt.
+  if (gewaehlt && ![...liste, ...frueher].some((y) => key(y) === ausgewaehlt)) {
+    liste.unshift(gewaehlt);
+  }
+
+  const gruppen: { jahr: number; titel?: string; kws: { key: string; label: string }[] }[] = [];
+  for (const y of liste) {
     let g = gruppen[gruppen.length - 1];
-    if (!g || g.jahr !== x.jahr) gruppen.push((g = { jahr: x.jahr, kws: [] }));
-    g.kws.push({ key: `${x.jahr}-${x.kw}`, label: label(x.kw, x.jahr) });
+    if (!g || g.jahr !== y.jahr) gruppen.push((g = { jahr: y.jahr, kws: [] }));
+    g.kws.push({ key: key(y), label: label(y.kw, y.jahr) });
   }
+  gruppen.push({
+    jahr: frueher[0].jahr,
+    titel: 'Frühere Wochen',
+    kws: frueher.map((y) => ({ key: key(y), label: label(y.kw, y.jahr) })),
+  });
   return gruppen;
 }
 

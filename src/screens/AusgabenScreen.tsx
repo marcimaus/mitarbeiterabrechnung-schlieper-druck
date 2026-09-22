@@ -1513,7 +1513,7 @@ function AlsVorlageSpeichernForm({ beilage, onDone }: { beilage: Beilage; onDone
           <select value={kwKey} onChange={(e) => setKwKey(e.target.value)} className={inputClass}>
             <option value="">— keine —</option>
             {kwAuswahlOptionen(kwKey).map((g) => (
-              <optgroup key={g.jahr} label={String(g.jahr)}>
+              <optgroup key={g.titel ?? g.jahr} label={g.titel ?? String(g.jahr)}>
                 {g.kws.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
               </optgroup>
             ))}
