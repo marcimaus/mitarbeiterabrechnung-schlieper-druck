@@ -191,9 +191,11 @@ function MitarbeiterInhalt() {
     }
     if (filterText) {
       const q = filterText.toLowerCase();
-      // Bei „nur Interessenten" zusätzlich in den Interessens-Orten suchen.
+      // Bei „nur Interessenten" zusätzlich in den Interessens-Orten und im
+      // Wohnort suchen.
       const trifftOrt = filterInteressent === 'nur' &&
-        (m.interessentOrte ?? []).some((o) => o.toLowerCase().includes(q));
+        [...(m.interessentOrte ?? []), m.adresse?.ort ?? '']
+          .some((o) => o.toLowerCase().includes(q));
       if (!m.name.toLowerCase().includes(q) && !m.nummer.includes(filterText) && !trifftOrt) return false;
     }
     if (filterInteressent === 'nur') {
@@ -283,7 +285,7 @@ function MitarbeiterInhalt() {
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-60"
-          title={filterInteressent === 'nur' ? 'Sucht in Name, Nummer und den Orten/Teilgebieten, für die sich der Interessent interessiert' : undefined}
+          title={filterInteressent === 'nur' ? 'Sucht in Name, Nummer, Wohnort und den Orten/Teilgebieten, für die sich der Interessent interessiert' : undefined}
         />
         <input
           type="text"
