@@ -338,6 +338,16 @@ export interface Mitarbeiter {
   interessentDeinteressiert?: boolean;
   /** Tätigkeiten, für die Interesse besteht (Mehrfachauswahl). */
   interesseTaetigkeiten?: InteresseTaetigkeit[];
+  /**
+   * „Auto vorhanden" — relevant für Interessenten, die Auslieferungsfahrer
+   * oder Springer/Austräger werden wollen.
+   */
+  autoVorhanden?: boolean;
+  /**
+   * Teilgebiete / Ortsnamen, für die sich der Interessent interessiert
+   * (Freitext-Liste, Vorschläge aus den Teilgebietsnamen).
+   */
+  interessentOrte?: string[];
   /** Datum der ersten Kontaktaufnahme (ISO YYYY-MM-DD). */
   interessentKontaktDatum?: string;
   /** Link zu weiterer Korrespondenz (z. B. Google-Mail-Thread). */

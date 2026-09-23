@@ -128,6 +128,8 @@ function MitarbeiterInhalt() {
   const [filterLohnkontoSaldo, setFilterLohnkontoSaldo] = useState<'' | 'ja' | 'nein'>('');
   const [filterInteressent, setFilterInteressent] = useState<'' | 'nur' | 'ohne'>('ohne');
   const [filterInteresseTaetigkeit, setFilterInteresseTaetigkeit] = useState<InteresseTaetigkeit | ''>('');
+  // Nur bei „nur Interessenten": Auto vorhanden ja/nein.
+  const [filterAuto, setFilterAuto] = useState<'' | 'ja' | 'nein'>('');
   const [filterOrtPlz, setFilterOrtPlz] = useState('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
@@ -187,8 +189,17 @@ function MitarbeiterInhalt() {
         if (!m.isActive) return false;
       }
     }
-    if (filterText && !m.name.toLowerCase().includes(filterText.toLowerCase()) &&
-        !m.nummer.includes(filterText)) return false;
+    if (filterText) {
+      const q = filterText.toLowerCase();
+      // Bei „nur Interessenten" zusätzlich in den Interessens-Orten suchen.
+      const trifftOrt = filterInteressent === 'nur' &&
+        (m.interessentOrte ?? []).some((o) => o.toLowerCase().includes(q));
+      if (!m.name.toLowerCase().includes(q) && !m.nummer.includes(filterText) && !trifftOrt) return false;
+    }
+    if (filterInteressent === 'nur') {
+      if (filterAuto === 'ja' && !m.autoVorhanden) return false;
+      if (filterAuto === 'nein' && m.autoVorhanden) return false;
+    }
     if (filterOrtPlz.trim()) {
       const q = filterOrtPlz.trim().toLowerCase();
       const plz = (m.adresse?.plz ?? '').toLowerCase();
@@ -268,10 +279,11 @@ function MitarbeiterInhalt() {
       <div className="flex flex-wrap gap-3 mb-4">
         <input
           type="text"
-          placeholder="Name oder Nummer suchen..."
+          placeholder={filterInteressent === 'nur' ? 'Name oder Interessens-Ort suchen...' : 'Name oder Nummer suchen...'}
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-52"
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-60"
+          title={filterInteressent === 'nur' ? 'Sucht in Name, Nummer und den Orten/Teilgebieten, für die sich der Interessent interessiert' : undefined}
         />
         <input
           type="text"
@@ -355,6 +367,7 @@ function MitarbeiterInhalt() {
             setFilterInteressent(v);
             // Tätigkeits-Filter zurücksetzen, wenn Interessenten ausgeblendet sind.
             if (v === 'ohne') setFilterInteresseTaetigkeit('');
+            if (v !== 'nur') setFilterAuto('');
           }}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           title="Filter Interessenten"
@@ -374,6 +387,18 @@ function MitarbeiterInhalt() {
             {ALLE_INTERESSE_TAETIGKEITEN.map((t) => (
               <option key={t} value={t}>{INTERESSE_TAETIGKEIT_LABELS[t]}</option>
             ))}
+          </select>
+        )}
+        {filterInteressent === 'nur' && (
+          <select
+            value={filterAuto}
+            onChange={(e) => setFilterAuto(e.target.value as '' | 'ja' | 'nein')}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title="Filter Auto vorhanden"
+          >
+            <option value="">Auto: alle</option>
+            <option value="ja">🚗 Auto vorhanden</option>
+            <option value="nein">kein Auto</option>
           </select>
         )}
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
@@ -479,6 +504,12 @@ function MitarbeiterInhalt() {
                     </div>
                   )}
                   <div className="flex flex-wrap gap-1">
+                    {m.istInteressent && m.autoVorhanden && (
+                      <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full" title="Auto vorhanden">🚗 Auto</span>
+                    )}
+                    {m.istInteressent && (m.interessentOrte ?? []).map((o) => (
+                      <span key={`ort-${o}`} className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full" title="Interesse für Ort / Teilgebiet">📍 {o}</span>
+                    ))}
                     {m.istInteressent
                       ? (m.interesseTaetigkeiten ?? []).map((t) => (
                           <span key={t} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
@@ -610,6 +641,12 @@ function MitarbeiterInhalt() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
+                      {m.istInteressent && m.autoVorhanden && (
+                        <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full" title="Auto vorhanden">🚗 Auto</span>
+                      )}
+                      {m.istInteressent && (m.interessentOrte ?? []).map((o) => (
+                        <span key={`ort-${o}`} className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full" title="Interesse für Ort / Teilgebiet">📍 {o}</span>
+                      ))}
                       {m.istInteressent
                         ? (m.interesseTaetigkeiten ?? []).map((t) => (
                             <span key={t} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
@@ -816,6 +853,8 @@ function MitarbeiterForm({
         istInteressent: initial.istInteressent ?? false,
         interessentDeinteressiert: initial.interessentDeinteressiert ?? false,
         interesseTaetigkeiten: initial.interesseTaetigkeiten ? [...initial.interesseTaetigkeiten] : [],
+        autoVorhanden: initial.autoVorhanden ?? false,
+        interessentOrte: initial.interessentOrte ? [...initial.interessentOrte] : [],
         interessentKontaktDatum: initial.interessentKontaktDatum,
         interessentKorrespondenzLink: initial.interessentKorrespondenzLink,
         interessentMemo: initial.interessentMemo,
@@ -871,6 +910,25 @@ function MitarbeiterForm({
 
   const aktiveTeilgebiete = teilgebiete.filter((tg) => tg.isActive);
 
+  // Interessens-Orte: Eingabefeld + Vorschläge aus Teilgebietsnamen und
+  // bereits bei anderen Interessenten erfassten Orten.
+  const [neuerOrt, setNeuerOrt] = useState('');
+  const ortVorschlaege = [...new Set([
+    ...aktiveTeilgebiete.map((tg) => tg.name),
+    ...mitarbeiter.flatMap((m) => m.interessentOrte ?? []),
+  ])].sort((a, b) => a.localeCompare(b, 'de'));
+
+  function ortHinzufuegen() {
+    const o = neuerOrt.trim();
+    if (!o) return;
+    setForm((f) => {
+      const cur = f.interessentOrte ?? [];
+      if (cur.some((x) => x.toLowerCase() === o.toLowerCase())) return f;
+      return { ...f, interessentOrte: [...cur, o] };
+    });
+    setNeuerOrt('');
+  }
+
   function toggleRolle(rolle: Rolle) {
     setForm((f) => ({
       ...f,
@@ -893,8 +951,15 @@ function MitarbeiterForm({
       setError('');
       try {
         // Bei Interessent: Rollen leer halten, keine TG-Freigaben, kein Bonus.
+        // Neue Interessenten bekommen keine Mitarbeiternummer — die wird erst
+        // beim Wechsel zum „echten" MA vergeben. Bereits vergebene Nummern
+        // bestehender Datensätze bleiben unangetastet.
+        const orte = [...new Set((form.interessentOrte ?? []).map((o) => o.trim()).filter(Boolean))];
         const payload = {
           ...form,
+          nummer: initial?.nummer ?? '',
+          autoVorhanden: form.autoVorhanden ?? false,
+          interessentOrte: orte.length > 0 ? orte : undefined,
           rollen: [] as Rolle[],
           teilgebietFreigaben: [],
           nochNichtAngemeldet: false,
@@ -1225,6 +1290,12 @@ function MitarbeiterForm({
               setForm((f) => ({
                 ...f,
                 istInteressent: next,
+                // Mitarbeiternummer: Interessenten ohne bereits vergebene
+                // Nummer bekommen keine; beim Wechsel zum MA wird die
+                // nächste freie Nummer vorgeschlagen.
+                nummer: next
+                  ? (initial?.nummer ?? '')
+                  : (f.nummer || naechsteFreieNummer(mitarbeiter)),
                 // Beim Aktivieren: aus den operativen Daten erstmal nichts
                 // löschen. Wenn noch kein Kontaktdatum gesetzt ist, mit
                 // dem heutigen Datum vorbelegen — der User kann ändern.
@@ -1241,7 +1312,7 @@ function MitarbeiterForm({
             </div>
             <p className="text-xs text-gray-600 mt-0.5">
               Person ist als potenzieller MA erfasst — noch nicht eingestellt.
-              Reduzierte Pflichtfelder, keine Mitarbeiternummer-Pflicht, keine
+              Reduzierte Pflichtfelder, keine Mitarbeiternummer, keine
               Altersprüfung, keine Gebiets-/Bonus-Zuordnung, nicht in Auswahl-
               listen, nicht in der Abrechnung. Wird der Haken später entfernt,
               wird der Datensatz wie ein neuer Mitarbeiter behandelt
@@ -1436,6 +1507,64 @@ function MitarbeiterForm({
             </div>
           </div>
 
+          <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 cursor-pointer text-sm">
+            <input
+              type="checkbox"
+              checked={form.autoVorhanden ?? false}
+              onChange={(e) => setForm((f) => ({ ...f, autoVorhanden: e.target.checked }))}
+              className="rounded"
+            />
+            🚗 <strong>Auto vorhanden</strong>
+            <span className="text-xs text-gray-500">(z. B. für Fahrer / Springer / Austräger)</span>
+          </label>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Interesse für Teilgebiete / Orte
+            </label>
+            {(form.interessentOrte ?? []).length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {(form.interessentOrte ?? []).map((o) => (
+                  <span key={o} className="inline-flex items-center gap-1 text-sm bg-blue-50 border border-blue-200 text-blue-800 px-2 py-0.5 rounded-full">
+                    📍 {o}
+                    <button
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, interessentOrte: (f.interessentOrte ?? []).filter((x) => x !== o) }))}
+                      className="text-blue-500 hover:text-red-600 leading-none"
+                      title={`„${o}" entfernen`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                list="interessent-ort-vorschlaege"
+                value={neuerOrt}
+                onChange={(e) => setNeuerOrt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); ortHinzufuegen(); }
+                }}
+                placeholder="Teilgebiet oder Ort, z. B. Uslar"
+                className={inputClass}
+              />
+              <datalist id="interessent-ort-vorschlaege">
+                {ortVorschlaege.map((o) => <option key={o} value={o} />)}
+              </datalist>
+              <button
+                type="button"
+                onClick={ortHinzufuegen}
+                disabled={!neuerOrt.trim()}
+                className="shrink-0 px-3 py-2 text-sm rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+              >
+                + Hinzufügen
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <FormField label="Datum der Kontaktaufnahme">
               <input
@@ -1576,8 +1705,11 @@ function MitarbeiterForm({
           //  - Bestehender MA → Nummer ist final, nie änderbar.
           //  - Neuer MA + Rolle „Abrechnung" → Vorschlag muss übernommen werden.
           //  - Neuer MA + Rolle „Admin" → Vorschlag darf angepasst werden.
-          const istNummerGesperrt = !!initial || !isAdmin;
-          const hint = initial
+          // Ehemaliger Interessent ohne Nummer: Nummer wird jetzt erst
+          // vergeben und ist damit wie bei einer Neuanlage zu behandeln.
+          const hatFesteNummer = !!initial?.nummer;
+          const istNummerGesperrt = hatFesteNummer || !isAdmin;
+          const hint = hatFesteNummer
             ? 'Festgelegte Nummern können nicht mehr geändert werden.'
             : isAdmin
             ? '5-stellig, beginnt mit 9. Vorschlag fortlaufend — bei Bedarf anpassen.'
