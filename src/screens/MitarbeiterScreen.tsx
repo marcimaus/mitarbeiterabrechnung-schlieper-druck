@@ -130,6 +130,9 @@ function MitarbeiterInhalt() {
   const [filterInteresseTaetigkeit, setFilterInteresseTaetigkeit] = useState<InteresseTaetigkeit | ''>('');
   // Nur bei „nur Interessenten": Auto vorhanden ja/nein.
   const [filterAuto, setFilterAuto] = useState<'' | 'ja' | 'nein'>('');
+  // Sortierung der Liste, sobald Interessenten angezeigt werden.
+  // 'standard' = Reihenfolge wie geladen (nach Name).
+  const [sortierung, setSortierung] = useState<'standard' | 'kontaktNeu' | 'kontaktAlt'>('kontaktNeu');
   const [filterOrtPlz, setFilterOrtPlz] = useState('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
@@ -232,16 +235,17 @@ function MitarbeiterInhalt() {
     return true;
   });
 
-  // Bei „nur Interessenten": nach Datum der Kontaktaufnahme absteigend
-  // sortieren (neueste oben). Fehlende Daten ans Ende.
-  if (filterInteressent === 'nur') {
+  // Sortierung nach Datum der Kontaktaufnahme (nur wenn Interessenten
+  // angezeigt werden). Fehlende Daten immer ans Ende.
+  if (filterInteressent !== 'ohne' && sortierung !== 'standard') {
+    const richtung = sortierung === 'kontaktNeu' ? -1 : 1;
     gefiltert.sort((a, b) => {
       const da = a.interessentKontaktDatum ?? '';
       const db = b.interessentKontaktDatum ?? '';
       if (!da && !db) return 0;
       if (!da) return 1;
       if (!db) return -1;
-      return db.localeCompare(da);
+      return richtung * da.localeCompare(db);
     });
   }
 
@@ -370,6 +374,8 @@ function MitarbeiterInhalt() {
             // Tätigkeits-Filter zurücksetzen, wenn Interessenten ausgeblendet sind.
             if (v === 'ohne') setFilterInteresseTaetigkeit('');
             if (v !== 'nur') setFilterAuto('');
+            // „nur Interessenten": neueste Kontakte oben; sonst nach Name.
+            setSortierung(v === 'nur' ? 'kontaktNeu' : 'standard');
           }}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           title="Filter Interessenten"
@@ -401,6 +407,18 @@ function MitarbeiterInhalt() {
             <option value="">Auto: alle</option>
             <option value="ja">🚗 Auto vorhanden</option>
             <option value="nein">kein Auto</option>
+          </select>
+        )}
+        {filterInteressent !== 'ohne' && (
+          <select
+            value={sortierung}
+            onChange={(e) => setSortierung(e.target.value as 'standard' | 'kontaktNeu' | 'kontaktAlt')}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title="Sortierung der Liste"
+          >
+            <option value="standard">Sortierung: Name</option>
+            <option value="kontaktNeu">Kontaktdatum: neueste zuerst</option>
+            <option value="kontaktAlt">Kontaktdatum: älteste zuerst</option>
           </select>
         )}
         <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
@@ -559,7 +577,19 @@ function MitarbeiterInhalt() {
               <th className="text-left px-4 py-3 font-medium text-gray-600">Rollen</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Alter</th>
               {filterInteressent === 'nur' && (
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Kontakt</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">
+                  <button
+                    type="button"
+                    onClick={() => setSortierung((s) => (s === 'kontaktNeu' ? 'kontaktAlt' : 'kontaktNeu'))}
+                    className="inline-flex items-center gap-1 hover:text-gray-900"
+                    title="Nach Kontaktdatum sortieren"
+                  >
+                    Kontakt
+                    <span className="text-xs">
+                      {sortierung === 'kontaktNeu' ? '▼' : sortierung === 'kontaktAlt' ? '▲' : '↕'}
+                    </span>
+                  </button>
+                </th>
               )}
               <th className="text-left px-4 py-3 font-medium text-gray-600">Abrechnung</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Status</th>
