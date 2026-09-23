@@ -4,7 +4,7 @@
 // Interessenten zu zeigen, was er verdienen würde, wenn er ein bestimmtes
 // Gebiet übernähme.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import {
@@ -25,7 +25,12 @@ import type {
   Ausgabe,
   Beilage,
   Einsatz,
+  Rolle,
+  InteresseTaetigkeit,
 } from '../types';
+import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
+
+const ALLE_INTERESSE_TAETIGKEITEN = Object.keys(INTERESSE_TAETIGKEIT_LABELS) as InteresseTaetigkeit[];
 
 // ---- Typen für den manuellen Modus -----------------------
 
@@ -109,6 +114,72 @@ function AbrechnungsvorschauInhalt() {
       })
       .sort((a, b) => a.name.localeCompare(b.name, 'de'));
   }, [mitarbeiter]);
+
+  // Such-/Filtermaske für die MA-Auswahl — analog zum MitarbeiterScreen.
+  const [filterText, setFilterText] = useState('');
+  const [filterOrtPlz, setFilterOrtPlz] = useState('');
+  const [filterRolle, setFilterRolle] = useState<Rolle | ''>('');
+  const [filterMinijob, setFilterMinijob] = useState<'' | 'ja' | 'nein'>('');
+  const [filterSvFrei, setFilterSvFrei] = useState<'' | 'ja' | 'nein'>('');
+  const [filterAnmeldung, setFilterAnmeldung] = useState<'' | 'offen' | 'angemeldet' | 'abgemeldet'>('');
+  const [filterFahrtkosten, setFilterFahrtkosten] = useState<'' | 'ja' | 'nein'>('');
+  const [filterInteressent, setFilterInteressent] = useState<'' | 'nur' | 'ohne'>('');
+  const [filterInteresseTaetigkeit, setFilterInteresseTaetigkeit] = useState<InteresseTaetigkeit | ''>('');
+  const [nurAktive, setNurAktive] = useState(true);
+  // Nach Auswahl eines MA werden Filter + Liste eingeklappt.
+  const [listeEingeklappt, setListeEingeklappt] = useState(false);
+
+  function waehleMa(id: string) {
+    setMaId(id);
+    setListeEingeklappt(true);
+  }
+
+  const gefilterteMa = useMemo(() => {
+    return maKandidaten.filter((m) => {
+      if (filterInteressent === 'ohne' && m.istInteressent) return false;
+      if (filterInteressent === 'nur' && !m.istInteressent) return false;
+      if (filterInteresseTaetigkeit) {
+        if (!m.istInteressent) return false;
+        if (!(m.interesseTaetigkeiten ?? []).includes(filterInteresseTaetigkeit)) return false;
+      }
+      if (nurAktive) {
+        if (m.istInteressent) {
+          if (m.interessentDeinteressiert) return false;
+        } else if (!m.isActive) return false;
+      }
+      if (filterText
+        && !m.name.toLowerCase().includes(filterText.toLowerCase())
+        && !m.nummer.includes(filterText)) return false;
+      if (filterOrtPlz.trim()) {
+        const q = filterOrtPlz.trim().toLowerCase();
+        const plz = (m.adresse?.plz ?? '').toLowerCase();
+        const ort = (m.adresse?.ort ?? '').toLowerCase();
+        if (!plz.includes(q) && !ort.includes(q)) return false;
+      }
+      // Wie im MitarbeiterScreen: bei „nur Interessenten" greifen die
+      // übrigen Filter nicht.
+      if (filterInteressent !== 'nur') {
+        if (filterRolle && !(m.rollen ?? []).includes(filterRolle)) return false;
+        if (filterMinijob === 'ja' && !m.istMinijob) return false;
+        if (filterMinijob === 'nein' && m.istMinijob) return false;
+        if (filterSvFrei === 'ja' && !m.sozialversicherungsBefreit) return false;
+        if (filterSvFrei === 'nein' && m.sozialversicherungsBefreit) return false;
+        if (filterAnmeldung === 'offen' && !m.nochNichtAngemeldet) return false;
+        if (filterAnmeldung === 'angemeldet' && (m.nochNichtAngemeldet || m.abgemeldet)) return false;
+        if (filterAnmeldung === 'abgemeldet' && !m.abgemeldet) return false;
+        if (filterFahrtkosten === 'ja' && !m.fahrtkostenerstattung) return false;
+        if (filterFahrtkosten === 'nein' && m.fahrtkostenerstattung) return false;
+      }
+      return true;
+    });
+  }, [
+    maKandidaten, filterInteressent, filterInteresseTaetigkeit, nurAktive, filterText,
+    filterOrtPlz, filterRolle, filterMinijob, filterSvFrei, filterAnmeldung, filterFahrtkosten,
+  ]);
+
+  const anzInaktiveKandidaten = maKandidaten.filter((m) =>
+    m.istInteressent ? m.interessentDeinteressiert : !m.isActive
+  ).length;
 
   // Sortierte Perioden (neueste zuerst).
   const perioden = useMemo(
@@ -483,44 +554,163 @@ function AbrechnungsvorschauInhalt() {
       {/* Eingabe-Block — Modus „Mitarbeiter" */}
       {modus === 'ma' && (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Mitarbeiter / Interessent *</label>
-            <select
-              value={maId}
-              onChange={(e) => setMaId(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">— wählen —</option>
-              {maKandidaten.map((m) => {
-                const tags: string[] = [];
-                if (m.istInteressent) tags.push('💡 Interessent');
-                if (m.rollen?.includes('austräger')) tags.push('Austräger');
-                if (m.rollen?.includes('zusammenträger')) tags.push('Zusammenträger');
-                if (!m.isActive) tags.push('inaktiv');
-                return (
-                  <option key={m.id} value={m.id}>
-                    {m.name} {m.nummer && `(${m.nummer})`} {tags.length > 0 ? `— ${tags.join(', ')}` : ''}
-                  </option>
-                );
-              })}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Abrechnungsperiode *</label>
-            <select
-              value={periodeId}
-              onChange={(e) => setPeriodeId(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">— wählen —</option>
-              {perioden.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.bezeichnung}{p.status === 'abgeschlossen' ? ' ✓' : ''}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="max-w-sm">
+          <label className="block text-sm font-medium text-gray-700 mb-1">Abrechnungsperiode *</label>
+          <select
+            value={periodeId}
+            onChange={(e) => setPeriodeId(e.target.value)}
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">— wählen —</option>
+            {perioden.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.bezeichnung}{p.status === 'abgeschlossen' ? ' ✓' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="mt-5">
+          <span className="block text-sm font-medium text-gray-700 mb-2">Mitarbeiter / Interessent *</span>
+          {listeEingeklappt && ma ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+              <div className="text-sm text-blue-900">
+                Ausgewählt: <span className="font-semibold">{ma.name}</span>{' '}
+                {ma.nummer && <span className="font-mono text-blue-700">({ma.nummer})</span>}
+                {ma.istInteressent && <span className="ml-2 text-xs text-amber-700">💡 Interessent</span>}
+              </div>
+              <button
+                type="button"
+                onClick={() => setListeEingeklappt(false)}
+                className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+              >
+                ▾ Anderen Mitarbeiter wählen
+              </button>
+            </div>
+          ) : (
+            <MaAuswahl
+              liste={gefilterteMa}
+              gesamt={maKandidaten.length}
+              maId={maId}
+              onWaehle={waehleMa}
+              onEinklappen={ma ? () => setListeEingeklappt(true) : undefined}
+              filter={
+                <div className="flex flex-wrap gap-3 mb-3">
+                  <input
+                    type="text"
+                    placeholder="Name oder Nummer suchen..."
+                    value={filterText}
+                    onChange={(e) => setFilterText(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-52"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Ort oder PLZ..."
+                    value={filterOrtPlz}
+                    onChange={(e) => setFilterOrtPlz(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-36"
+                    title="Filter auf Wohnort oder Postleitzahl"
+                  />
+                  {filterInteressent !== 'nur' && (
+                    <>
+                      <select
+                        value={filterRolle}
+                        onChange={(e) => setFilterRolle(e.target.value as Rolle | '')}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">Alle Rollen</option>
+                        {(['austräger', 'zusammenträger'] as Rolle[]).map((r) => (
+                          <option key={r} value={r}>{ROLLEN_LABELS[r]}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={filterMinijob}
+                        onChange={(e) => setFilterMinijob(e.target.value as '' | 'ja' | 'nein')}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        title="Filter Minijob"
+                      >
+                        <option value="">Minijob: alle</option>
+                        <option value="ja">nur Minijob</option>
+                        <option value="nein">nur kein Minijob</option>
+                      </select>
+                      <select
+                        value={filterSvFrei}
+                        onChange={(e) => setFilterSvFrei(e.target.value as '' | 'ja' | 'nein')}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        title="Filter Befreiung von Sozialversicherung"
+                      >
+                        <option value="">SV-Befreiung: alle</option>
+                        <option value="ja">nur SV-befreit</option>
+                        <option value="nein">nur nicht SV-befreit</option>
+                      </select>
+                      <select
+                        value={filterAnmeldung}
+                        onChange={(e) => setFilterAnmeldung(e.target.value as '' | 'offen' | 'angemeldet' | 'abgemeldet')}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        title="Filter Anmeldung"
+                      >
+                        <option value="">Anmeldung: alle</option>
+                        <option value="offen">⏳ noch nicht angemeldet</option>
+                        <option value="angemeldet">✓ angemeldet</option>
+                        <option value="abgemeldet">🚪 abgemeldet</option>
+                      </select>
+                      <select
+                        value={filterFahrtkosten}
+                        onChange={(e) => setFilterFahrtkosten(e.target.value as '' | 'ja' | 'nein')}
+                        className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        title="Filter Fahrtkosten-Erstattung"
+                      >
+                        <option value="">Fahrtkosten: alle</option>
+                        <option value="ja">🚗 nur erlaubt</option>
+                        <option value="nein">nur nicht erlaubt</option>
+                      </select>
+                    </>
+                  )}
+                  <select
+                    value={filterInteressent}
+                    onChange={(e) => {
+                      const v = e.target.value as '' | 'nur' | 'ohne';
+                      setFilterInteressent(v);
+                      if (v === 'ohne') setFilterInteresseTaetigkeit('');
+                    }}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    title="Filter Interessenten"
+                  >
+                    <option value="">alle (inkl. Interessenten)</option>
+                    <option value="ohne">ohne Interessenten</option>
+                    <option value="nur">💡 nur Interessenten</option>
+                  </select>
+                  {filterInteressent !== 'ohne' && (
+                    <select
+                      value={filterInteresseTaetigkeit}
+                      onChange={(e) => setFilterInteresseTaetigkeit(e.target.value as InteresseTaetigkeit | '')}
+                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      title="Interessenten nach Tätigkeit filtern, für die sie sich interessieren"
+                    >
+                      <option value="">Interesse: alle Tätigkeiten</option>
+                      {ALLE_INTERESSE_TAETIGKEITEN.map((t) => (
+                        <option key={t} value={t}>{INTERESSE_TAETIGKEIT_LABELS[t]}</option>
+                      ))}
+                    </select>
+                  )}
+                  <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={nurAktive}
+                      onChange={(e) => setNurAktive(e.target.checked)}
+                      className="rounded"
+                    />
+                    Nur aktive
+                    {nurAktive && anzInaktiveKandidaten > 0 && (
+                      <span className="text-xs text-gray-400">
+                        ({anzInaktiveKandidaten} inaktive ausgeblendet)
+                      </span>
+                    )}
+                  </label>
+                </div>
+              }
+            />
+          )}
         </div>
 
         <div className="mt-5">
@@ -750,6 +940,115 @@ function AbrechnungsvorschauInhalt() {
       {/* Ergebnis — manueller Modus */}
       {modus === 'manuell' && manErgebnis && (
         <ManuellesErgebnisAnzeige ergebnis={manErgebnis} bonusEur={parameter?.bonusZeiterfassungEur ?? 0} />
+      )}
+    </div>
+  );
+}
+
+/** Filter + Trefferliste für die MA-Auswahl (Karten mobil, Tabelle Desktop). */
+function MaAuswahl({
+  liste,
+  gesamt,
+  maId,
+  onWaehle,
+  onEinklappen,
+  filter,
+}: {
+  liste: Mitarbeiter[];
+  gesamt: number;
+  maId: string;
+  onWaehle: (id: string) => void;
+  onEinklappen?: () => void;
+  filter: ReactNode;
+}) {
+  const rollenText = (m: Mitarbeiter) =>
+    (m.rollen ?? [])
+      .filter((r) => r === 'austräger' || r === 'zusammenträger')
+      .map((r) => ROLLEN_LABELS[r])
+      .join(', ');
+  const inaktiv = (m: Mitarbeiter) => (m.istInteressent ? m.interessentDeinteressiert : !m.isActive);
+
+  return (
+    <div>
+      {filter}
+      <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+        <span>
+          {liste.length} Treffer
+          {liste.length !== gesamt && ` (von ${gesamt})`}
+        </span>
+        {onEinklappen && (
+          <button type="button" onClick={onEinklappen} className="text-blue-600 hover:underline">
+            ▴ Liste ausblenden
+          </button>
+        )}
+      </div>
+      {liste.length === 0 ? (
+        <div className="bg-gray-50 rounded-lg border border-gray-200 p-6 text-center text-gray-400 text-sm">
+          Keine Mitarbeiter gefunden
+        </div>
+      ) : (
+        <div className="max-h-80 overflow-y-auto rounded-lg border border-gray-200">
+          {/* Mobile: Karten */}
+          <div className="md:hidden divide-y divide-gray-100">
+            {liste.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => onWaehle(m.id)}
+                className={`w-full text-left px-4 py-3 ${maId === m.id ? 'bg-blue-50' : 'bg-white active:bg-blue-50'}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-900 truncate">{m.name}</span>
+                  {m.istInteressent && <span className="text-xs text-amber-700">💡 Interessent</span>}
+                  {inaktiv(m) && <span className="text-xs text-gray-400">inaktiv</span>}
+                </div>
+                <div className="text-xs text-gray-400 font-mono">{m.nummer}</div>
+                <div className="text-xs text-gray-500 mt-0.5">{rollenText(m)}</div>
+              </button>
+            ))}
+          </div>
+          {/* Desktop: Tabelle */}
+          <table className="hidden md:table w-full text-sm">
+            <thead className="sticky top-0 bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium">Name</th>
+                <th className="px-3 py-2 text-left font-medium">Nummer</th>
+                <th className="px-3 py-2 text-left font-medium">Rollen</th>
+                <th className="px-3 py-2 text-left font-medium">Ort</th>
+                <th className="px-3 py-2 text-left font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 bg-white">
+              {liste.map((m) => (
+                <tr
+                  key={m.id}
+                  onClick={() => onWaehle(m.id)}
+                  className={`cursor-pointer ${maId === m.id ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
+                >
+                  <td className="px-3 py-2 font-medium text-gray-900">
+                    {m.name}
+                    {inaktiv(m) && <span className="ml-2 text-xs text-gray-400">inaktiv</span>}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-gray-500">{m.nummer}</td>
+                  <td className="px-3 py-2 text-xs text-gray-600">
+                    {m.istInteressent ? <span className="text-amber-700">💡 Interessent</span> : rollenText(m)}
+                  </td>
+                  <td className="px-3 py-2 text-xs text-gray-600">
+                    {m.adresse?.plz && <span className="font-mono">{m.adresse.plz}</span>}{' '}
+                    {m.adresse?.ort}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    {m.nochNichtAngemeldet && <span title="Noch nicht beim Lohnbüro angemeldet" className="text-amber-600 mr-1">⏳</span>}
+                    {m.abgemeldet && <span title="Abgemeldet" className="text-red-500 mr-1">🚪</span>}
+                    {m.istMinijob && <span title="Minijob" className="text-blue-600 mr-1">M</span>}
+                    {m.sozialversicherungsBefreit && <span title="SV-befreit" className="text-purple-600 mr-1">SV</span>}
+                    {m.fahrtkostenerstattung && <span title="Fahrtkosten-Erstattung" className="text-gray-600 mr-1">🚗</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
