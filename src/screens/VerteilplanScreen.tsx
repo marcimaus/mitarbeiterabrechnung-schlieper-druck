@@ -254,6 +254,20 @@ function VerteilplanInhalt() {
   // Archivierte Bestellungen sind erledigt → schreibgeschützt (kein Speichern,
   // kein Löschen). Ändern nur nach „Aus Archiv holen" oder als Kopie.
   const gesperrt = !!aktiveVorlage?.archiviert;
+  // Gespeicherte Dauerbestellung mit mehreren Ausgaben (geplante Termine oder
+  // bereits übernommene Aufträge, je KW einmal gezählt): Kennzeichen
+  // „Dauerbestellung" nicht mehr entfernbar — sonst ginge die Planung verloren.
+  const dauerAusgabenAnzahl = aktiveVorlage?.istDauervorlage
+    ? new Set([
+        ...(aktiveVorlage.termine ?? []).map((t) => `${t.jahr}-${t.kw}`),
+        ...(aktiveVorlage.uebernahmen ?? []).map((u) => `${u.jahr}-${u.kw}`),
+      ]).size
+    : 0;
+  const dauerFixiert = dauerAusgabenAnzahl > 1;
+  const dauerFixiertGrund =
+    `Diese Dauerbestellung ist bereits ${dauerAusgabenAnzahl} Ausgaben (Kalenderwochen) zugeordnet — ` +
+    'die Markierung „Dauerbestellung" kann nicht entfernt werden, damit die Planung nicht verloren geht. ' +
+    'Zum Umwandeln zuerst die geplanten Termine bis auf einen entfernen und speichern.';
   // Dauerbestellung: Index des Termins, der in einen Auftrag übernommen wird.
   const [gewaehlterTermin, setGewaehlterTermin] = useState(-1);
   const [protokollOffen, setProtokollOffen] = useState(false);
@@ -426,6 +440,7 @@ function VerteilplanInhalt() {
 
   /** Beim Umschalten die KW-Angaben zwischen Einzel- und Dauerbestellung mitnehmen. */
   function dauerUmschalten(an: boolean) {
+    if (!an && dauerFixiert) return;
     if (an && kunde.termine.length === 0 && kunde.kwKey) {
       const { kwKey, format, gewichtGStk, beilageAngeliefert } = kunde;
       setKunde({ ...kunde, istDauervorlage: true, termine: [{ kwKey, format, gewichtGStk, beilageAngeliefert }] });
@@ -459,6 +474,10 @@ function VerteilplanInhalt() {
 
   async function vorlageSpeichern() {
     if (gesperrt) return;
+    if (dauerFixiert && !kunde.istDauervorlage) {
+      setMeldung({ text: dauerFixiertGrund, fehler: true });
+      return;
+    }
     if (!kunde.arbeitstitel.trim() && !kunde.kundenname.trim()) {
       setMeldung({ text: 'Bitte Arbeitstitel oder Kundenname angeben.', fehler: true });
       return;
@@ -1000,16 +1019,24 @@ function VerteilplanInhalt() {
               </span>
             </label>
           )}
-          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none self-end pb-1.5">
+          <label
+            className={`flex items-center gap-2 text-sm text-gray-700 select-none self-end pb-1.5 ${dauerFixiert ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+            title={dauerFixiert ? dauerFixiertGrund : undefined}
+          >
             <input
               type="checkbox"
               checked={kunde.istDauervorlage}
+              disabled={dauerFixiert}
               onChange={(e) => dauerUmschalten(e.target.checked)}
-              className="w-4 h-4 accent-blue-600"
+              className="w-4 h-4 accent-blue-600 disabled:opacity-60"
             />
             <span>
-              Dauerbestellung
-              <span className="block text-[11px] text-gray-500">wiederkehrend in mehreren KWs — wird nach Übernahme nicht archiviert</span>
+              Dauerbestellung {dauerFixiert && '🔒'}
+              <span className="block text-[11px] text-gray-500">
+                {dauerFixiert
+                  ? `fixiert — ${dauerAusgabenAnzahl} Ausgaben geplant bzw. übernommen`
+                  : 'wiederkehrend in mehreren KWs — wird nach Übernahme nicht archiviert'}
+              </span>
             </span>
           </label>
         </fieldset>
