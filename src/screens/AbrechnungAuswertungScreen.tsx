@@ -55,6 +55,15 @@ function AbrechnungAuswertungInhalt() {
   const [nurAktive, setNurAktive] = useState(true);
 
   const [selectedMaId, setSelectedMaId] = useState('');
+  // Nach Auswahl eines MA werden Filter + Liste eingeklappt, damit die
+  // Auswertung direkt sichtbar ist (die Liste ist oft sehr lang).
+  const [listeEingeklappt, setListeEingeklappt] = useState(false);
+
+  const waehleMa = (id: string) => {
+    setSelectedMaId(id);
+    setListeEingeklappt(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   // Schritt 1: Hard-Filter — Berechtigung für diese Auswertung.
   // Für "Abrechnung": nur Austräger/Zusammenträger ohne Festgehalt.
@@ -132,6 +141,23 @@ function AbrechnungAuswertungInhalt() {
         </div>
       </div>
 
+      {listeEingeklappt && selectedMa ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 mt-4 mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+          <div className="text-sm text-blue-900">
+            Ausgewählt: <span className="font-semibold">{nameMitFestgehaltSymbol(selectedMa)}</span>{' '}
+            <span className="font-mono text-blue-700">({selectedMa.nummer})</span>
+            <span className="ml-2 text-xs text-blue-600">· Mitarbeiterliste ausgeblendet</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setListeEingeklappt(false)}
+            className="rounded-lg border border-blue-300 bg-white px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+          >
+            ▾ Anderen Mitarbeiter wählen
+          </button>
+        </div>
+      ) : (
+      <>
       {/* Filter — Schnittmenge der MitarbeiterScreen-Filter */}
       <div className="flex flex-wrap gap-3 mb-4 mt-4">
         <input
@@ -222,9 +248,20 @@ function AbrechnungAuswertungInhalt() {
 
       {/* Treffer-Liste */}
       <div className="mb-6">
-        <div className="text-xs text-gray-500 mb-2">
-          {gefiltert.length} Treffer
-          {gefiltert.length !== erlaubteMa.length && ` (von ${erlaubteMa.length})`}
+        <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+          <span>
+            {gefiltert.length} Treffer
+            {gefiltert.length !== erlaubteMa.length && ` (von ${erlaubteMa.length})`}
+          </span>
+          {selectedMa && (
+            <button
+              type="button"
+              onClick={() => setListeEingeklappt(true)}
+              className="text-blue-600 hover:underline"
+            >
+              ▴ Liste ausblenden
+            </button>
+          )}
         </div>
 
         {gefiltert.length === 0 ? (
@@ -238,7 +275,7 @@ function AbrechnungAuswertungInhalt() {
               {gefiltert.map((m) => (
                 <button
                   key={m.id}
-                  onClick={() => setSelectedMaId(m.id)}
+                  onClick={() => waehleMa(m.id)}
                   className={`w-full text-left bg-white rounded-xl border px-4 py-3 transition-colors ${
                     selectedMaId === m.id
                       ? 'border-blue-500 ring-2 ring-blue-200'
@@ -275,7 +312,7 @@ function AbrechnungAuswertungInhalt() {
                   {gefiltert.map((m) => (
                     <tr
                       key={m.id}
-                      onClick={() => setSelectedMaId(m.id)}
+                      onClick={() => waehleMa(m.id)}
                       className={`cursor-pointer ${
                         selectedMaId === m.id ? 'bg-blue-50' : 'hover:bg-gray-50'
                       }`}
@@ -307,6 +344,8 @@ function AbrechnungAuswertungInhalt() {
           </>
         )}
       </div>
+      </>
+      )}
 
       {/* Auswertung des gewählten MA */}
       {selectedMa ? (
