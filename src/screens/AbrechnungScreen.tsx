@@ -297,11 +297,20 @@ function AbrechnungInhalt() {
     return () => { cancelled = true; };
   }, [selectedPeriodeId, abrechnungsperioden]);
 
-  // Liste der Ausgaben mit fehlenden Pflichtwerten (Seitenzahl / Stapelzahl).
-  const ausgabenMitFehlendenWerten = periodenAusgaben.filter(
-    (a) => !a.seitenzahl || a.seitenzahl <= 0 || !a.stapelAnzahl || a.stapelAnzahl <= 0
-  );
+  // Liste der Ausgaben mit fehlenden Pflichtwerten (Seitenzahl / Stapelzahl)
+  // oder ohne Kennzeichen „Erfassung erledigt" im Zusammentragen.
+  const ausgabenMitFehlendenWerten = periodenAusgaben
+    .map((a) => {
+      const fehlend: string[] = [];
+      if (!a.seitenzahl || a.seitenzahl <= 0) fehlend.push('Seitenzahl');
+      if (!a.stapelAnzahl || a.stapelAnzahl <= 0) fehlend.push('Anzahl Stapel');
+      if (a.erfassungZusammentragenErledigt !== true) fehlend.push('„Erfassung erledigt" (Zusammentragen)');
+      return { ausgabe: a, fehlend };
+    })
+    .filter((x) => x.fehlend.length > 0);
   const periodeIstUnvollstaendig = ausgabenMitFehlendenWerten.length > 0;
+  const unvollstaendigHinweis =
+    'Erst Seitenzahl und Anzahl Stapel eintragen und „Erfassung erledigt" im Zusammentragen für alle Ausgaben dieser Periode setzen.';
 
   // Restmengen-Hinweis für den Abschluss: Teilgebiete, die im Durchschnitt der
   // letzten beiden Perioden mehr als 10 Stück Restmenge je Meldung hatten —
@@ -1031,7 +1040,7 @@ function AbrechnungInhalt() {
                       }`}
                       title={
                         periodeIstUnvollstaendig
-                          ? 'Erst Seitenzahl und Anzahl Stapel für alle Ausgaben dieser Periode eintragen.'
+                          ? unvollstaendigHinweis
                           : 'Fixiert Austragen und Zusammentragen vor dem Wechsel der Standardausträger'
                       }
                     >
@@ -1069,7 +1078,7 @@ function AbrechnungInhalt() {
                       }`}
                       title={
                         periodeIstUnvollstaendig
-                          ? 'Erst Seitenzahl und Anzahl Stapel für alle Ausgaben dieser Periode eintragen.'
+                          ? unvollstaendigHinweis
                           : selectedPeriode?.monatswechselSnapshot
                             ? 'Schließt die Periode ab und speichert das aktuelle Berechnungsergebnis als Snapshot'
                             : 'Erst Monatswechsel durchführen, dann kann abgeschlossen werden'
@@ -1131,24 +1140,19 @@ function AbrechnungInhalt() {
               ⚠ Ausgaben der Periode unvollständig — Monatsabschluss gesperrt
             </div>
             <p className="text-xs text-amber-800 mb-1.5">
-              Folgende Ausgaben dieser Periode haben keine Seitenzahl und/oder
-              keine Anzahl Stapel eingetragen. Solange Werte fehlen, kann die
-              Periode nicht abgeschlossen werden:
+              Bei folgenden Ausgaben dieser Periode fehlen Angaben. Solange
+              Angaben fehlen, sind Monatswechsel und Periodenabschluss gesperrt:
             </p>
             <ul className="list-disc list-inside text-amber-900 space-y-0.5">
-              {ausgabenMitFehlendenWerten.map((a) => {
-                const fehlend: string[] = [];
-                if (!a.seitenzahl || a.seitenzahl <= 0) fehlend.push('Seitenzahl');
-                if (!a.stapelAnzahl || a.stapelAnzahl <= 0) fehlend.push('Anzahl Stapel');
-                return (
-                  <li key={a.id} className="text-xs">
-                    <strong>KW {a.kw}/{a.jahr}</strong> — fehlt: {fehlend.join(', ')}
-                  </li>
-                );
-              })}
+              {ausgabenMitFehlendenWerten.map(({ ausgabe: a, fehlend }) => (
+                <li key={a.id} className="text-xs">
+                  <strong>KW {a.kw}/{a.jahr}</strong> — fehlt: {fehlend.join(', ')}
+                </li>
+              ))}
             </ul>
             <p className="text-xs text-amber-700 mt-1.5 italic">
-              Bitte unter „Ausgaben &amp; Beilagen" ergänzen.
+              Seitenzahl / Anzahl Stapel unter „Ausgaben &amp; Beilagen" ergänzen,
+              „Erfassung erledigt" unter „Zusammentragen" setzen.
             </p>
           </div>
         )}
