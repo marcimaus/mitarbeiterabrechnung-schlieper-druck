@@ -32,6 +32,7 @@ import {
   formatLabel,
   kwAuswahlOptionen,
   stueckzahlVon,
+  terminLinkFuerKw,
   vorlageKwLabel,
   vorlageFuerKw,
   vorlageLink,
@@ -1274,6 +1275,17 @@ function BeilagenVerwaltung({
                       🔗 Externer Link zur Bestellung
                     </a>
                   )}
+                  {vorlage && terminLinkFuerKw(vorlage, ausgabe.kw, ausgabe.jahr) && (
+                    <a
+                      href={terminLinkFuerKw(vorlage, ausgabe.kw, ausgabe.jahr)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 hover:underline mt-0.5 ml-3 inline-block"
+                      title={terminLinkFuerKw(vorlage, ausgabe.kw, ausgabe.jahr)}
+                    >
+                      🔗 Link zu {kwLabel(ausgabe.kw, ausgabe.jahr)}
+                    </a>
+                  )}
                 </div>
                 <div className="flex gap-2 ml-3">
                   {!vorlage && (
@@ -1493,6 +1505,18 @@ function VorlagenGruppe({
                     title={v.externerLink}
                   >
                     🔗 Externer Link
+                  </a>
+                )}
+                {terminLinkFuerKw(v, ausgabe.kw, ausgabe.jahr) && (
+                  <a
+                    href={terminLinkFuerKw(v, ausgabe.kw, ausgabe.jahr)}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[11px] text-blue-600 hover:underline ml-2"
+                    title={terminLinkFuerKw(v, ausgabe.kw, ausgabe.jahr)}
+                  >
+                    🔗 Link zu {kwLabel(ausgabe.kw, ausgabe.jahr)}
                   </a>
                 )}
                 {schonUebernommen && (

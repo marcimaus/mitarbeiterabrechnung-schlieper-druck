@@ -99,6 +99,8 @@ interface TerminForm {
   format: BeilagenFormat;
   gewichtGStk: string;
   beilageAngeliefert: boolean;
+  /** Externer Link nur dieses Termins (Kundendaten haben ihren eigenen). */
+  terminLink?: string;
 }
 
 const gewichtText = (g: number | undefined) => (g ? String(g).replace('.', ',') : '');
@@ -167,6 +169,7 @@ function kundendatenAusVorlage(v: BeilagenVorlage): Kundendaten {
     format: t.format ?? '',
     gewichtGStk: gewichtText(t.gewichtGStk),
     beilageAngeliefert: t.beilageAngeliefert !== false,
+    terminLink: t.externerLink ?? '',
   }));
   // Ältere Dauerbestellungen ohne Termine: bisherige KW als ersten Termin.
   if (v.istDauervorlage && termine.length === 0 && kwKey) {
@@ -427,6 +430,7 @@ function VerteilplanInhalt() {
       format: letzter?.format ?? '',
       gewichtGStk: letzter?.gewichtGStk ?? '',
       beilageAngeliefert: false,
+      terminLink: '',
     };
     setKunde((k) => ({ ...k, termine: [...k.termine, neu] }));
     setGewaehlterTermin(liste.length);
@@ -447,7 +451,8 @@ function VerteilplanInhalt() {
       setGewaehlterTermin(0);
     } else if (!an && !kunde.kwKey && kunde.termine.length > 0) {
       const t = kunde.termine[gewaehlterTermin] ?? kunde.termine[0];
-      setKunde({ ...kunde, ...t, istDauervorlage: false });
+      const { kwKey, format, gewichtGStk, beilageAngeliefert } = t;
+      setKunde({ ...kunde, kwKey, format, gewichtGStk, beilageAngeliefert, istDauervorlage: false });
     } else {
       setKunde({ ...kunde, istDauervorlage: an });
     }
@@ -499,6 +504,7 @@ function VerteilplanInhalt() {
           format: t.format,
           gewichtGStk: gewichtZahl(t.gewichtGStk),
           beilageAngeliefert: t.beilageAngeliefert,
+          ...(t.terminLink?.trim() ? { externerLink: t.terminLink.trim() } : {}),
         });
       }
       termine.sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
@@ -1129,6 +1135,32 @@ function VerteilplanInhalt() {
                     angeliefert
                   </label>
                   </fieldset>
+                  {/* Link bleibt auch nach der Übernahme änderbar — die Mail
+                      zur Anlieferung kommt oft erst später. */}
+                  <div className="flex-1 min-w-[14rem]">
+                    <label className="block text-[11px] text-gray-500 mb-0.5">Externer Link (nur diese KW)</label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="url"
+                        value={t.terminLink ?? ''}
+                        onChange={(e) => terminAendern(i, { terminLink: e.target.value })}
+                        placeholder="https://… (z. B. Mail zur Anlieferung)"
+                        className={auswahlKlasse}
+                      />
+                      {t.terminLink?.trim() && (
+                        <a
+                          href={t.terminLink.trim()}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="shrink-0 text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1.5"
+                          title="Link in neuem Tab öffnen"
+                        >
+                          🔗
+                        </a>
+                      )}
+                    </div>
+                  </div>
                   {uebernahme && (
                     <span className="text-xs text-green-700 pb-2" title="Für diese KW wurde bereits ein Auftrag angelegt">
                       ✓ übernommen {new Date(uebernahme.am).toLocaleDateString('de-DE')}

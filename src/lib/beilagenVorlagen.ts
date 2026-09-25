@@ -221,6 +221,12 @@ export function vorlageFuerKw(v: BeilagenVorlage, kw: number, jahr: number): Bei
   return v.kw === kw && v.jahr === jahr ? v : null;
 }
 
+/** Externer Link des Termins dieser KW (nur Dauerbestellungen), sonst ''. */
+export function terminLinkFuerKw(v: BeilagenVorlage, kw: number, jahr: number): string {
+  if (!v.istDauervorlage) return '';
+  return v.termine?.find((x) => x.kw === kw && x.jahr === jahr)?.externerLink?.trim() ?? '';
+}
+
 /** Wurde die Vorlage bereits für diese KW in einen Auftrag übernommen? */
 export function vorlageUebernommenFuer(v: BeilagenVorlage, kw: number, jahr: number): boolean {
   return (v.uebernahmen ?? []).some((u) => u.kw === kw && u.jahr === jahr);
@@ -245,6 +251,7 @@ const terminFmt = (t: BeilagenVorlageTermin) =>
     formatLabel(t.format) || 'Format offen',
     gewichtFmt(t.gewichtGStk) || 'Gewicht offen',
     t.beilageAngeliefert ? 'angeliefert' : 'nicht angeliefert',
+    ...(t.externerLink?.trim() ? [`Link: ${t.externerLink.trim()}`] : []),
   ].join(' · ');
 
 /**

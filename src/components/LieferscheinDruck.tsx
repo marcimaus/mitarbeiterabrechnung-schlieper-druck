@@ -872,13 +872,15 @@ function LieferscheinSeite({
               <strong style={{ fontSize: '10px' }}>Online-Erfassung (empfohlen)</strong><br />
               QR-Code rechts oben scannen — Zeiten direkt im Browser eingeben, kein Login nötig.<br /><br />
               <strong>Alternativ per WhatsApp / E-Mail:</strong><br />
-              Ausgefüllten Zettel fotografieren und zurücksenden.
+              Ausgefüllten Zettel fotografieren und an WhatsApp <strong>05571 - 9203 22</strong> /
+              E-Mail <strong>info@schlieper-druck.com</strong> zurücksenden.
             </>
           ) : (
             <>
               <strong style={{ fontSize: '10px' }}>Zettel ausfüllen und zurücksenden</strong><br />
-              Zeiten und Restmengen eintragen, Zettel einsenden — oder per WhatsApp / E-Mail
-              fotografiert zurückschicken.
+              Zeiten und Restmengen eintragen, Zettel einsenden — oder per
+              WhatsApp <strong>05571 - 9203 22</strong> / E-Mail <strong>info@schlieper-druck.com</strong> fotografiert
+              zurückschicken.
             </>
           )}
         </div>

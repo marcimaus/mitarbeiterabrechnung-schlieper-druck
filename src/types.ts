@@ -602,6 +602,8 @@ export interface BeilagenVorlageTermin {
   /** Gramm je Stück — 0 = noch nicht bekannt */
   gewichtGStk: number;
   beilageAngeliefert: boolean;
+  /** Externer Link zu diesem Termin (z. B. Mail zur Anlieferung der KW). Wird nicht gedruckt. */
+  externerLink?: string;
 }
 
 export interface BeilagenVorlage {

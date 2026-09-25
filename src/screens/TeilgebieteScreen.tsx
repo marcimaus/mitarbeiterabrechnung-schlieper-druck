@@ -574,7 +574,7 @@ function TeilgebieteInhalt() {
                     }}
                     className="text-blue-600 hover:text-blue-800 text-xs font-medium"
                   >
-                    {isAdmin ? 'Bearbeiten' : 'Anzeigen'}
+                    {isAdmin || userRole === 'abrechnung' ? 'Bearbeiten' : 'Anzeigen'}
                   </button>
                 </td>
               </tr>
@@ -1194,8 +1194,11 @@ function TeilgebietForm({
 }) {
   const { touren, mitarbeiter, userRole, adminName } = useApp();
   const isAdmin = userRole === 'admin';
+  // „Abrechnung“ darf an bestehenden Teilgebieten Sonderauslagen,
+  // Nicht beliefern und Freigaben pflegen — alles andere bleibt Admin.
+  const darfListenPflegen = isAdmin || (userRole === 'abrechnung' && !!initial);
 
-  // F: Standardausträger-Select sperren, wenn in der Personalplanung noch
+  // F:Standardausträger-Select sperren, wenn in der Personalplanung noch
   // ein Wechsel/Springer für dieses TG läuft. Sonst überschriebe der Admin
   // den Standard, während Lücken-Einsätze noch an einem Snapshot hängen,
   // der zur alten Besetzung passt.
@@ -1316,6 +1319,7 @@ function TeilgebietForm({
   // ---- Speichern ----
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!darfListenPflegen) return;
     if (!form.name.trim()) {
       setError('Name ist erforderlich.');
       return;
@@ -1336,17 +1340,28 @@ function TeilgebietForm({
     setSaving(true);
     setError('');
     try {
-      const payload: TeilgebietDaten = {
-        ...form,
-        stueckzahl: stueckzahlFinal,
-        strassen,
-        sonderauslagen,
-        nichtBeliefen,
-        // Auslagestelle: keine Wegstrecke, kein Austräger
-        ...(form.istAuslagestelle
-          ? { wegstreckeM: 0, standardAustraegerId: null }
-          : {}),
-      };
+      let payload: TeilgebietDaten;
+      if (isAdmin || !initial) {
+        payload = {
+          ...form,
+          stueckzahl: stueckzahlFinal,
+          strassen,
+          sonderauslagen,
+          nichtBeliefen,
+          // Auslagestelle: keine Wegstrecke, kein Austräger
+          ...(form.istAuslagestelle
+            ? { wegstreckeM: 0, standardAustraegerId: null }
+            : {}),
+        };
+      } else {
+        // Nicht-Admin: gespeicherten Stand übernehmen, nur die freigegebenen
+        // Listen ersetzen — Grunddaten/Straßen bleiben unangetastet.
+        const gespeichert: Partial<Teilgebiet> = { ...initial };
+        delete gespeichert.id;
+        delete gespeichert.erstelltAm;
+        delete gespeichert.aktualisiertAm;
+        payload = { ...(gespeichert as TeilgebietDaten), sonderauslagen, nichtBeliefen };
+      }
       let tgId: string;
       if (initial) {
         await aktualisiereTeilgebiet(initial.id, payload);
@@ -1511,8 +1526,10 @@ function TeilgebietForm({
       </div>
 
       {/* ---- Tab: Grunddaten ---- */}
+      {/* Grunddaten + Straßenliste: nur Admin. „Abrechnung“ pflegt nur
+          Sonderauslagen, Nicht beliefern und Freigaben. */}
       {tab === 'grunddaten' && (
-        <div className="space-y-4">
+        <fieldset disabled={!isAdmin} className="space-y-4 min-w-0">
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
@@ -1789,12 +1806,12 @@ function TeilgebietForm({
               </span>
             </span>
           </label>
-        </div>
+        </fieldset>
       )}
 
       {/* ---- Tab: Straßenliste ---- */}
       {tab === 'strassen' && (
-        <div className="space-y-4">
+        <fieldset disabled={!isAdmin} className="space-y-4 min-w-0">
           {/* Karten-Link: pro TG individuell oder Tour-Default */}
           <KartenLinkBox
             tour={touren.find((t) => t.id === form.tourId)}
@@ -2021,7 +2038,7 @@ function TeilgebietForm({
               </button>
             </div>
           </div>
-        </div>
+        </fieldset>
       )}
 
       {/* ---- Tab: Sonderauslagen ---- */}
@@ -2367,9 +2384,9 @@ function TeilgebietForm({
         </div>
         <div className="flex gap-3">
           <button type="button" onClick={onCancel} className="px-4 py-2 text-sm text-gray-600">
-            {isAdmin ? 'Abbrechen' : 'Schließen'}
+            {darfListenPflegen ? 'Abbrechen' : 'Schließen'}
           </button>
-          {isAdmin && (
+          {darfListenPflegen && (
             <button
               type="submit"
               disabled={saving}
