@@ -22,7 +22,7 @@ import {
   kwLabel,
   formatDonnerstag,
 } from '../lib/kalender';
-import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, BeilagenVorlage, Einsatz } from '../types';
+import type { Ausgabe, Beilage, BeilagenFormat, BeilagenKennzeichen, BeilagenVorlage, Einsatz, Parameter } from '../types';
 import { effektiverStandardAustraegerId } from '../utils';
 import { Link, useSearchParams } from 'react-router-dom';
 import { beilagenVorlagenListener, erstelleBeilagenVorlage } from '../lib/db';
@@ -94,6 +94,30 @@ function AusgabenInhalt() {
 // AUSGABEN
 // ============================================================
 
+/** Standardwerte für neue Ausgaben — immer aus den aktuellen Parametern. */
+function ausgabeStandardwerte(parameter: Parameter): Pick<Ausgabe, 'grammaturGqm' | 'seitenformatMm'> {
+  return {
+    grammaturGqm: parameter.standardGrammurGqm,
+    seitenformatMm: {
+      breite: parameter.standardSeitenformatBreiteMm,
+      hoehe: parameter.standardSeitenformatHoeheMm,
+    },
+  };
+}
+
+/** Ausgaben werden im Voraus (je Perioden-KW) leer angelegt. Solange noch
+ *  keine Seitenzahl gepflegt und die Ausgabe nicht abgeschlossen ist, sollen
+ *  sie die AKTUELLEN Parameter tragen — nicht die Werte vom Anlagezeitpunkt. */
+function brauchtStandardwerte(a: Ausgabe, parameter: Parameter): boolean {
+  if (a.status === 'abgeschlossen' || a.seitenzahl > 0) return false;
+  const std = ausgabeStandardwerte(parameter);
+  return (
+    a.grammaturGqm !== std.grammaturGqm ||
+    a.seitenformatMm?.breite !== std.seitenformatMm.breite ||
+    a.seitenformatMm?.hoehe !== std.seitenformatMm.hoehe
+  );
+}
+
 function AusgabenListe() {
   const { parameter } = useApp();
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
@@ -106,10 +130,27 @@ function AusgabenListe() {
   const [filterPeriodeId, setFilterPeriodeId] = useState<string | 'alle'>('alle');
   const [searchParams] = useSearchParams();
 
+  // Erst laden, wenn die Parameter da sind — sonst würden automatisch
+  // angelegte Ausgaben mit fest einprogrammierten Ersatzwerten statt der
+  // aktuellen Parameter angelegt.
+  const [geladen, setGeladen] = useState(false);
   useEffect(() => {
+    if (!parameter || geladen) return;
+    setGeladen(true);
+    const std = ausgabeStandardwerte(parameter);
     // Lade Ausgaben und Perioden parallel; lege fehlende Ausgaben für Periode-KWs automatisch an
-    Promise.all([ladeAusgaben(), ladeAbrechnungsperioden()]).then(async ([list, perioden]) => {
+    Promise.all([ladeAusgaben(), ladeAbrechnungsperioden()]).then(async ([geladeneListe, perioden]) => {
       setAllePerioden(perioden);
+      // Noch ungepflegte Ausgaben auf die aktuellen Parameter bringen
+      const list: Ausgabe[] = [];
+      for (const a of geladeneListe) {
+        if (brauchtStandardwerte(a, parameter)) {
+          await aktualisiereAusgabe(a.id, std);
+          list.push({ ...a, ...std });
+        } else {
+          list.push(a);
+        }
+      }
       const vorhandeneKeys = new Set(list.map((a) => `${a.jahr}-${a.kw}`));
       const neuAngelegt: Ausgabe[] = [];
       for (const periode of perioden) {
@@ -125,22 +166,14 @@ function AusgabenListe() {
               jahr: periode.jahr,
               seitenzahl: 0,
               stapelAnzahl: 0,
-              grammaturGqm: parameter?.standardGrammurGqm ?? 65,
-              seitenformatMm: {
-                breite: parameter?.standardSeitenformatBreiteMm ?? 305,
-                hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
-              },
+              ...std,
               status: 'geplant',
             });
             neuAngelegt.push({
               id, kw, jahr: periode.jahr,
               seitenzahl: 0,
               stapelAnzahl: 0,
-              grammaturGqm: parameter?.standardGrammurGqm ?? 65,
-              seitenformatMm: {
-                breite: parameter?.standardSeitenformatBreiteMm ?? 305,
-                hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
-              },
+              ...std,
               status: 'geplant',
               erstelltAm: Date.now(),
               aktualisiertAm: Date.now(),
@@ -174,7 +207,8 @@ function AusgabenListe() {
         if (aktuellePeriode) setFilterPeriodeId(aktuellePeriode.id);
       }
     });
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- einmalig laden, sobald Parameter da sind
+  }, [parameter]);
 
   const periodenFuerJahr = allePerioden
     .filter((p) => p.jahr === filterJahr)
@@ -529,6 +563,12 @@ function AusgabeForm({
   const [grammatur, setGrammatur] = useState(
     initial?.grammaturGqm ?? parameter?.standardGrammurGqm ?? 65
   );
+  const [formatBreite, setFormatBreite] = useState(
+    initial?.seitenformatMm.breite ?? parameter?.standardSeitenformatBreiteMm ?? 305
+  );
+  const [formatHoehe, setFormatHoehe] = useState(
+    initial?.seitenformatMm.hoehe ?? parameter?.standardSeitenformatHoeheMm ?? 215
+  );
   const [vorarbeitFreigegeben, setVorarbeitFreigegeben] = useState<boolean>(
     initial?.vorarbeitFreigegeben ?? false
   );
@@ -605,34 +645,30 @@ function AusgabeForm({
     if (kwBereitsVorhanden) { setError(`KW ${kw}/${jahr} ist bereits angelegt.`); return; }
     if (kwInGesperrterPeriode) { setError(`KW ${kw}/${jahr} gehört zu einer abgeschlossenen Abrechnungsperiode.`); return; }
     if (stapelAnzahl < 1) { setError('Mindestens 1 Stapel erforderlich.'); return; }
+    if (formatBreite <= 0 || formatHoehe <= 0) { setError('Bitte ein gültiges Seitenformat eintragen.'); return; }
     setSaving(true);
     setError('');
+    const seitenformatMm = { breite: formatBreite, hoehe: formatHoehe };
     try {
       // Ausgabe speichern
       if (initial) {
         await aktualisiereAusgabe(initial.id, {
           kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur,
-          seitenformatMm: initial.seitenformatMm,
+          seitenformatMm,
           vorarbeitFreigegeben,
         });
-        onSave({ ...initial, kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur, vorarbeitFreigegeben });
+        onSave({ ...initial, kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur, seitenformatMm, vorarbeitFreigegeben });
       } else {
         const id = await erstelleAusgabe({
           kw, jahr, seitenzahl, stapelAnzahl, grammaturGqm: grammatur,
-          seitenformatMm: {
-            breite: parameter?.standardSeitenformatBreiteMm ?? 305,
-            hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
-          },
+          seitenformatMm,
           status: 'geplant',
           vorarbeitFreigegeben,
         });
         onSave({
           id, kw, jahr, seitenzahl, stapelAnzahl,
           grammaturGqm: grammatur,
-          seitenformatMm: {
-            breite: parameter?.standardSeitenformatBreiteMm ?? 305,
-            hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
-          },
+          seitenformatMm,
           status: 'geplant',
           vorarbeitFreigegeben,
           erstelltAm: Date.now(),
@@ -816,6 +852,46 @@ function AusgabeForm({
           onChange={(e) => setGrammatur(Number(e.target.value))}
           className={inputClass}
         />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Seitenformat (mm)</label>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={50}
+            max={1000}
+            value={formatBreite}
+            onChange={(e) => setFormatBreite(Number(e.target.value))}
+            className={inputClass + ' w-28'}
+            aria-label="Seitenformat Breite (mm)"
+          />
+          <span className="text-gray-500">×</span>
+          <input
+            type="number"
+            min={50}
+            max={1000}
+            value={formatHoehe}
+            onChange={(e) => setFormatHoehe(Number(e.target.value))}
+            className={inputClass + ' w-28'}
+            aria-label="Seitenformat Höhe (mm)"
+          />
+          <span className="text-sm text-gray-500">Breite × Höhe</span>
+          {parameter &&
+            (formatBreite !== parameter.standardSeitenformatBreiteMm ||
+              formatHoehe !== parameter.standardSeitenformatHoeheMm) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFormatBreite(parameter.standardSeitenformatBreiteMm);
+                  setFormatHoehe(parameter.standardSeitenformatHoeheMm);
+                }}
+                className="text-xs text-blue-500 hover:text-blue-700 underline"
+              >
+                ↺ Standard ({parameter.standardSeitenformatBreiteMm}×{parameter.standardSeitenformatHoeheMm})
+              </button>
+            )}
+        </div>
       </div>
 
       <div className="border-t pt-4">
@@ -2105,23 +2181,30 @@ function PeriodeForm({
       // schon eine Ausgabe für (kw,jahr) existiert. Sonst können Duplikate
       // entstehen, wenn der Parent-State (`ausgaben`-Prop) durch eine
       // vorherige Auto-Anlage noch nicht aktualisiert wurde.
+      //
+      // Bereits vorhandene, aber noch ungepflegte Ausgaben (im Voraus
+      // angelegt, keine Seitenzahl) bekommen die aktuellen Parameter.
+      if (!parameter) throw new Error('Parameter noch nicht geladen');
+      const std = ausgabeStandardwerte(parameter);
       for (const kw of gewaehlteKWs) {
         const existing = await getDocs(query(
           collection(db, 'ausgaben'),
           where('kw', '==', kw),
           where('jahr', '==', jahr),
         ));
-        if (!existing.empty) continue;
+        if (!existing.empty) {
+          for (const d of existing.docs) {
+            const a = { id: d.id, ...d.data() } as Ausgabe;
+            if (brauchtStandardwerte(a, parameter)) await aktualisiereAusgabe(a.id, std);
+          }
+          continue;
+        }
         await erstelleAusgabe({
           kw,
           jahr,
           seitenzahl: 0,
           stapelAnzahl: 0,
-          grammaturGqm: parameter?.standardGrammurGqm ?? 65,
-          seitenformatMm: {
-            breite: parameter?.standardSeitenformatBreiteMm ?? 305,
-            hoehe: parameter?.standardSeitenformatHoeheMm ?? 215,
-          },
+          ...std,
           status: 'geplant',
         });
       }

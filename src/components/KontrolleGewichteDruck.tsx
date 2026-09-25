@@ -27,6 +27,10 @@ interface Zeile {
   tour: Tour | undefined;
   /** STAPEL-Sollgewicht in kg: Stückzahl × Anzeigenblatt + Stückzahl × aller Beilagen. */
   sollKg: number;
+  /** Soll-Gewicht je Exemplar in g (Anzeigenblatt + alle Beilagen). */
+  sollGStk: number;
+  /** Gewicht aller Beilagen je Exemplar in g. */
+  beilagenGStk: number;
   minKg: number;
   maxKg: number;
   /** Anzahl aller für das TG gebuchten Beilagen (intern + extern). */
@@ -36,6 +40,14 @@ interface Zeile {
 function fmtKg(v: number): string {
   return v.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+function fmtG(v: number): string {
+  return v.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
+// Natürliche Sortierung: „Uslar2" vor „Uslar10"
+const vergleiche = (a: string, b: string) =>
+  a.localeCompare(b, 'de', { numeric: true, sensitivity: 'base' });
 
 export default function KontrolleGewichteDruck({
   ausgabe,
@@ -54,8 +66,8 @@ export default function KontrolleGewichteDruck({
     aktive.sort((a, b) => {
       const tA = a.tourId ? (tourMap.get(a.tourId)?.name ?? 'zzz') : 'zzz';
       const tB = b.tourId ? (tourMap.get(b.tourId)?.name ?? 'zzz') : 'zzz';
-      if (tA !== tB) return tA.localeCompare(tB);
-      return a.name.localeCompare(b.name);
+      if (tA !== tB) return vergleiche(tA, tB);
+      return vergleiche(a.name, b.name);
     });
     return aktive.map((tg) => {
       // ALLE für dieses TG gebuchten Beilagen einrechnen — die Kollegen
@@ -65,12 +77,16 @@ export default function KontrolleGewichteDruck({
       const gAnz = berechneGewichtAnzeigenblattKg(tg, ausgabe);
       const gBei = berechneGewichtBeilagenKg(tg, tgBeilagen);
       const sollKg = gAnz + gBei;
+      const beilagenGStk = tgBeilagen.reduce((s, b) => s + b.gewichtGStk, 0);
+      const sollGStk = tg.stueckzahl > 0 ? (sollKg * 1000) / tg.stueckzahl : 0;
       const minKg = sollKg * (1 - tolUnten / 100);
       const maxKg = sollKg * (1 + tolOben / 100);
       return {
         tg,
         tour: tg.tourId ? tourMap.get(tg.tourId) : undefined,
         sollKg,
+        sollGStk,
+        beilagenGStk,
         minKg,
         maxKg,
         beilagenAnz: tgBeilagen.length,
@@ -202,7 +218,7 @@ function KontrolleSheet({
       <table className="kg-table">
         <thead>
           <tr>
-            <th rowSpan={2} style={{ width: '18%', textAlign: 'left' }}>Teilgebiet</th>
+            <th rowSpan={2} style={{ width: '30%', textAlign: 'left' }}>Teilgebiet</th>
             <th rowSpan={2} style={{ width: '6%', textAlign: 'center' }}>Stk.</th>
             <th colSpan={6} className="kg-group-gewicht" style={{ textAlign: 'center' }}>
               Gewichtskontrolle (kg)
@@ -212,15 +228,15 @@ function KontrolleSheet({
             </th>
           </tr>
           <tr>
-            <th className="kg-group-gewicht" style={{ width: '10%', textAlign: 'center' }}>IST</th>
+            <th className="kg-group-gewicht" style={{ width: '9%', textAlign: 'center' }}>IST</th>
             <th className="kg-group-gewicht" style={{ width: '7%', textAlign: 'center' }}>Min.</th>
-            <th className="kg-group-gewicht" style={{ width: '10%', textAlign: 'center' }}>IST</th>
+            <th className="kg-group-gewicht" style={{ width: '9%', textAlign: 'center' }}>IST</th>
             <th className="kg-group-gewicht" style={{ width: '7%', textAlign: 'center' }}>Max.</th>
-            <th className="kg-group-gewicht" style={{ width: '10%', textAlign: 'center' }}>IST</th>
-            <th className="kg-group-gewicht" style={{ width: '6%', textAlign: 'center', color: '#6b7280', fontSize: '10px' }}>Soll</th>
-            <th className="kg-group-stichprobe" style={{ width: '9%', textAlign: 'center' }}>Seiten<br />Azb.</th>
-            <th className="kg-group-stichprobe" style={{ width: '8%', textAlign: 'center' }}>Beil.<br />Soll</th>
-            <th className="kg-group-stichprobe" style={{ width: '9%', textAlign: 'center' }}>Beil.<br />IST</th>
+            <th className="kg-group-gewicht" style={{ width: '9%', textAlign: 'center' }}>IST</th>
+            <th className="kg-group-gewicht" style={{ width: '5%', textAlign: 'center', color: '#6b7280', fontSize: '10px' }}>Soll</th>
+            <th className="kg-group-stichprobe" style={{ width: '5%', textAlign: 'center' }}>Seiten<br />Azb.</th>
+            <th className="kg-group-stichprobe" style={{ width: '6%', textAlign: 'center' }}>Beil.<br />Soll</th>
+            <th className="kg-group-stichprobe" style={{ width: '7%', textAlign: 'center' }}>Beil.<br />IST</th>
           </tr>
         </thead>
         <tbody>
@@ -242,6 +258,11 @@ function KontrolleSheet({
                     {z.tour.name}
                   </span>
                 )}
+                <div style={{ fontSize: '9px', color: '#4b5563', marginTop: '2px', whiteSpace: 'nowrap' }}>
+                  Ges. <strong>{fmtKg(z.sollKg)} kg</strong>
+                  {' · '}je Stk {fmtG(z.sollGStk)} g
+                  {' · '}Beil./St {fmtG(z.beilagenGStk)} g
+                </div>
               </td>
               <td style={{ textAlign: 'center' }}>{z.tg.stueckzahl.toLocaleString('de-DE')}</td>
               {/* IST (leer) */}
