@@ -4380,6 +4380,10 @@ function VerdienstbescheinigungTab({
   const [ladeStatus, setLadeStatus] = useState<'init' | 'laden' | 'ok' | 'fehler'>('init');
   const [saving, setSaving] = useState(false);
   const [druckOffen, setDruckOffen] = useState(false);
+  // Monate, die in die Bescheinigung einfließen (Key `${jahr}-${monat}`).
+  // Startet leer — der Nutzer markiert bewusst nur die benötigten Monate.
+  const [auswahl, setAuswahl] = useState<Set<string>>(new Set());
+  useEffect(() => { setAuswahl(new Set()); }, [mitarbeiter.id]);
 
   // Antworten auf alle Fragen (Standardfragen + Zusatzfragen aus dem Katalog).
   // Wert ist immer ein String:
@@ -4579,14 +4583,37 @@ function VerdienstbescheinigungTab({
     return fehlend;
   }
 
-  const ungepruefteMonate = zeilen.filter((z) => !z.ueberprueftEdit).map((z) => `${MONATSNAMEN_KURZ[z.monat - 1]} ${z.jahr}`);
-  const monateOhneLB = zeilen.filter((z) => !z.lbAbrechnung && !z.bruttoEditEur.trim() && !(z.gespeichert?.bruttoManuell != null)).map((z) => `${MONATSNAMEN_KURZ[z.monat - 1]} ${z.jahr}`);
+  // Nur die markierten Monate fließen in Prüfung, Summe und Druck ein.
+  const ausgewaehlteZeilen = zeilen.filter((z) => auswahl.has(`${z.jahr}-${z.monat}`));
+  const ungepruefteMonate = ausgewaehlteZeilen.filter((z) => !z.ueberprueftEdit).map((z) => `${MONATSNAMEN_KURZ[z.monat - 1]} ${z.jahr}`);
+  const monateOhneLB = ausgewaehlteZeilen.filter((z) => !z.lbAbrechnung && !z.bruttoEditEur.trim() && !(z.gespeichert?.bruttoManuell != null)).map((z) => `${MONATSNAMEN_KURZ[z.monat - 1]} ${z.jahr}`);
   const fehlend = pflichtFehlend();
-  const druckBereit = fehlend.length === 0 && ungepruefteMonate.length === 0 && monateOhneLB.length === 0 && zeilen.length > 0;
+  const druckBereit = fehlend.length === 0 && ungepruefteMonate.length === 0 && monateOhneLB.length === 0 && ausgewaehlteZeilen.length > 0;
 
-  // Summe / Durchschnitt
-  const summe = zeilen.reduce((acc, z) => acc + (effektivesBrutto(z) ?? 0), 0);
-  const durchschnitt = zeilen.length > 0 ? summe / zeilen.length : 0;
+  // Summe / Durchschnitt (über die markierten Monate)
+  const summe = ausgewaehlteZeilen.reduce((acc, z) => acc + (effektivesBrutto(z) ?? 0), 0);
+  const durchschnitt = ausgewaehlteZeilen.length > 0 ? summe / ausgewaehlteZeilen.length : 0;
+  const alleAusgewaehlt = zeilen.length > 0 && ausgewaehlteZeilen.length === zeilen.length;
+
+  function toggleAuswahl(key: string, an: boolean) {
+    setAuswahl((prev) => {
+      const next = new Set(prev);
+      if (an) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }
+  function setzeAlleAuswahl(an: boolean) {
+    setAuswahl((prev) => {
+      const next = new Set(prev);
+      for (const z of zeilen) {
+        const key = `${z.jahr}-${z.monat}`;
+        if (an) next.add(key);
+        else next.delete(key);
+      }
+      return next;
+    });
+  }
 
   function setBruttoInput(key: string, value: string) {
     setBruttoInputs((prev) => {
@@ -4822,6 +4849,22 @@ function VerdienstbescheinigungTab({
           <table className="w-full text-sm">
             <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 text-xs">
               <tr>
+                <th className="px-3 py-2 text-center font-medium" title="Monat fließt in die Bescheinigung ein">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={alleAusgewaehlt}
+                      ref={(el) => {
+                        if (el) el.indeterminate = ausgewaehlteZeilen.length > 0 && !alleAusgewaehlt;
+                      }}
+                      onChange={(e) => setzeAlleAuswahl(e.target.checked)}
+                      disabled={zeilen.length === 0}
+                      className="rounded"
+                      title="Alle Monate des Zeitraums markieren / Markierung aufheben"
+                    />
+                    Auswerten
+                  </label>
+                </th>
                 <th className="px-3 py-2 text-left font-medium">Monat</th>
                 <th className="px-3 py-2 text-right font-medium" title="Brutto laut Lohnbüro-PDF">Brutto LB</th>
                 <th className="px-3 py-2 text-right font-medium" title="Manueller Override — leer = LB-Wert nutzen">Manuelles Brutto</th>
@@ -4833,7 +4876,7 @@ function VerdienstbescheinigungTab({
             <tbody className="divide-y divide-gray-100">
               {zeilen.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-gray-400">
+                  <td colSpan={7} className="px-3 py-6 text-center text-gray-400">
                     Zeitraum-Bereich leer (Von &gt; Bis?).
                   </td>
                 </tr>
@@ -4845,9 +4888,22 @@ function VerdienstbescheinigungTab({
                   const eff = effektivesBrutto(z);
                   const dirty = istDirty(z);
                   const driveLink = driveLinkFuer(z.jahr, z.monat);
+                  const markiert = auswahl.has(key);
                   return (
-                    <tr key={key} className={dirty ? 'bg-amber-50/40' : ''}>
-                      <td className="px-3 py-2 font-mono text-xs text-gray-700">
+                    <tr
+                      key={key}
+                      className={`${dirty ? 'bg-amber-50/40' : markiert ? 'bg-emerald-50/50' : ''} ${markiert ? '' : 'text-gray-400'}`}
+                    >
+                      <td className="px-3 py-2 text-center">
+                        <input
+                          type="checkbox"
+                          checked={markiert}
+                          onChange={(e) => toggleAuswahl(key, e.target.checked)}
+                          className="rounded"
+                          title="Monat in die Bescheinigung übernehmen"
+                        />
+                      </td>
+                      <td className={`px-3 py-2 font-mono text-xs ${markiert ? 'text-gray-700 font-semibold' : 'text-gray-400'}`}>
                         {MONATSNAMEN_KURZ[z.monat - 1]} {z.jahr}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-gray-700">
@@ -4897,7 +4953,7 @@ function VerdienstbescheinigungTab({
                           <span className="text-gray-300">—</span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono font-semibold text-gray-900">
+                      <td className={`px-3 py-2 text-right font-mono ${markiert ? 'font-semibold text-gray-900' : 'text-gray-400'}`}>
                         {eff != null ? eur(eff) : <span className="text-gray-300">—</span>}
                       </td>
                     </tr>
@@ -4908,19 +4964,18 @@ function VerdienstbescheinigungTab({
             {zeilen.length > 0 && (
               <tfoot className="bg-gray-50 border-t border-gray-200 text-xs">
                 <tr>
-                  <td className="px-3 py-2 font-semibold text-gray-700">Summe</td>
                   <td />
-                  <td />
-                  <td />
-                  <td />
+                  <td colSpan={5} className="px-3 py-2 font-semibold text-gray-700">
+                    Summe{' '}
+                    <span className="font-normal text-gray-500">
+                      ({ausgewaehlteZeilen.length} von {zeilen.length} Monaten markiert)
+                    </span>
+                  </td>
                   <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{eur(summe)}</td>
                 </tr>
                 <tr>
-                  <td className="px-3 py-2 font-semibold text-gray-700">Durchschnitt</td>
                   <td />
-                  <td />
-                  <td />
-                  <td />
+                  <td colSpan={5} className="px-3 py-2 font-semibold text-gray-700">Durchschnitt</td>
                   <td className="px-3 py-2 text-right font-mono font-bold text-gray-900">{eur(durchschnitt)}</td>
                 </tr>
               </tfoot>
@@ -5278,15 +5333,21 @@ function VerdienstbescheinigungTab({
           className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 text-white px-4 py-2 rounded-lg text-sm font-medium"
           title={druckBereit
             ? 'Bescheinigung in Druck-Vorschau öffnen (offene Änderungen werden automatisch gespeichert)'
-            : 'Pflichtdaten fehlen oder Monate sind nicht überprüft'}
+            : 'Pflichtdaten fehlen, keine Monate markiert oder markierte Monate sind nicht überprüft'}
         >
           🖨️ Verdienstbescheinigung drucken
         </button>
       </div>
 
-      {(fehlend.length > 0 || ungepruefteMonate.length > 0 || monateOhneLB.length > 0) && (
+      {(fehlend.length > 0 || ungepruefteMonate.length > 0 || monateOhneLB.length > 0 || ausgewaehlteZeilen.length === 0) && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-2">
           <p className="font-semibold">Vor dem Druck noch zu erledigen:</p>
+          {ausgewaehlteZeilen.length === 0 && (
+            <div>
+              <span className="font-medium">Keine Monate markiert:</span>{' '}
+              In der Spalte „Auswerten“ die Monate anhaken, die in die Bescheinigung einfließen sollen.
+            </div>
+          )}
           {fehlend.length > 0 && (
             <div>
               <span className="font-medium">Fehlende Stammdaten:</span>{' '}
@@ -5312,7 +5373,7 @@ function VerdienstbescheinigungTab({
         <VerdienstbescheinigungDruck
           mitarbeiter={mitarbeiter}
           taetigkeit={taetigkeit}
-          zeilen={zeilen.map((z) => ({
+          zeilen={ausgewaehlteZeilen.map((z) => ({
             jahr: z.jahr,
             monat: z.monat,
             bruttoEur: effektivesBrutto(z) ?? 0,
