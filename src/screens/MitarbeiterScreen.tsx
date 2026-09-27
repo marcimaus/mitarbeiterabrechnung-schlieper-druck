@@ -134,6 +134,8 @@ function MitarbeiterInhalt() {
   // 'standard' = Reihenfolge wie geladen (nach Name).
   const [sortierung, setSortierung] = useState<'standard' | 'kontaktNeu' | 'kontaktAlt'>('kontaktNeu');
   const [filterOrtPlz, setFilterOrtPlz] = useState('');
+  // Nur bei „nur Interessenten": Suche nach Interessens-Ort (+ Wohnort).
+  const [filterInteressentOrt, setFilterInteressentOrt] = useState('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
 
@@ -192,16 +194,14 @@ function MitarbeiterInhalt() {
         if (!m.isActive) return false;
       }
     }
-    if (filterText) {
-      const q = filterText.toLowerCase();
-      // Bei „nur Interessenten" zusätzlich in den Interessens-Orten und im
-      // Wohnort suchen.
-      const trifftOrt = filterInteressent === 'nur' &&
-        [...(m.interessentOrte ?? []), m.adresse?.ort ?? '']
-          .some((o) => o.toLowerCase().includes(q));
-      if (!m.name.toLowerCase().includes(q) && !m.nummer.includes(filterText) && !trifftOrt) return false;
-    }
+    if (filterText && !m.name.toLowerCase().includes(filterText.toLowerCase()) &&
+        !m.nummer.includes(filterText)) return false;
     if (filterInteressent === 'nur') {
+      // Interessens-Ort: sucht in den Orten/Teilgebieten, für die sich der
+      // Interessent interessiert, und automatisch auch im Wohnort.
+      const qOrt = filterInteressentOrt.trim().toLowerCase();
+      if (qOrt && ![...(m.interessentOrte ?? []), m.adresse?.ort ?? '']
+        .some((o) => o.toLowerCase().includes(qOrt))) return false;
       if (filterAuto === 'ja' && !m.autoVorhanden) return false;
       if (filterAuto === 'nein' && m.autoVorhanden) return false;
     }
@@ -285,12 +285,21 @@ function MitarbeiterInhalt() {
       <div className="flex flex-wrap gap-3 mb-4">
         <input
           type="text"
-          placeholder={filterInteressent === 'nur' ? 'Name oder Interessens-Ort suchen...' : 'Name oder Nummer suchen...'}
+          placeholder="Name oder Nummer suchen..."
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-60"
-          title={filterInteressent === 'nur' ? 'Sucht in Name, Nummer, Wohnort und den Orten/Teilgebieten, für die sich der Interessent interessiert' : undefined}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-52"
         />
+        {filterInteressent === 'nur' && (
+          <input
+            type="text"
+            placeholder="📍 Interessens-Ort..."
+            value={filterInteressentOrt}
+            onChange={(e) => setFilterInteressentOrt(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-44"
+            title="Sucht in den Orten/Teilgebieten, für die sich der Interessent interessiert, und im Wohnort"
+          />
+        )}
         <input
           type="text"
           placeholder="Ort oder PLZ..."
