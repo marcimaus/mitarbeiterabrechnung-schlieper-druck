@@ -18,6 +18,7 @@ import {
   erstelleMitarbeiterMemo,
   aktualisiereMitarbeiterMemo,
   loescheMitarbeiterMemo,
+  speichereMemoKategorien,
 } from '../lib/db';
 import type {
   Mitarbeiter,
@@ -26,7 +27,12 @@ import type {
   Rolle,
   Abrechnungsperiode,
 } from '../types';
-import { MEMO_KATEGORIE_LABELS, ROLLEN_LABELS } from '../types';
+import {
+  MEMO_KATEGORIE_LABELS,
+  ROLLEN_LABELS,
+  alleMemoKategorien,
+  memoKategorieLabel,
+} from '../types';
 
 const ALLE_ROLLEN = Object.keys(ROLLEN_LABELS) as Rolle[];
 
@@ -64,6 +70,7 @@ function Inhalt() {
   const filterPeriodeAktiv = nurUnzugeordnet || filterJahr !== '' || filterMonat !== '';
 
   const [neuesMemoOffen, setNeuesMemoOffen] = useState(false);
+  const [kategorienOffen, setKategorienOffen] = useState(false);
 
   /** Map: Periode-ID → Periode (für schnellen Lookup beim Filtern). */
   const periodeById = useMemo(
@@ -155,14 +162,29 @@ function Inhalt() {
             Memos je Mitarbeiter — werden bei der Lohnübermittlung an das Lohnbüro mitgeschickt.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setNeuesMemoOffen(true)}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition-colors"
-        >
-          + Neues Memo
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setKategorienOffen(true)}
+            className="text-sm font-medium text-gray-700 border border-gray-300 hover:bg-gray-50 px-3 py-2 rounded-lg transition-colors"
+            title="Liste der Memo-Betreffe (Kategorien) erweitern / bearbeiten"
+          >
+            ⚙ Betreffe verwalten
+          </button>
+          <button
+            type="button"
+            onClick={() => setNeuesMemoOffen(true)}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-4 py-2 rounded-lg shadow-sm transition-colors"
+          >
+            + Neues Memo
+          </button>
+        </div>
       </div>
+
+      <MemoKategorienModal
+        isOpen={kategorienOffen}
+        onClose={() => setKategorienOffen(false)}
+      />
 
       <NeuesMemoModal
         isOpen={neuesMemoOffen}
@@ -412,6 +434,7 @@ function MemoEintrag({
 }) {
   void _adminName;
   void userRole;
+  const { memoKategorienEigene } = useApp();
   const periode = perioden.find((p) => p.id === memo.abrechnungsperiodeId);
   const istAbgeschlossen = periode?.status === 'abgeschlossen';
   const [bearbeitet, setBearbeitet] = useState(false);
@@ -451,7 +474,7 @@ function MemoEintrag({
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <span className="text-xs font-medium text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
-                  {MEMO_KATEGORIE_LABELS[memo.kategorie]}
+                  {memoKategorieLabel(memo.kategorie, memoKategorienEigene)}
                 </span>
                 {memo.abrechnungsperiodeId ? (
                   <span className="text-xs text-gray-600">
@@ -519,9 +542,7 @@ function MemoEintrag({
               onChange={(e) => setKategorieEdit(e.target.value as MemoKategorie)}
               className="border border-gray-300 rounded px-2 py-1 text-sm"
             >
-              {Object.entries(MEMO_KATEGORIE_LABELS).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
-              ))}
+              <KategorieOptionen aktuell={kategorieEdit} />
             </select>
             <select
               value={periodeIdEdit}
@@ -763,9 +784,7 @@ function NeuesMemoModal({
                   onChange={(e) => setKategorie(e.target.value as MemoKategorie)}
                   className="border border-gray-300 rounded px-2 py-1.5 text-sm"
                 >
-                  {Object.entries(MEMO_KATEGORIE_LABELS).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
-                  ))}
+                  <KategorieOptionen aktuell={kategorie} />
                 </select>
               </div>
               <div className="flex-1">
@@ -925,9 +944,7 @@ function NeuesMemoForm({
           onChange={(e) => setKategorie(e.target.value as MemoKategorie)}
           className="border border-gray-300 rounded px-2 py-1 text-sm"
         >
-          {Object.entries(MEMO_KATEGORIE_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>{v}</option>
-          ))}
+          <KategorieOptionen aktuell={kategorie} />
         </select>
         <select
           value={periodeId}
@@ -1006,5 +1023,199 @@ function NeuesMemoForm({
         </button>
       </div>
     </div>
+  );
+}
+
+/** <option>-Liste aller Memo-Kategorien (Standard + eigene). Ist die
+ *  aktuelle Kategorie unbekannt (z. B. Altbestand), bleibt sie wählbar. */
+function KategorieOptionen({ aktuell }: { aktuell: MemoKategorie }) {
+  const { memoKategorienEigene } = useApp();
+  const liste = alleMemoKategorien(memoKategorienEigene);
+  return (
+    <>
+      {!liste.some((k) => k.id === aktuell) && (
+        <option value={aktuell}>{memoKategorieLabel(aktuell, memoKategorienEigene)}</option>
+      )}
+      {liste.map((k) => (
+        <option key={k.id} value={k.id}>{k.label}</option>
+      ))}
+    </>
+  );
+}
+
+/** Pflege der eigenen Memo-Kategorien (Betreffe). Standard-Kategorien sind
+ *  fest; eigene können angelegt, umbenannt und — solange kein Memo sie
+ *  verwendet — gelöscht werden. */
+function MemoKategorienModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+  const { memoKategorienEigene, mitarbeiterMemos } = useApp();
+  const [neu, setNeu] = useState('');
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const nutzung = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const memo of mitarbeiterMemos) m.set(memo.kategorie, (m.get(memo.kategorie) ?? 0) + 1);
+    return m;
+  }, [mitarbeiterMemos]);
+
+  const eigeneSortiert = [...memoKategorienEigene].sort((a, b) => a.label.localeCompare(b.label, 'de'));
+
+  function labelVergeben(label: string, ausserId?: string): boolean {
+    const l = label.trim().toLowerCase();
+    return (
+      Object.values(MEMO_KATEGORIE_LABELS).some((v) => v.toLowerCase() === l) ||
+      memoKategorienEigene.some((k) => k.id !== ausserId && k.label.trim().toLowerCase() === l)
+    );
+  }
+
+  async function speichern(liste: typeof memoKategorienEigene): Promise<boolean> {
+    setSaving(true);
+    try {
+      await speichereMemoKategorien(liste);
+      return true;
+    } catch (e) {
+      alert('Speichern fehlgeschlagen: ' + (e instanceof Error ? e.message : String(e)));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function hinzufuegen() {
+    const label = neu.trim();
+    if (!label) return;
+    if (labelVergeben(label)) {
+      alert(`Den Betreff „${label}" gibt es bereits.`);
+      return;
+    }
+    const id = `k_${Date.now().toString(36)}`;
+    if (await speichern([...memoKategorienEigene, { id, label }])) setNeu('');
+  }
+
+  async function umbenennen(id: string) {
+    const label = editLabel.trim();
+    if (!label) return;
+    if (labelVergeben(label, id)) {
+      alert(`Den Betreff „${label}" gibt es bereits.`);
+      return;
+    }
+    if (await speichern(memoKategorienEigene.map((k) => (k.id === id ? { ...k, label } : k)))) {
+      setEditId(null);
+    }
+  }
+
+  async function loeschen(id: string, label: string) {
+    const anzahl = nutzung.get(id) ?? 0;
+    if (anzahl > 0) {
+      alert(`„${label}" wird von ${anzahl} Memo${anzahl === 1 ? '' : 's'} verwendet und kann nicht gelöscht werden. Umbenennen ist möglich.`);
+      return;
+    }
+    if (!confirm(`Betreff „${label}" löschen?`)) return;
+    await speichern(memoKategorienEigene.filter((k) => k.id !== id));
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Memo-Betreffe verwalten" size="md">
+      <div className="space-y-4">
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase mb-1">Standard (fest)</div>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(MEMO_KATEGORIE_LABELS).map(([id, label]) => (
+              <span key={id} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-xs font-medium text-gray-500 uppercase mb-1">Eigene Betreffe</div>
+          {eigeneSortiert.length === 0 ? (
+            <div className="text-sm text-gray-400">Noch keine eigenen Betreffe angelegt.</div>
+          ) : (
+            <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
+              {eigeneSortiert.map((k) => {
+                const anzahl = nutzung.get(k.id) ?? 0;
+                return (
+                  <li key={k.id} className="flex items-center gap-2 px-3 py-1.5">
+                    {editId === k.id ? (
+                      <>
+                        <input
+                          type="text"
+                          value={editLabel}
+                          onChange={(e) => setEditLabel(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') umbenennen(k.id); }}
+                          autoFocus
+                          className="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => umbenennen(k.id)}
+                          disabled={saving || !editLabel.trim()}
+                          className="text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-2 py-1 rounded"
+                        >
+                          OK
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditId(null)}
+                          className="text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          Abbrechen
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex-1 text-sm text-gray-800">{k.label}</span>
+                        {anzahl > 0 && (
+                          <span className="text-[10px] text-gray-400">{anzahl} Memo{anzahl === 1 ? '' : 's'}</span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setEditId(k.id); setEditLabel(k.label); }}
+                          className="text-xs text-blue-600 hover:text-blue-800 px-1"
+                          title="Umbenennen"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => loeschen(k.id, k.label)}
+                          disabled={saving}
+                          className={`text-xs px-1 ${anzahl > 0 ? 'text-gray-300 cursor-not-allowed' : 'text-red-500 hover:text-red-700'}`}
+                          title={anzahl > 0 ? 'Wird verwendet — nicht löschbar' : 'Löschen'}
+                        >
+                          ✕
+                        </button>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={neu}
+            onChange={(e) => setNeu(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') hinzufuegen(); }}
+            placeholder="Neuer Betreff, z. B. Steuerklassen-Änderung"
+            className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            type="button"
+            onClick={hinzufuegen}
+            disabled={saving || !neu.trim()}
+            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white text-sm font-medium px-4 py-2 rounded-lg"
+          >
+            + Hinzufügen
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }

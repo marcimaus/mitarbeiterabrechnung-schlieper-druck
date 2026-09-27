@@ -1140,15 +1140,12 @@ export interface LohnkontoBuchung {
 // `abrechnung` nicht angezeigt und auch nicht im Export gelistet.
 // Standardmäßig false. Nur Admin darf das Flag setzen.
 
-export type MemoKategorie =
-  | 'iban'
-  | 'adresse'
-  | 'parameter'
-  | 'auswertung'
-  | 'krankmeldung'
-  | 'sonstiges';
+// Kategorie („Betreff") = Schlüssel einer Standard-Kategorie oder die ID
+// einer in der App angelegten eigenen Kategorie (meta/memoKategorien).
+export type MemoKategorie = string;
 
-export const MEMO_KATEGORIE_LABELS: Record<MemoKategorie, string> = {
+/** Standard-Kategorien — fest, nicht löschbar. */
+export const MEMO_KATEGORIE_LABELS: Record<string, string> = {
   iban: 'IBAN-Änderung',
   adresse: 'Adress-Änderung',
   parameter: 'Abrechnungs-Parameter',
@@ -1156,6 +1153,30 @@ export const MEMO_KATEGORIE_LABELS: Record<MemoKategorie, string> = {
   krankmeldung: 'Krankmeldung',
   sonstiges: 'Sonstiges',
 };
+
+/** In der App angelegte zusätzliche Memo-Kategorie. */
+export interface MemoKategorieEintrag {
+  id: string;
+  label: string;
+}
+
+/** Alle wählbaren Kategorien: Standard (ohne „Sonstiges") + eigene
+ *  alphabetisch + „Sonstiges" am Ende. */
+export function alleMemoKategorien(eigene: MemoKategorieEintrag[]): MemoKategorieEintrag[] {
+  const standard = Object.entries(MEMO_KATEGORIE_LABELS)
+    .filter(([id]) => id !== 'sonstiges')
+    .map(([id, label]) => ({ id, label }));
+  const eigeneSortiert = [...eigene].sort((a, b) => a.label.localeCompare(b.label, 'de'));
+  return [...standard, ...eigeneSortiert, { id: 'sonstiges', label: MEMO_KATEGORIE_LABELS.sonstiges }];
+}
+
+export function memoKategorieLabel(kategorie: string, eigene: MemoKategorieEintrag[]): string {
+  return (
+    MEMO_KATEGORIE_LABELS[kategorie] ??
+    eigene.find((k) => k.id === kategorie)?.label ??
+    kategorie
+  );
+}
 
 export interface MitarbeiterMemo {
   id: string;

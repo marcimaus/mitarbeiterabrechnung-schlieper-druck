@@ -1398,6 +1398,22 @@ export function mitarbeiterMemosListener(
   });
 }
 
+// Eigene Memo-Kategorien (Singleton meta/memoKategorien, Feld `eigene`)
+export function memoKategorienListener(
+  cb: (list: import('../types').MemoKategorieEintrag[]) => void,
+): Unsubscribe {
+  return onSnapshot(doc(db, 'meta', 'memoKategorien'), (snap) => {
+    const data = snap.exists() ? snap.data() : null;
+    cb((data?.eigene as import('../types').MemoKategorieEintrag[] | undefined) ?? []);
+  });
+}
+
+export async function speichereMemoKategorien(
+  eigene: import('../types').MemoKategorieEintrag[],
+): Promise<void> {
+  await setDoc(doc(db, 'meta', 'memoKategorien'), { eigene }, { merge: true });
+}
+
 export async function erstelleMitarbeiterMemo(
   data: Omit<import('../types').MitarbeiterMemo, 'id' | 'erstelltAm' | 'aktualisiertAm'>,
 ): Promise<string> {

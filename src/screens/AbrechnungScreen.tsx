@@ -43,7 +43,7 @@ import {
   austraegerwechselPlanListener,
   loescheAustraegerwechselPlan,
 } from '../lib/planung';
-import { ROLLEN_LABELS, MEMO_KATEGORIE_LABELS } from '../types';
+import { ROLLEN_LABELS, memoKategorieLabel } from '../types';
 
 /**
  * Entscheidet, ob ein Standardausträger-Wechselplan beim Monatswechsel der
@@ -233,13 +233,16 @@ export default function AbrechnungScreen() {
 }
 
 function AbrechnungInhalt() {
-  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, adminName, variablePeriodenZusaetze, externeAbrechnungswerte, stueckzahlAnpassungen, mitarbeiterMemos, lohnbueroAbrechnungen } = useApp();
+  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, adminName, variablePeriodenZusaetze, externeAbrechnungswerte, stueckzahlAnpassungen, mitarbeiterMemos, memoKategorienEigene, lohnbueroAbrechnungen } = useApp();
   const [selectedPeriodeId, setSelectedPeriodeId] = useState('');
   const [ergebnisse, setErgebnisse] = useState<MitarbeiterAbrechnung[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [fehler, setFehler] = useState('');
   const [exportierend, setExportierend] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Detailspalten Gewichtszuschläge (in „Austragen" enthalten) — per Klick
+  // auf den Spaltenkopf „Austragen" ein-/ausblendbar, standardmäßig aus.
+  const [zeigeGewichtsspalten, setZeigeGewichtsspalten] = useState(false);
   const [abschliessenBestaetigt, setAbschliessenBestaetigt] = useState(false);
   const [monatswechselBestaetigt, setMonatswechselBestaetigt] = useState(false);
   const [zeigeAnpassungDialog, setZeigeAnpassungDialog] = useState(false);
@@ -461,7 +464,7 @@ function AbrechnungInhalt() {
     if (!selectedPeriode || !ergebnisse) return;
     setExportierend(true);
     try {
-      await exportiereLohnuebermittlung(selectedPeriode, ergebnisse, mitarbeiter, mitarbeiterMemos);
+      await exportiereLohnuebermittlung(selectedPeriode, ergebnisse, mitarbeiter, mitarbeiterMemos, memoKategorienEigene);
     } catch (e: any) {
       alert('Export fehlgeschlagen: ' + (e.message ?? e));
     } finally {
@@ -1671,12 +1674,31 @@ function AbrechnungInhalt() {
               <thead className="border-b border-gray-200">
                 <tr>
                   <th className="px-4 py-3 text-left font-medium text-gray-600 sticky top-0 left-0 z-30 bg-gray-50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]">Mitarbeiter</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Austragen</th>
-                  <th className="px-4 py-3 text-right font-medium text-amber-700 sticky top-0 z-20 bg-gray-50" title="Gewichtszuschlag Anzeigenblatt (in Austragen enthalten)">Gew. AB</th>
-                  <th className="px-4 py-3 text-right font-medium text-amber-700 sticky top-0 z-20 bg-gray-50" title="Gewichtszuschlag Beilagen (in Austragen enthalten)">Gew. Beil.</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">
+                    <button
+                      type="button"
+                      onClick={() => setZeigeGewichtsspalten((v) => !v)}
+                      className="inline-flex items-center gap-1 hover:text-gray-900"
+                      title={
+                        zeigeGewichtsspalten
+                          ? 'Detailspalten Gewichtszuschläge ausblenden'
+                          : 'Detailspalten Gewichtszuschläge (Gew. AB / Gew. Beil.) einblenden'
+                      }
+                    >
+                      Austragen
+                      <span className="text-[10px] text-gray-400">{zeigeGewichtsspalten ? '◂' : '▸'}</span>
+                    </button>
+                  </th>
+                  {zeigeGewichtsspalten && (
+                    <>
+                      <th className="px-4 py-3 text-right font-medium text-amber-700 sticky top-0 z-20 bg-gray-50" title="Gewichtszuschlag Anzeigenblatt (in Austragen enthalten)">Gew. AB</th>
+                      <th className="px-4 py-3 text-right font-medium text-amber-700 sticky top-0 z-20 bg-gray-50" title="Gewichtszuschlag Beilagen (in Austragen enthalten)">Gew. Beil.</th>
+                    </>
+                  )}
                   <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Zusammentr.</th>
-                  <th className="px-4 py-3 text-right font-medium text-teal-700 sticky top-0 z-20 bg-gray-50" title="Betrag aus der externen Anwendung (Summe Austragen + Zusammentragen + Vorarbeit). Ist ein Wert gesetzt, ersetzt er diese App-Positionen in Brutto / An Lohnbüro / Lohnübermittlung.">Wert externe<br />Anwendung</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Zeiterfassung</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-800 sticky top-0 z-20 bg-gray-50" title="Summe aus Austragen + Zusammentragen + Zeiterfassung">Summe</th>
+                  <th className="px-4 py-3 text-right font-medium text-teal-700 sticky top-0 z-20 bg-gray-50" title="Betrag aus der externen Anwendung (Summe Austragen + Zusammentragen + Vorarbeit). Ist ein Wert gesetzt, ersetzt er diese App-Positionen in Brutto / An Lohnbüro / Lohnübermittlung.">Wert externe<br />Anwendung</th>
                   <th className="px-4 py-3 text-right font-medium text-purple-700 sticky top-0 z-20 bg-gray-50" title="Tätigkeits-Boni in Minuten je Ausgabe (z. B. Orga, Betreuung Zusammenträger)">Min-Boni</th>
                   <th className="px-4 py-3 text-right font-medium text-emerald-700 sticky top-0 z-20 bg-gray-50" title="Bonus Zeiterfassung Austragen — pauschal je vollständig online erfasstem Einsatz">Bonus Zeit</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Fix</th>
@@ -1776,14 +1798,27 @@ function AbrechnungInhalt() {
                       <td className="px-4 py-3 text-right text-gray-700">
                         {er.austraegerGesamt > 0 ? eur(er.austraegerGesamt) : '—'}
                       </td>
-                      <td className="px-4 py-3 text-right text-amber-700">
-                        {er.gewichtsbonusAnzeigenblatt > 0 ? eur(er.gewichtsbonusAnzeigenblatt) : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-right text-amber-700">
-                        {er.gewichtsbonusBeilagen > 0 ? eur(er.gewichtsbonusBeilagen) : '—'}
-                      </td>
+                      {zeigeGewichtsspalten && (
+                        <>
+                          <td className="px-4 py-3 text-right text-amber-700">
+                            {er.gewichtsbonusAnzeigenblatt > 0 ? eur(er.gewichtsbonusAnzeigenblatt) : '—'}
+                          </td>
+                          <td className="px-4 py-3 text-right text-amber-700">
+                            {er.gewichtsbonusBeilagen > 0 ? eur(er.gewichtsbonusBeilagen) : '—'}
+                          </td>
+                        </>
+                      )}
                       <td className="px-4 py-3 text-right text-gray-700">
                         {er.zusammentragenGesamt > 0 ? eur(er.zusammentragenGesamt) : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-gray-700">
+                        {er.zeitLohn > 0 ? eur(er.zeitLohn) : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right font-medium text-gray-900">
+                        {(() => {
+                          const summe = er.austraegerGesamt + er.zusammentragenGesamt + er.zeitLohn;
+                          return summe > 0 ? eur(summe) : '—';
+                        })()}
                       </td>
                       <ExternerWertZelle
                         periodeId={selectedPeriode?.id ?? ''}
@@ -1797,9 +1832,6 @@ function AbrechnungInhalt() {
                         }
                         onSaved={handleBerechnen}
                       />
-                      <td className="px-4 py-3 text-right text-gray-700">
-                        {er.zeitLohn > 0 ? eur(er.zeitLohn) : '—'}
-                      </td>
                       <td
                         className="px-4 py-3 text-right text-purple-700"
                         title={
@@ -1882,7 +1914,7 @@ function AbrechnungInhalt() {
                     {/* Detail-Aufklappung */}
                     {expandedId === er.mitarbeiter.id && (
                       <tr key={`${er.mitarbeiter.id}-detail`}>
-                        <td colSpan={16} className="bg-gray-50 px-6 py-4">
+                        <td colSpan={zeigeGewichtsspalten ? 17 : 15} className="bg-gray-50 px-6 py-4">
                           <DetailAnsicht
                             ergebnis={er}
                             periode={selectedPeriode}
@@ -1900,14 +1932,24 @@ function AbrechnungInhalt() {
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.austraegerGesamt, 0))}
                   </td>
-                  <td className="px-4 py-3 text-right font-bold text-amber-700">
-                    {eur(ergebnisse.reduce((s, e) => s + e.gewichtsbonusAnzeigenblatt, 0))}
-                  </td>
-                  <td className="px-4 py-3 text-right font-bold text-amber-700">
-                    {eur(ergebnisse.reduce((s, e) => s + e.gewichtsbonusBeilagen, 0))}
-                  </td>
+                  {zeigeGewichtsspalten && (
+                    <>
+                      <td className="px-4 py-3 text-right font-bold text-amber-700">
+                        {eur(ergebnisse.reduce((s, e) => s + e.gewichtsbonusAnzeigenblatt, 0))}
+                      </td>
+                      <td className="px-4 py-3 text-right font-bold text-amber-700">
+                        {eur(ergebnisse.reduce((s, e) => s + e.gewichtsbonusBeilagen, 0))}
+                      </td>
+                    </>
+                  )}
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.zusammentragenGesamt, 0))}
+                  </td>
+                  <td className="px-4 py-3 text-right font-bold text-gray-900">
+                    {eur(ergebnisse.reduce((s, e) => s + e.zeitLohn, 0))}
+                  </td>
+                  <td className="px-4 py-3 text-right font-bold text-gray-900">
+                    {eur(ergebnisse.reduce((s, e) => s + e.austraegerGesamt + e.zusammentragenGesamt + e.zeitLohn, 0))}
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-teal-700">
                     {(() => {
@@ -1917,9 +1959,6 @@ function AbrechnungInhalt() {
                       );
                       return summe > 0 ? eur(summe) : '—';
                     })()}
-                  </td>
-                  <td className="px-4 py-3 text-right font-bold text-gray-900">
-                    {eur(ergebnisse.reduce((s, e) => s + e.zeitLohn, 0))}
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-purple-700">
                     {eur(ergebnisse.reduce((s, e) => s + e.ausgabenBoniLohnGesamt, 0))}
@@ -3497,7 +3536,7 @@ function PeriodenMemoBlock({
   periodeId: string;
   istGesperrt: boolean;
 }) {
-  const { mitarbeiter, mitarbeiterMemos, userRole } = useApp();
+  const { mitarbeiter, mitarbeiterMemos, memoKategorienEigene, userRole } = useApp();
   const istAdmin = userRole === 'admin';
   const sichtbar = mitarbeiterMemos
     .filter((memo) => memo.abrechnungsperiodeId === periodeId)
@@ -3546,7 +3585,7 @@ function PeriodenMemoBlock({
                 <td className="px-3 py-2 text-xs text-gray-500 font-mono">{ma?.nummer ?? '—'}</td>
                 <td className="px-3 py-2">
                   <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">
-                    {MEMO_KATEGORIE_LABELS[memo.kategorie]}
+                    {memoKategorieLabel(memo.kategorie, memoKategorienEigene)}
                   </span>
                 </td>
                 <td className="px-3 py-2 text-gray-800 whitespace-pre-wrap break-words">

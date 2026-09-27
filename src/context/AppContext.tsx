@@ -20,6 +20,7 @@ import type {
   LohnbueroAnmeldung,
   LohnbueroDriveLink,
   MitarbeiterMemo,
+  MemoKategorieEintrag,
   MitarbeiterDarlehen,
   VerdienstbescheinigungFrage,
 } from '../types';
@@ -37,6 +38,7 @@ import {
   lohnbueroAnmeldungenListener,
   lohnbueroDriveLinksListener,
   mitarbeiterMemosListener,
+  memoKategorienListener,
   mitarbeiterDarlehenListener,
   verdienstbescheinigungFragenListener,
 } from '../lib/db';
@@ -63,6 +65,8 @@ interface AppState {
   lohnbueroAnmeldungen: LohnbueroAnmeldung[];
   lohnbueroDriveLinks: LohnbueroDriveLink[];
   mitarbeiterMemos: MitarbeiterMemo[];
+  /** In der App angelegte zusätzliche Memo-Kategorien. */
+  memoKategorienEigene: MemoKategorieEintrag[];
   mitarbeiterDarlehen: MitarbeiterDarlehen[];
   verdienstbescheinigungFragen: VerdienstbescheinigungFrage[];
   aktivePeriodeId: string | null;
@@ -87,6 +91,7 @@ const initialState: AppState = {
   lohnbueroAnmeldungen: [],
   lohnbueroDriveLinks: [],
   mitarbeiterMemos: [],
+  memoKategorienEigene: [],
   mitarbeiterDarlehen: [],
   verdienstbescheinigungFragen: [],
   aktivePeriodeId: null,
@@ -111,6 +116,7 @@ type Action =
   | { type: 'SET_LOHNBUERO_ANMELDUNGEN'; payload: LohnbueroAnmeldung[] }
   | { type: 'SET_LOHNBUERO_DRIVE_LINKS'; payload: LohnbueroDriveLink[] }
   | { type: 'SET_MITARBEITER_MEMOS'; payload: MitarbeiterMemo[] }
+  | { type: 'SET_MEMO_KATEGORIEN'; payload: MemoKategorieEintrag[] }
   | { type: 'SET_MITARBEITER_DARLEHEN'; payload: MitarbeiterDarlehen[] }
   | { type: 'SET_VERDIENSTBESCHEINIGUNG_FRAGEN'; payload: VerdienstbescheinigungFrage[] }
   | { type: 'SET_AKTIVE_PERIODE'; payload: string | null }
@@ -154,6 +160,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, lohnbueroDriveLinks: action.payload };
     case 'SET_MITARBEITER_MEMOS':
       return { ...state, mitarbeiterMemos: action.payload };
+    case 'SET_MEMO_KATEGORIEN':
+      return { ...state, memoKategorienEigene: action.payload };
     case 'SET_MITARBEITER_DARLEHEN':
       return { ...state, mitarbeiterDarlehen: action.payload };
     case 'SET_VERDIENSTBESCHEINIGUNG_FRAGEN':
@@ -258,6 +266,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unsubMemos = mitarbeiterMemosListener((list) => {
       dispatch({ type: 'SET_MITARBEITER_MEMOS', payload: list });
     });
+    const unsubMemoKategorien = memoKategorienListener((list) => {
+      dispatch({ type: 'SET_MEMO_KATEGORIEN', payload: list });
+    });
     const unsubDriveLinks = lohnbueroDriveLinksListener((list) => {
       dispatch({ type: 'SET_LOHNBUERO_DRIVE_LINKS', payload: list });
     });
@@ -281,6 +292,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubLohnbueroAbr();
       unsubLohnbueroAnm();
       unsubMemos();
+      unsubMemoKategorien();
       unsubDriveLinks();
       unsubDarlehen();
       unsubVbFragen();

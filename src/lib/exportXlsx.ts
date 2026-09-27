@@ -5,12 +5,13 @@ import type {
   Abrechnungsperiode,
   Mitarbeiter,
   MitarbeiterMemo,
+  MemoKategorieEintrag,
   Teilgebiet,
   Parameter,
   VariablerPeriodenZusatz,
   StueckzahlAnpassung,
 } from '../types';
-import { MEMO_KATEGORIE_LABELS, ROLLEN_LABELS } from '../types';
+import { memoKategorieLabel, ROLLEN_LABELS } from '../types';
 import type { MitarbeiterAbrechnung, PeriodeData } from './abrechnungslogik';
 import { formatierDatum, berechneNettoMinuten } from './zeiterfassung';
 
@@ -741,6 +742,7 @@ export async function exportiereLohnuebermittlung(
   ergebnisse: MitarbeiterAbrechnung[],
   alleMitarbeiter: Mitarbeiter[],
   memos: MitarbeiterMemo[] = [],
+  memoKategorienEigene: MemoKategorieEintrag[] = [],
 ): Promise<void> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Schlieper-Druck Mitarbeiterabrechnung';
@@ -977,7 +979,7 @@ export async function exportiereLohnuebermittlung(
       ws.getRow(blockRow).values = [
         ma?.nummer ?? '',
         ma?.name ?? '— gelöscht —',
-        MEMO_KATEGORIE_LABELS[memo.kategorie] ?? memo.kategorie,
+        memoKategorieLabel(memo.kategorie, memoKategorienEigene),
         memo.text,
       ];
       ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'top' };
