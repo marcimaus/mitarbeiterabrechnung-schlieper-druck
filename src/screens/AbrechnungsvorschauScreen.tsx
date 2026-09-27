@@ -7,14 +7,20 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
+import AbrechnungsAufschluesselung, {
+  type AufschluesselungKontext,
+  type Vertretung,
+} from '../components/AbrechnungsAufschluesselung';
 import {
   ladePeriodeData,
   berechneAbrechnung,
+  effektiveParameter,
   effektiveTeilgebiete,
   eur,
   stdMin,
   type MitarbeiterAbrechnung,
 } from '../lib/abrechnungslogik';
+import { ladeFahrten } from '../lib/db';
 import {
   berechneAustraegerLohn,
   ermittleStundenlohn,
@@ -25,6 +31,7 @@ import type {
   Ausgabe,
   Beilage,
   Einsatz,
+  Fahrt,
   Rolle,
   InteresseTaetigkeit,
 } from '../types';
@@ -55,17 +62,6 @@ interface ManuellesErgebnis {
   gesamt: number;
 }
 
-/** Ausgabe eines Standard-Gebiets des MA, die ein anderer ausgetragen hat
- *  (Springer) oder die unbesetzt war — nur zur Info, nicht vergütet. */
-interface Vertretung {
-  kw: number;
-  jahr: number;
-  teilgebietId: string;
-  teilgebietName: string;
-  typ: Einsatz['typ'];
-  vertreterName?: string;
-}
-
 export default function AbrechnungsvorschauScreen() {
   return (
     <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
@@ -75,7 +71,7 @@ export default function AbrechnungsvorschauScreen() {
 }
 
 function AbrechnungsvorschauInhalt() {
-  const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter, variablePeriodenZusaetze, lohnkontoBuchungen } = useApp();
+  const { mitarbeiter, teilgebiete, touren, abrechnungsperioden, parameter, variablePeriodenZusaetze, lohnkontoBuchungen } = useApp();
 
   const [modus, setModus] = useState<'ma' | 'manuell'>('ma');
   const [maId, setMaId] = useState('');
@@ -88,6 +84,7 @@ function AbrechnungsvorschauInhalt() {
   const [ergebnis, setErgebnis] = useState<MitarbeiterAbrechnung | null>(null);
   const [periodeOhneZusatz, setPeriodeOhneZusatz] = useState<MitarbeiterAbrechnung | null>(null);
   const [vertretungen, setVertretungen] = useState<Vertretung[]>([]);
+  const [kontext, setKontext] = useState<AufschluesselungKontext | null>(null);
   const [tgFilter, setTgFilter] = useState('');
 
   // ---- Manueller Modus -----------------------------------
@@ -210,6 +207,7 @@ function AbrechnungsvorschauInhalt() {
     setFehler('');
     setErgebnis(null);
     setPeriodeOhneZusatz(null);
+    setKontext(null);
     if (!maId) { setFehler('Bitte einen Mitarbeiter wählen.'); return; }
     if (!periodeId) { setFehler('Bitte eine Abrechnungsperiode wählen.'); return; }
     if (!parameter) { setFehler('Parameter nicht geladen.'); return; }
@@ -218,7 +216,22 @@ function AbrechnungsvorschauInhalt() {
     if (!ma || !periode) { setFehler('Mitarbeiter oder Periode nicht gefunden.'); return; }
     setLoading(true);
     try {
-      const data = await ladePeriodeData(periode);
+      const [data, fahrtenMa] = await Promise.all([
+        ladePeriodeData(periode),
+        // Nur für den Prüfhinweis „Fahrt im Monat, aber nicht dieser Periode
+        // zugeordnet" — ein Fehler hier darf die Vorschau nicht verhindern.
+        ladeFahrten({ mitarbeiterId: ma.id }).catch((): Fahrt[] => []),
+      ]);
+      const monatPraefix = `${periode.jahr}-${String(periode.monat).padStart(2, '0')}`;
+      const fahrtenAusserhalb = fahrtenMa.filter(
+        (f) => f.datum.startsWith(monatPraefix) && f.abrechnungsperiodeId !== periode.id
+      );
+      const snapshotErgebnis =
+        periode.status === 'abgeschlossen'
+          ? ((periode.abrechnungSnapshot?.ergebnisse ?? []) as MitarbeiterAbrechnung[]).find(
+              (e) => e.mitarbeiter?.id === ma.id
+            ) ?? null
+          : null;
 
       // Für Interessenten oder MAs ohne Austräger-Rolle: temporär eine
       // 'austräger'-Rolle ergänzen, damit Boni/Stundenlöhne korrekt greifen.
@@ -272,6 +285,17 @@ function AbrechnungsvorschauInhalt() {
       setPeriodeOhneZusatz(basis);
 
       const effTgs = effektiveTeilgebiete(teilgebiete, periode) as Teilgebiet[];
+      const kontextBasis: AufschluesselungKontext = {
+        periode,
+        data,
+        params: effektiveParameter(parameter, periode),
+        teilgebiete: effTgs,
+        maBerechnung: maFuerSim,
+        maStamm: ma,
+        touren,
+        snapshotErgebnis,
+        fahrtenAusserhalb,
+      };
 
       if (extraTgIds.length > 0) {
         // Variante B — reine Simulation: Springer, Ausfälle und ungeklärte
@@ -320,6 +344,7 @@ function AbrechnungsvorschauInhalt() {
             }
           : sim ?? null;
         setVertretungen([]);
+        setKontext({ ...kontextBasis, teilgebiete: tgsFuerSim });
         setErgebnis(simErgebnis);
       } else {
         // Variante A — Vorab-Ermittlung: Standard-Gebiets-Ausgaben, die ein
@@ -350,6 +375,7 @@ function AbrechnungsvorschauInhalt() {
           }
         }
         setVertretungen(liste);
+        setKontext(kontextBasis);
         setErgebnis(basis);
       }
     } catch (e: any) {
@@ -365,6 +391,7 @@ function AbrechnungsvorschauInhalt() {
     setErgebnis(null);
     setPeriodeOhneZusatz(null);
     setVertretungen([]);
+    setKontext(null);
   }, [maId, periodeId, extraTgIds.join(',')]);
 
   useEffect(() => {
@@ -514,7 +541,6 @@ function AbrechnungsvorschauInhalt() {
   }
 
   const ma = mitarbeiter.find((m) => m.id === maId);
-  const periode = abrechnungsperioden.find((p) => p.id === periodeId);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -523,10 +549,9 @@ function AbrechnungsvorschauInhalt() {
       </h1>
       <p className="text-sm text-gray-500 mb-6">
         Einzel-Vorschau für eine Abrechnungsperiode mit allen Lohnbestandteilen
-        (Austragen, Zusammentragen, Vorarbeit, Zeitlöhne, Min-Boni, Bonus
-        Zeiterfassung, Gewichtsboni). Optional: zusätzliche Teilgebiete
-        simulieren — z. B. „Was würde der MA verdienen, wenn er Gebiet X
-        übernähme?".
+        und ihren Berechnungsschlüsseln — zum Beantworten von Rückfragen und
+        zum Finden von Fehlern. Optional: zusätzliche Teilgebiete simulieren —
+        z. B. „Was würde der MA verdienen, wenn er Gebiet X übernähme?".
       </p>
 
       {/* Modus-Toggle */}
@@ -928,12 +953,13 @@ function AbrechnungsvorschauInhalt() {
       )}
 
       {/* Ergebnis — MA-Modus */}
-      {modus === 'ma' && ergebnis && ma && periode && (
-        <VorschauErgebnis
+      {modus === 'ma' && ergebnis && kontext && (
+        <AbrechnungsAufschluesselung
           ergebnis={ergebnis}
           basisOhneZusatz={extraTgIds.length > 0 ? periodeOhneZusatz : null}
           extraTgs={extraTgIds.map((id) => teilgebiete.find((t) => t.id === id)?.name ?? id)}
           vertretungen={vertretungen}
+          kontext={kontext}
         />
       )}
 
@@ -1152,264 +1178,6 @@ function ManuellesErgebnisAnzeige({
       <p className="text-xs text-gray-400 text-center italic">
         Manuelle Berechnung — nutzt aktuelle Parameter (Lauf-/Steckgeschwindigkeit,
         Stundenlöhne, Bonus Zeiterfassung). Keine Speicherung.
-      </p>
-    </div>
-  );
-}
-
-function VorschauErgebnis({
-  ergebnis,
-  basisOhneZusatz,
-  extraTgs,
-  vertretungen,
-}: {
-  ergebnis: MitarbeiterAbrechnung;
-  basisOhneZusatz: MitarbeiterAbrechnung | null;
-  extraTgs: string[];
-  vertretungen: Vertretung[];
-}) {
-  const er = ergebnis;
-  const hatSim = !!basisOhneZusatz;
-  const delta = hatSim ? er.gesamt - (basisOhneZusatz?.gesamt ?? 0) : 0;
-
-  // Einsatz-Zeilen (vergütet) + Vertretungs-Zeilen (Info), KW absteigend.
-  type Zeile =
-    | { art: 'einsatz'; kw: number; jahr: number; tgName: string; e: MitarbeiterAbrechnung['austraegerEinsaetze'][number] }
-    | { art: 'vertretung'; kw: number; jahr: number; tgName: string; v: Vertretung };
-  const zeilen: Zeile[] = [
-    ...er.austraegerEinsaetze.map((e) => ({ art: 'einsatz' as const, kw: e.kw, jahr: e.jahr, tgName: e.teilgebietName, e })),
-    ...vertretungen.map((v) => ({ art: 'vertretung' as const, kw: v.kw, jahr: v.jahr, tgName: v.teilgebietName, v })),
-  ].sort((a, b) =>
-    b.jahr - a.jahr || b.kw - a.kw || a.tgName.localeCompare(b.tgName, 'de', { numeric: true })
-  );
-  const anzSpringer = er.austraegerEinsaetze.filter((e) => e.typ === 'springer').length;
-  const springerZuschlagSumme = er.austraegerEinsaetze.reduce((s, e) => s + (e.detail.springerZuschlag ?? 0), 0);
-
-  // Zusammentragen je Kalenderwoche (KW absteigend) — damit der MA vorab
-  // sieht, was er in welcher Woche für das Zusammentragen bekommt.
-  const zusammentragenWochen = (() => {
-    const map = new Map<number, {
-      kw: number;
-      anzTeilgebiete: number;
-      stunden: number;
-      lohnZusammentragen: number;
-      lohnVorarbeit: number;
-    }>();
-    for (const z of er.zusammentragenEinsaetze) {
-      const w = map.get(z.kw) ?? { kw: z.kw, anzTeilgebiete: 0, stunden: 0, lohnZusammentragen: 0, lohnVorarbeit: 0 };
-      w.stunden += z.stunden ?? 0;
-      if (z.istVorarbeit) {
-        w.lohnVorarbeit += z.lohn;
-      } else {
-        w.lohnZusammentragen += z.lohn;
-        w.anzTeilgebiete++;
-      }
-      map.set(z.kw, w);
-    }
-    return [...map.values()].sort((a, b) => b.kw - a.kw);
-  })();
-  const hatVorarbeit = er.zusammentragenEinsaetze.some((z) => z.istVorarbeit);
-
-  const positionen: Array<{ label: string; wert: number; hint?: string }> = [
-    { label: 'Austragen', wert: er.austraegerGesamt, hint: `${er.austraegerEinsaetze.length} Einsätze` },
-    { label: '— davon Gewichtsbonus Anzeigenblatt', wert: er.gewichtsbonusAnzeigenblatt },
-    { label: '— davon Gewichtsbonus Beilagen', wert: er.gewichtsbonusBeilagen },
-    { label: 'Zusammentragen', wert: er.zusammentragenGesamt, hint: `${er.zusammentragenEinsaetze.length} Einsätze` },
-    { label: 'Zeitlohn (Vorarbeit / Stempel)', wert: er.zeitLohn, hint: `${er.zeitStunden.toFixed(1)} h` },
-    { label: 'Min-Boni (Tätigkeitsbonus)', wert: er.ausgabenBoniLohnGesamt, hint: er.ausgabenBoniMinutenGesamt ? `${er.ausgabenBoniMinutenGesamt} min` : undefined },
-    { label: 'Bonus Zeiterfassung Austragen', wert: er.bonusZeiterfassungEur, hint: er.bonusZeiterfassungAnzahl ? `${er.bonusZeiterfassungAnzahl} Einsätze` : undefined },
-    { label: 'Fixes Gehalt', wert: er.fixesGehalt },
-    { label: 'Fahrtkosten', wert: er.fahrtkostenGesamt },
-    { label: 'Bonus / Periodenzusatz', wert: er.bonus, hint: er.bonusKommentar },
-  ];
-
-  return (
-    <div className="space-y-5">
-      {/* Kennzahlen-Banner */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
-        <div className="flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <div className="text-xs text-gray-500">{er.mitarbeiter.nummer} · Vorschau</div>
-            <div className="text-lg font-semibold text-gray-900">{er.mitarbeiter.name}</div>
-          </div>
-          <div className="text-right">
-            <div className="text-xs text-gray-500">Brutto-Vorschau</div>
-            <div className="text-2xl font-bold text-blue-700">{eur(er.gesamt)}</div>
-            {hatSim && (
-              <div className={`text-xs mt-0.5 ${delta > 0 ? 'text-green-700' : delta < 0 ? 'text-red-700' : 'text-gray-500'}`}>
-                {delta > 0 ? '+' : ''}{eur(delta)} durch Simulation
-              </div>
-            )}
-          </div>
-        </div>
-        {extraTgs.length > 0 && (
-          <div className="mt-3 rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800">
-            <strong>Simulation aktiv</strong> — zusätzliche Teilgebiete:&nbsp;
-            {extraTgs.join(', ')}
-            {hatSim && (
-              <span className="ml-2 text-blue-700/80">
-                · ohne Simulation: {eur(basisOhneZusatz?.gesamt ?? 0)}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Aufschlüsselung */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50">
-          <span className="text-sm font-medium text-gray-700">Aufschlüsselung</span>
-        </div>
-        <table className="w-full text-sm">
-          <tbody className="divide-y divide-gray-100">
-            {positionen
-              .filter((p) => p.wert !== 0)
-              .map((p) => (
-                <tr key={p.label} className="hover:bg-gray-50">
-                  <td className={`px-4 py-2 ${p.label.startsWith('—') ? 'text-gray-500 text-xs pl-8' : 'text-gray-800'}`}>
-                    {p.label}
-                    {p.hint && <span className="ml-2 text-xs text-gray-400">({p.hint})</span>}
-                  </td>
-                  <td className={`px-4 py-2 text-right font-mono ${p.label.startsWith('—') ? 'text-gray-500 text-xs' : 'text-gray-900 font-semibold'}`}>
-                    {eur(p.wert)}
-                  </td>
-                </tr>
-              ))}
-            <tr className="bg-blue-50 border-t-2 border-blue-200">
-              <td className="px-4 py-3 text-sm font-semibold text-blue-900">Brutto gesamt</td>
-              <td className="px-4 py-3 text-right font-mono font-bold text-blue-900">{eur(er.gesamt)}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      {/* Austräger-Einsätze (gesondert für Transparenz) */}
-      {zeilen.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-medium text-gray-700">
-              Austräger-Einsätze ({er.austraegerEinsaetze.length}
-              {anzSpringer > 0 && ` · davon ${anzSpringer} als Springer`}
-              {vertretungen.length > 0 && ` · ${vertretungen.length} vertreten`})
-            </span>
-            <span className="text-xs text-gray-500">
-              {hatSim
-                ? 'Simulation: Springer / Ausfälle werden ignoriert'
-                : 'Berücksichtigt eingetragene Springer / Ausfälle'}
-            </span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50 text-gray-600">
-                <tr>
-                  <th className="px-3 py-1.5 text-left font-medium">KW</th>
-                  <th className="px-3 py-1.5 text-left font-medium">Teilgebiet</th>
-                  <th className="px-3 py-1.5 text-left font-medium">Art</th>
-                  <th className="px-3 py-1.5 text-right font-medium">Zeit</th>
-                  <th className="px-3 py-1.5 text-right font-medium">Grundlohn</th>
-                  <th className="px-3 py-1.5 text-right font-medium">Springer-Zuschl.</th>
-                  <th className="px-3 py-1.5 text-right font-medium">Gewichtsbonus</th>
-                  <th className="px-3 py-1.5 text-right font-medium">Gesamt</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {zeilen.map((z) => {
-                  if (z.art === 'vertretung') {
-                    const v = z.v;
-                    return (
-                      <tr key={`v-${v.teilgebietId}-${v.jahr}-${v.kw}`} className="bg-gray-50/60 text-gray-400">
-                        <td className="px-3 py-1.5 font-mono">{v.kw}/{v.jahr}</td>
-                        <td className="px-3 py-1.5 line-through">{v.teilgebietName}</td>
-                        <td className="px-3 py-1.5" colSpan={5}>
-                          {v.typ === 'springer'
-                            ? <span className="text-amber-700">vertreten durch {v.vertreterName ?? 'Springer'}</span>
-                            : <span className="text-red-600">Ausfall – {v.typ === 'ungeklärt' ? 'unbesetzt' : 'ausgefallen'}</span>}
-                        </td>
-                        <td className="px-3 py-1.5 text-right font-mono">—</td>
-                      </tr>
-                    );
-                  }
-                  const e = z.e;
-                  const d = e.detail;
-                  return (
-                    <tr key={`e-${e.teilgebietId}-${e.jahr}-${e.kw}`} className="hover:bg-gray-50">
-                      <td className="px-3 py-1.5 font-mono">{e.kw}/{e.jahr}</td>
-                      <td className="px-3 py-1.5">{e.teilgebietName}</td>
-                      <td className="px-3 py-1.5">
-                        {e.typ === 'springer'
-                          ? <span className="inline-block rounded bg-amber-100 text-amber-800 px-1.5 py-0.5">Springer</span>
-                          : <span className="text-gray-500">Standard</span>}
-                      </td>
-                      <td className="px-3 py-1.5 text-right font-mono">{stdMin(d.zeitStunden)}</td>
-                      <td className="px-3 py-1.5 text-right font-mono">{eur(d.grundlohn)}</td>
-                      <td className="px-3 py-1.5 text-right font-mono">{d.springerZuschlag ? eur(d.springerZuschlag) : '—'}</td>
-                      <td className="px-3 py-1.5 text-right font-mono">{eur((d.gewichtsbonusAnzeigenblatt ?? 0) + (d.gewichtsbonusBeilagen ?? 0))}</td>
-                      <td className="px-3 py-1.5 text-right font-mono font-semibold">{eur(d.gesamt)}</td>
-                    </tr>
-                  );
-                })}
-                <tr className="bg-blue-50 border-t-2 border-blue-200 font-semibold text-blue-900">
-                  <td className="px-3 py-2" colSpan={5}>Summe Austragen</td>
-                  <td className="px-3 py-2 text-right font-mono">{springerZuschlagSumme ? eur(springerZuschlagSumme) : '—'}</td>
-                  <td className="px-3 py-2 text-right font-mono">{eur(er.gewichtsbonusAnzeigenblatt + er.gewichtsbonusBeilagen)}</td>
-                  <td className="px-3 py-2 text-right font-mono">{eur(er.austraegerGesamt)}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Zusammentragen je Kalenderwoche */}
-      {zusammentragenWochen.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-gray-200 bg-gray-50 flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-medium text-gray-700">
-              Zusammentragen je Kalenderwoche ({zusammentragenWochen.length} {zusammentragenWochen.length === 1 ? 'Woche' : 'Wochen'})
-            </span>
-            {hatVorarbeit && (
-              <span className="text-xs text-gray-500">inkl. erfasster Vorarbeit beim Zusammentragen</span>
-            )}
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50 text-gray-600">
-                <tr>
-                  <th className="px-3 py-1.5 text-left font-medium">KW</th>
-                  <th className="px-3 py-1.5 text-right font-medium">Teilgebiete</th>
-                  {hatVorarbeit && <th className="px-3 py-1.5 text-right font-medium">davon Vorarbeit</th>}
-                  <th className="px-3 py-1.5 text-right font-medium">Zeit</th>
-                  <th className="px-3 py-1.5 text-right font-medium">Betrag</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {zusammentragenWochen.map((w) => (
-                  <tr key={`zt-${w.kw}`} className="hover:bg-gray-50">
-                    <td className="px-3 py-1.5 font-mono">KW {w.kw}</td>
-                    <td className="px-3 py-1.5 text-right font-mono">{w.anzTeilgebiete}</td>
-                    {hatVorarbeit && (
-                      <td className="px-3 py-1.5 text-right font-mono">{w.lohnVorarbeit > 0 ? eur(w.lohnVorarbeit) : '—'}</td>
-                    )}
-                    <td className="px-3 py-1.5 text-right font-mono">{w.stunden > 0 ? stdMin(w.stunden) : '—'}</td>
-                    <td className="px-3 py-1.5 text-right font-mono font-semibold">{eur(w.lohnZusammentragen + w.lohnVorarbeit)}</td>
-                  </tr>
-                ))}
-                <tr className="bg-blue-50 border-t-2 border-blue-200 font-semibold text-blue-900">
-                  <td className="px-3 py-2" colSpan={hatVorarbeit ? 3 : 2}>Summe Zusammentragen</td>
-                  <td className="px-3 py-2 text-right font-mono">
-                    {stdMin(zusammentragenWochen.reduce((s, w) => s + w.stunden, 0))}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono">{eur(er.zusammentragenGesamt)}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      <p className="text-xs text-gray-400 text-center italic">
-        Nur Vorschau — die Werte werden NICHT gespeichert. Lohnkonto-Verschiebungen
-        und Vorschüsse bleiben aus der Vorschau ausgeblendet.
       </p>
     </div>
   );
