@@ -89,6 +89,10 @@ export interface MitarbeiterAbrechnung {
   arbeitszeiten: Arbeitszeit[];
   zeitStunden: number;
   zeitLohn: number;
+  /** Anteil Vorarbeit am zeitLohn (wird durch externen Wert ersetzt).
+   *  Optional, weil ältere Abrechnungs-Snapshots das Feld nicht haben —
+   *  Zugriff über `zeitLohnAufteilung()`. */
+  zeitLohnVorarbeit?: number;
   // Zeiten, die NICHT in den Lohn einfließen (zur Info-Anzeige)
   arbeitszeitenNichtAbgerechnet: Arbeitszeit[];
   // Fixes Gehalt
@@ -464,6 +468,7 @@ export function berechneAbrechnung(
           arbeitszeiten: [],
           zeitStunden: 0,
           zeitLohn: 0,
+          zeitLohnVorarbeit: 0,
           arbeitszeitenNichtAbgerechnet: festArbeitszeiten,
           fixesGehalt,
           fahrten: maFahrten,
@@ -844,6 +849,7 @@ export function berechneAbrechnung(
         arbeitszeiten: maArbeitszeiten,
         zeitStunden,
         zeitLohn,
+        zeitLohnVorarbeit,
         arbeitszeitenNichtAbgerechnet: maArbeitszeitenNichtAbgerechnet,
         fixesGehalt: 0,
         fahrten: maFahrten,
@@ -907,6 +913,28 @@ export function berechneAbrechnung(
 // Mitarbeiter zu warnen, wenn er Arbeitszeiten in einem bereits gesperrten
 // Monat erfasst — die Speicherung bleibt erlaubt, fließt aber nicht mehr in
 // die schon gerechnete Abrechnung ein.
+
+/**
+ * Zeitlohn aufgeteilt in Vorarbeit (durch externen Wert ersetzbar) und
+ * übrige Zeiterfassung (bleibt immer erhalten). Für ältere Snapshots ohne
+ * `zeitLohnVorarbeit` wird der Anteil rekonstruiert, soweit eindeutig;
+ * sonst `null`.
+ */
+export function zeitLohnAufteilung(
+  er: MitarbeiterAbrechnung,
+): { vorarbeit: number; uebrige: number } | null {
+  let vorarbeit = er.zeitLohnVorarbeit;
+  if (vorarbeit == null) {
+    const hatVorarbeit = er.arbeitszeiten.some((a) => a.typ === 'vorarbeit');
+    const nurVorarbeit = er.arbeitszeiten.every((a) => a.typ === 'vorarbeit');
+    if (!hatVorarbeit) vorarbeit = 0;
+    else if (nurVorarbeit) vorarbeit = er.zeitLohn;
+    else if (er.externerWertErsetzt != null) {
+      vorarbeit = er.externerWertErsetzt - er.austraegerGesamt - er.zusammentragenGesamt;
+    } else return null;
+  }
+  return { vorarbeit, uebrige: er.zeitLohn - vorarbeit };
+}
 
 export function findAbgeschlossenePeriodeFuerZeitraum(
   perioden: Abrechnungsperiode[],

@@ -3,7 +3,7 @@ import ExcelJS from 'exceljs';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
-import { ladePeriodeData, berechneAbrechnung, eur, stdMin } from '../lib/abrechnungslogik';
+import { ladePeriodeData, berechneAbrechnung, eur, stdMin, zeitLohnAufteilung } from '../lib/abrechnungslogik';
 import { berechneNettoMinuten } from '../lib/zeiterfassung';
 import { exportiereAbrechnung, exportiereLohnuebermittlung } from '../lib/exportXlsx';
 import {
@@ -243,6 +243,9 @@ function AbrechnungInhalt() {
   // Detailspalten Gewichtszuschläge (in „Austragen" enthalten) — per Klick
   // auf den Spaltenkopf „Austragen" ein-/ausblendbar, standardmäßig aus.
   const [zeigeGewichtsspalten, setZeigeGewichtsspalten] = useState(false);
+  // Detailspalten Zeiterfassung (Vorarbeit / übrige Zeit) — per Klick auf
+  // den Spaltenkopf „Zeiterfassung", standardmäßig aus.
+  const [zeigeZeitspalten, setZeigeZeitspalten] = useState(false);
   const [abschliessenBestaetigt, setAbschliessenBestaetigt] = useState(false);
   const [monatswechselBestaetigt, setMonatswechselBestaetigt] = useState(false);
   const [zeigeAnpassungDialog, setZeigeAnpassungDialog] = useState(false);
@@ -1696,7 +1699,27 @@ function AbrechnungInhalt() {
                     </>
                   )}
                   <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Zusammentr.</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Zeiterfassung</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">
+                    <button
+                      type="button"
+                      onClick={() => setZeigeZeitspalten((v) => !v)}
+                      className="inline-flex items-center gap-1 hover:text-gray-900"
+                      title={
+                        zeigeZeitspalten
+                          ? 'Detailspalten Zeiterfassung ausblenden'
+                          : 'Detailspalten Zeiterfassung (Vorarbeit / übrige Zeit) einblenden'
+                      }
+                    >
+                      Zeiterfassung
+                      <span className="text-[10px] text-gray-400">{zeigeZeitspalten ? '◂' : '▸'}</span>
+                    </button>
+                  </th>
+                  {zeigeZeitspalten && (
+                    <>
+                      <th className="px-4 py-3 text-right font-medium text-teal-700 sticky top-0 z-20 bg-gray-50" title="Zeitlohn Vorarbeit (in Zeiterfassung enthalten) — wird durch den Wert der externen Anwendung ersetzt">Vorarbeit</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50" title="Übrige Zeiterfassung (in Zeiterfassung enthalten) — bleibt auch bei externem Wert erhalten">Übrige Zeit</th>
+                    </>
+                  )}
                   <th className="px-4 py-3 text-right font-medium text-gray-800 sticky top-0 z-20 bg-gray-50" title="Summe aus Austragen + Zusammentragen + Zeiterfassung">Summe</th>
                   <th className="px-4 py-3 text-right font-medium text-teal-700 sticky top-0 z-20 bg-gray-50" title="Betrag aus der externen Anwendung (Summe Austragen + Zusammentragen + Vorarbeit). Ist ein Wert gesetzt, ersetzt er diese App-Positionen in Brutto / An Lohnbüro / Lohnübermittlung.">Wert externe<br />Anwendung</th>
                   <th className="px-4 py-3 text-right font-medium text-purple-700 sticky top-0 z-20 bg-gray-50" title="Tätigkeits-Boni in Minuten je Ausgabe (z. B. Orga, Betreuung Zusammenträger)">Min-Boni</th>
@@ -1814,6 +1837,22 @@ function AbrechnungInhalt() {
                       <td className="px-4 py-3 text-right text-gray-700">
                         {er.zeitLohn > 0 ? eur(er.zeitLohn) : '—'}
                       </td>
+                      {zeigeZeitspalten && (() => {
+                        const aufteilung = zeitLohnAufteilung(er);
+                        const unbekannt = (
+                          <span className="text-gray-400" title="Aufteilung für diese (ältere) abgeschlossene Abrechnung nicht verfügbar">?</span>
+                        );
+                        return (
+                          <>
+                            <td className="px-4 py-3 text-right text-teal-700">
+                              {!aufteilung ? unbekannt : aufteilung.vorarbeit > 0 ? eur(aufteilung.vorarbeit) : '—'}
+                            </td>
+                            <td className="px-4 py-3 text-right text-gray-700">
+                              {!aufteilung ? unbekannt : aufteilung.uebrige > 0 ? eur(aufteilung.uebrige) : '—'}
+                            </td>
+                          </>
+                        );
+                      })()}
                       <td className="px-4 py-3 text-right font-medium text-gray-900">
                         {(() => {
                           const summe = er.austraegerGesamt + er.zusammentragenGesamt + er.zeitLohn;
@@ -1863,7 +1902,7 @@ function AbrechnungInhalt() {
                           {er.externerWertAktiv && (
                             <span
                               className="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-semibold bg-teal-100 text-teal-700 border border-teal-300"
-                              title={`Externer Wert aktiv: ${eur(er.externerWert ?? 0)} ersetzt Austragen + Zusammentragen + Vorarbeit (App-Berechnung dafür: ${eur(er.externerWertErsetzt ?? 0)})`}
+                              title={`Externer Wert aktiv: ${eur(er.externerWert ?? 0)} ersetzt Austragen + Zusammentragen + Vorarbeit (App-Berechnung dafür: ${eur(er.externerWertErsetzt ?? 0)}); übrige Zeiterfassung bleibt enthalten`}
                             >
                               ext
                             </span>
@@ -1914,7 +1953,7 @@ function AbrechnungInhalt() {
                     {/* Detail-Aufklappung */}
                     {expandedId === er.mitarbeiter.id && (
                       <tr key={`${er.mitarbeiter.id}-detail`}>
-                        <td colSpan={zeigeGewichtsspalten ? 17 : 15} className="bg-gray-50 px-6 py-4">
+                        <td colSpan={15 + (zeigeGewichtsspalten ? 2 : 0) + (zeigeZeitspalten ? 2 : 0)} className="bg-gray-50 px-6 py-4">
                           <DetailAnsicht
                             ergebnis={er}
                             periode={selectedPeriode}
@@ -1948,6 +1987,18 @@ function AbrechnungInhalt() {
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.zeitLohn, 0))}
                   </td>
+                  {zeigeZeitspalten && (() => {
+                    const aufteilungen = ergebnisse.map(zeitLohnAufteilung);
+                    const vollstaendig = aufteilungen.every((a) => a != null);
+                    const summe = (key: 'vorarbeit' | 'uebrige') =>
+                      vollstaendig ? eur(aufteilungen.reduce((s, a) => s + (a?.[key] ?? 0), 0)) : '?';
+                    return (
+                      <>
+                        <td className="px-4 py-3 text-right font-bold text-teal-700">{summe('vorarbeit')}</td>
+                        <td className="px-4 py-3 text-right font-bold text-gray-900">{summe('uebrige')}</td>
+                      </>
+                    );
+                  })()}
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.austraegerGesamt + e.zusammentragenGesamt + e.zeitLohn, 0))}
                   </td>
@@ -2837,6 +2888,16 @@ function DetailAnsicht({
         <div>
           <h4 className="font-semibold text-gray-700 mb-2 text-sm">
             Zeiterfassung — {stdMin(er.zeitStunden)} → {eur(er.zeitLohn)}
+            {(() => {
+              const aufteilung = zeitLohnAufteilung(er);
+              if (!aufteilung || aufteilung.vorarbeit <= 0) return null;
+              return (
+                <span className="ml-2 font-normal text-xs text-gray-500">
+                  (<span className="text-teal-700">Vorarbeit {eur(aufteilung.vorarbeit)}</span>
+                  {' · '}übrige Zeit {eur(aufteilung.uebrige)})
+                </span>
+              );
+            })()}
           </h4>
           <div className="space-y-1">
             {er.arbeitszeiten.map((az, i) => {
