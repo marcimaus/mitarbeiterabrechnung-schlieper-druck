@@ -106,18 +106,30 @@ export default function ZettelchenDruck({
           color: #374151;
           font-weight: 600;
         }
+        .zettel-tg-zeile {
+          display: flex;
+          flex-wrap: wrap;
+          align-items: baseline;
+          column-gap: 3mm;
+          margin-top: 1mm;
+        }
         .zettel-tg {
           font-size: 22px;
           font-weight: 800;
           color: #111827;
           line-height: 1.1;
-          margin-top: 1mm;
         }
         .zettel-stk {
           font-size: 14px;
           color: #111827;
           font-weight: 700;
-          margin-top: 1mm;
+          white-space: nowrap;
+        }
+        .zettel-beil-box.zettel-einlegen-list {
+          font-size: 10pt;
+          font-weight: 700;
+          color: #111827;
+          line-height: 1.25;
         }
         .zettel-beil-box {
           margin-top: 2mm;
@@ -299,14 +311,16 @@ function ZettelHeader({
           </span>
         )}
       </div>
-      <div
-        className="zettel-tg"
-        style={compact ? { fontSize: '16px' } : undefined}
-      >
-        {tg.name}
-      </div>
-      <div className="zettel-stk">
-        {tg.stueckzahl.toLocaleString('de-DE')} Stück
+      <div className="zettel-tg-zeile">
+        <span
+          className="zettel-tg"
+          style={compact ? { fontSize: '16px' } : undefined}
+        >
+          {tg.name}
+        </span>
+        <span className="zettel-stk">
+          {tg.stueckzahl.toLocaleString('de-DE')} Stück
+        </span>
       </div>
     </>
   );
@@ -345,7 +359,10 @@ function BeilagenAbschnitte({
         {int.length === 0 ? (
           <div className="zettel-beil-box" style={{ ...style, color: '#9ca3af' }}>—</div>
         ) : (
-          <ul className="zettel-beil-list zettel-beil-box" style={style}>
+          <ul
+            className="zettel-beil-list zettel-beil-box zettel-einlegen-list"
+            style={compact ? { fontSize: '9.5pt' } : undefined}
+          >
             {int.map((b) => (
               <li key={b.id}>{b.arbeitstitel || b.kundenname}</li>
             ))}
