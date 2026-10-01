@@ -25,6 +25,7 @@ import {
   schreibeAuditLog,
 } from './db';
 import { buchbareTeilgebiete } from './beilagenVorlagen';
+import { saisonPauseText } from './saison';
 import { browserDownload, schreibeInZielordner, zielordnerName } from './zielordner';
 import type { AuditLog, Mitarbeiter, Strasse, Teilgebiet, Tour } from '../types';
 
@@ -140,6 +141,12 @@ export function diffTeilgebiet(
     'Nicht im Verteilplan',
     fmtJaNein(alt.nichtImVerteilplan),
     fmtJaNein(neu.nichtImVerteilplan),
+  );
+  vergleiche(
+    out,
+    'Saisonpause (keine Belieferung)',
+    saisonPauseText(alt.saisonPauseMonate),
+    saisonPauseText(neu.saisonPauseMonate),
   );
   vergleiche(out, 'Auslagestelle', fmtJaNein(alt.istAuslagestelle), fmtJaNein(neu.istAuslagestelle));
   vergleiche(
@@ -521,6 +528,7 @@ export async function baueTeilgebietsdoku(ktx: TeilgebietsdokuKontext): Promise<
     { header: 'Externer Link (Karte)', width: 40 },
     { header: 'Änderungen', width: 12 },
     { header: 'Letzte Änderung', width: 18 },
+    { header: 'Saisonpause (keine Belieferung)', width: 26 },
   ];
   ueSpalten.forEach((s, i) => {
     wsUe.getColumn(i + 1).width = s.width;
@@ -565,6 +573,7 @@ export async function baueTeilgebietsdoku(ktx: TeilgebietsdokuKontext): Promise<
       fmtText(tg.kartenLink) || tourLink,
       eintraege.length,
       eintraege.length > 0 ? formatiereZeitstempel(eintraege[0].zeitstempel) : '',
+      saisonPauseText(tg.saisonPauseMonate),
     ];
     // Hinweis auf das Detailblatt. Bewusst als Text und nicht als
     // Excel-Hyperlink: interne Verknüpfungen schreibt ExcelJS als externe
@@ -754,6 +763,7 @@ export async function baueTeilgebietsdoku(ktx: TeilgebietsdokuKontext): Promise<
       ['Wegstrecke (m)', tg.wegstreckeM ?? 0],
       ['Aktiv', tg.isActive ? 'ja' : 'nein'],
       ['Im Verteilplan buchbar', tg.nichtImVerteilplan ? 'nein' : 'ja'],
+      ['Saisonpause (keine Belieferung)', saisonPauseText(tg.saisonPauseMonate)],
       ['Auslagestelle', tg.istAuslagestelle ? 'ja' : 'nein'],
       ['Auslagestelle — Adresse', fmtText(tg.auslagestelleAdresse)],
       ['Auslagestelle — Kontakt', fmtText(tg.auslagestelleKontaktName)],

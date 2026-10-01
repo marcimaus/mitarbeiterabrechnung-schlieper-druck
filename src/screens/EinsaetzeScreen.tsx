@@ -7,8 +7,20 @@ import ZettelchenDruck from '../components/ZettelchenDruck';
 import KontrolleGewichteDruck from '../components/KontrolleGewichteDruck';
 import UebersichtDruck from '../components/UebersichtDruck';
 import AuslieferungsmemoVerwaltung from '../components/AuslieferungsmemoVerwaltung';
-import { ladeAusgaben, ladeEinsaetze, setzeEinsatz, loescheEinsatz, ladeBeilagen, schreibeAuditLog } from '../lib/db';
+import {
+  ladeAusgaben,
+  ladeEinsaetze,
+  setzeEinsatz,
+  loescheEinsatz,
+  ladeBeilagen,
+  schreibeAuditLog,
+  aktualisiereAusgabe,
+  aktualisiereBeilage,
+  ladeBeilagenVorlagen,
+} from '../lib/db';
+import { gesperrteKwKeys, vorlageTeilgebietIds } from '../lib/beilagenVorlagen';
 import { getCurrentKW } from '../lib/kalender';
+import { istTgAktivFuer, istInSaisonpause, istSaisonAusnahme, saisonPauseText } from '../lib/saison';
 import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage } from '../types';
 import { kwLabel, MONATSNAMEN } from '../lib/kalender';
 import { berechneGewichtAnzeigenblattKg, berechneGewichtBeilagenKg, berechneAustraegezeit, berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
@@ -173,7 +185,10 @@ function EinsaetzeInhalt() {
   // der Einsätze-Liste ausgeblendet — sie brauchen weder Standard- noch
   // Springer-Einsatz.
   const aktiveTeilgebiete = teilgebiete
-    .filter((tg) => tg.isActive && !tg.istAuslagestelle)
+    .filter((tg) =>
+      (selectedAusgabe ? istTgAktivFuer(tg, selectedAusgabe) : tg.isActive) &&
+      !tg.istAuslagestelle
+    )
     // Natural Sort: Uslar1 < Uslar2 < … < Uslar10 (statt lexikographisch)
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
 
@@ -325,6 +340,89 @@ function EinsaetzeInhalt() {
     ? abrechnungsperioden.find((p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen.includes(selectedAusgabe.kw))
     : undefined;
   const istGesperrt = zugehoerigerPeriode?.status === 'abgeschlossen';
+
+  // Saisonteilgebiete, deren Saisonpause in diese Ausgabe fällt — auch
+  // Auslagestellen. Ad hoc lässt sich je Ausgabe „trotzdem beliefern"
+  // freischalten; dann gilt das TG in dieser Woche überall als aktiv
+  // (Zusammentragen, Lieferschein, Auftrag manuell wählbar …).
+  const saisonTgsDieserWoche = selectedAusgabe
+    ? teilgebiete
+        .filter((tg) => tg.isActive && istInSaisonpause(tg, selectedAusgabe.kw, selectedAusgabe.jahr))
+        .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }))
+    : [];
+  const [saisonSpeichern, setSaisonSpeichern] = useState<string | null>(null);
+
+  async function handleSaisonAusnahme(tg: Teilgebiet, beliefern: boolean) {
+    if (!selectedAusgabe || istGesperrt) return;
+    const alt = selectedAusgabe.saisonAusnahmeTeilgebietIds ?? [];
+    const neu = beliefern ? [...new Set([...alt, tg.id])] : alt.filter((id) => id !== tg.id);
+    setSaisonSpeichern(tg.id);
+    try {
+      // Aufträge dieser Ausgabe nachziehen: beim Freischalten das TG in die
+      // Aufträge aufnehmen, deren Bestellung es enthält; beim Aufheben aus
+      // allen Aufträgen entfernen. Nach Monatswechsel/Abschluss sind die
+      // Beilagen fixiert — dann nur die Ausnahme setzen.
+      const beilagenFixiert = gesperrteKwKeys(abrechnungsperioden).has(`${selectedAusgabe.jahr}-${selectedAusgabe.kw}`);
+      let betroffen: Beilage[] = [];
+      if (!beilagenFixiert) {
+        if (beliefern) {
+          const vorlagen = await ladeBeilagenVorlagen();
+          betroffen = beilagen.filter((b) => {
+            if (b.teilgebietIds.includes(tg.id) || !b.vorlageId) return false;
+            const v = vorlagen.find((x) => x.id === b.vorlageId);
+            return !!v && vorlageTeilgebietIds(v, teilgebiete, touren).includes(tg.id);
+          });
+        } else {
+          betroffen = beilagen.filter((b) => b.teilgebietIds.includes(tg.id));
+        }
+      }
+      let auftraegeAnpassen = false;
+      if (betroffen.length > 0) {
+        const liste = betroffen.map((b) => `• ${b.arbeitstitel || b.kundenname}`).join('\n');
+        auftraegeAnpassen = confirm(
+          beliefern
+            ? `„${tg.name}" ist in diesen Bestellungen enthalten:\n\n${liste}\n\nIn die zugehörigen Aufträge dieser Ausgabe übernehmen?`
+            : `„${tg.name}" ist in diesen Aufträgen enthalten:\n\n${liste}\n\nDort wieder entfernen (wird diese Woche nicht beliefert)?`
+        );
+      }
+
+      await aktualisiereAusgabe(selectedAusgabe.id, { saisonAusnahmeTeilgebietIds: neu });
+      if (auftraegeAnpassen) {
+        for (const b of betroffen) {
+          const ids = beliefern
+            ? [...b.teilgebietIds, tg.id]
+            : b.teilgebietIds.filter((id) => id !== tg.id);
+          await aktualisiereBeilage(b.id, { teilgebietIds: ids });
+        }
+        setBeilagen(await ladeBeilagen(selectedAusgabe.id));
+      }
+      setAusgaben((prev) =>
+        prev.map((a) => (a.id === selectedAusgabe.id ? { ...a, saisonAusnahmeTeilgebietIds: neu } : a))
+      );
+      await schreibeAuditLog({
+        adminName: adminName || 'Unbekannt',
+        bereich: 'teilgebiets-anpassung',
+        aktion: beliefern ? 'erstellt' : 'geloescht',
+        teilgebietId: tg.id,
+        teilgebietName: tg.name,
+        mitarbeiterId: null,
+        mitarbeiterName: null,
+        jahr: selectedAusgabe.jahr,
+        kwVon: selectedAusgabe.kw,
+        kwBis: selectedAusgabe.kw,
+        beschreibung:
+          (beliefern
+            ? 'Saisonteilgebiet trotz Saisonpause in dieser Ausgabe beliefert'
+            : 'Ausnahme „trotz Saisonpause beliefern" aufgehoben') +
+          (auftraegeAnpassen
+            ? ` — Aufträge ${beliefern ? 'ergänzt' : 'bereinigt'}: ${betroffen.map((b) => b.arbeitstitel || b.kundenname).join(', ')}`
+            : '') +
+          ' — Einsätze-Screen',
+      });
+    } finally {
+      setSaisonSpeichern(null);
+    }
+  }
 
   function handleLieferscheineDrucken() {
     if (!selectedAusgabe) return;
@@ -640,6 +738,54 @@ function EinsaetzeInhalt() {
         </div>
       )}
 
+      {/* Saisonteilgebiete in Saisonpause — ad hoc doch beliefern */}
+      {!loading && selectedAusgabe && saisonTgsDieserWoche.length > 0 && (
+        <div className="bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 mb-4">
+          <div className="text-sm font-semibold text-sky-900">
+            ❄ Saisonteilgebiete in Saisonpause — {kwLabel(selectedAusgabe.kw, selectedAusgabe.jahr)}
+          </div>
+          <p className="text-xs text-sky-800 mb-2">
+            Werden in dieser Woche nicht beliefert. Mit „diese Woche beliefern" gilt das Teilgebiet nur für
+            diese Ausgabe wieder als aktiv (Einsätze, Zusammentragen, Lieferschein). Aus Bestellungen wird es
+            nicht automatisch in Aufträge übernommen — im Auftrag (Ausgaben &amp; Beilagen) kann es dann aber
+            manuell angehakt werden.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {saisonTgsDieserWoche.map((tg) => {
+              const ausnahme = istSaisonAusnahme(tg, selectedAusgabe);
+              return (
+                <div
+                  key={tg.id}
+                  className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm ${
+                    ausnahme ? 'bg-green-50 border-green-300' : 'bg-white border-sky-200'
+                  }`}
+                >
+                  <span className="font-medium text-gray-900">{tg.name}</span>
+                  <span className="text-xs text-gray-500">
+                    {tg.stueckzahl} Stk{tg.istAuslagestelle ? ' · Auslagestelle' : ''} · Pause {saisonPauseText(tg.saisonPauseMonate)}
+                  </span>
+                  {ausnahme && <span className="text-xs font-semibold text-green-700">✓ wird diese Woche beliefert</span>}
+                  {!istGesperrt && (
+                    <button
+                      type="button"
+                      disabled={saisonSpeichern === tg.id}
+                      onClick={() => handleSaisonAusnahme(tg, !ausnahme)}
+                      className={`text-xs px-2 py-0.5 rounded border font-medium disabled:opacity-50 ${
+                        ausnahme
+                          ? 'border-gray-300 text-gray-600 hover:bg-gray-100'
+                          : 'border-sky-400 text-sky-800 bg-white hover:bg-sky-100'
+                      }`}
+                    >
+                      {saisonSpeichern === tg.id ? '…' : ausnahme ? 'Ausnahme aufheben' : 'diese Woche beliefern'}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Tabelle */}
       {loading ? (
         <div className="text-center py-12 text-gray-500">Lade Einsätze...</div>
@@ -682,7 +828,17 @@ function EinsaetzeInhalt() {
                   <tr key={tg.id} className="hover:bg-gray-50 transition-colors">
                     {/* Teilgebiet */}
                     <td className="px-4 py-3">
-                      <div className="font-medium text-gray-900">{tg.name}</div>
+                      <div className="font-medium text-gray-900">
+                        {tg.name}
+                        {selectedAusgabe && istSaisonAusnahme(tg, selectedAusgabe) && (
+                          <span
+                            className="ml-2 text-[10px] bg-green-100 text-green-800 px-1.5 py-0.5 rounded-full font-medium"
+                            title="Saisonteilgebiet — trotz Saisonpause in dieser Ausgabe beliefert"
+                          >
+                            ❄ ausnahmsweise
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-gray-400">
                         {tg.plz} · {tg.stueckzahl} Stk · {tg.wegstreckeM >= 1000
                           ? `${(tg.wegstreckeM / 1000).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} km`

@@ -9,6 +9,7 @@ import { aktualisiereEinsatzMeldung, setzeEinsatz, setzeArbeitszeitFuerEinsatz }
 import type { Mitarbeiter, Einsatz, Ausgabe, Teilgebiet, AustraegerArbeitszeit } from '../types';
 import { useApp } from '../context/AppContext';
 import { berechneAustraegezeit } from '../lib/berechnung';
+import { istTgAktivFuer } from '../lib/saison';
 
 // ---- Hilfsfunktionen ----------------------------------------
 
@@ -237,6 +238,7 @@ export default function AustraegerMeldungScreen() {
             (e) => e.teilgebietId === tg.id && e.ausgabeId === a.id
           );
           if (exist) continue; // entweder eigener (loadedEinsaetze) oder ein anderer MA
+          if (!istTgAktivFuer(tg, a)) continue; // Saisonpause: keine Auslieferung
           virtuelle.push({
             id: `synthetic_${tg.id}__${a.id}`,
             ausgabeId: a.id,

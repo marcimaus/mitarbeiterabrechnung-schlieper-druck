@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import { aktualisiereBeilagenVorlage, schreibeBeilagenVorlageLog } from './db';
 import { donnerstagDerKW, getCurrentKW, getISOWeek, getISOYear, kwLabel, maxKWinJahr } from './kalender';
+import { istInSaisonpauseFuer, type AusgabeBezug } from './saison';
 
 export const BEILAGEN_FORMATE: { value: BeilagenFormat; label: string }[] = [
   { value: 'A4', label: 'DIN A4' },
@@ -63,11 +64,17 @@ export function auswahlStruktur(
   };
 }
 
-/** Aktuell gültige Teilgebiete einer Vorlage. */
+/**
+ * Aktuell gültige Teilgebiete einer Vorlage. Mit `fuerAusgabe` (Übernahme in
+ * einen Auftrag dieser Ausgabe) fallen Saisonteilgebiete in ihrer Saisonpause
+ * heraus — außer sie wurden für diese Ausgabe in „Einsätze" ausnahmsweise
+ * freigeschaltet.
+ */
 export function vorlageTeilgebietIds(
   vorlage: Pick<BeilagenVorlage, 'gesamtgebiet' | 'tourIds' | 'teilgebietIds'>,
   teilgebiete: Teilgebiet[],
   touren: Tour[],
+  fuerAusgabe?: AusgabeBezug,
 ): string[] {
   const buchbar = new Set(buchbareTeilgebiete(teilgebiete, touren).map((tg) => tg.id));
   const tourSet = new Set(vorlage.tourIds ?? []);
@@ -75,6 +82,7 @@ export function vorlageTeilgebietIds(
   return teilgebiete
     .filter((tg) => {
       if (!tg.isActive) return false;
+      if (fuerAusgabe && istInSaisonpauseFuer(tg, fuerAusgabe)) return false;
       if (tgSet.has(tg.id)) return true;
       if (!buchbar.has(tg.id)) return false;
       return vorlage.gesamtgebiet || (!!tg.tourId && tourSet.has(tg.tourId));
@@ -85,6 +93,20 @@ export function vorlageTeilgebietIds(
 export function stueckzahlVon(tgIds: string[], teilgebiete: Teilgebiet[]): number {
   const set = new Set(tgIds);
   return teilgebiete.reduce((s, tg) => s + (set.has(tg.id) ? tg.stueckzahl || 0 : 0), 0);
+}
+
+/**
+ * Saisonteilgebiete der Vorlage, die in dieser Ausgabe pausieren (und daher
+ * bei der Übernahme in den Auftrag herausfallen) — für Hinweise.
+ */
+export function vorlageSaisonpauseTeilgebiete(
+  vorlage: Pick<BeilagenVorlage, 'gesamtgebiet' | 'tourIds' | 'teilgebietIds'>,
+  teilgebiete: Teilgebiet[],
+  touren: Tour[],
+  ausgabe: AusgabeBezug,
+): Teilgebiet[] {
+  const ids = new Set(vorlageTeilgebietIds(vorlage, teilgebiete, touren));
+  return teilgebiete.filter((tg) => ids.has(tg.id) && istInSaisonpauseFuer(tg, ausgabe));
 }
 
 /**

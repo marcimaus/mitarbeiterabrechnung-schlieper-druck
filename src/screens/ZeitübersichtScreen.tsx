@@ -16,6 +16,7 @@ import {
 } from '../lib/zeiterfassung';
 import { ladeFahrten, erstelleArbeitszeit, ladeAusgaben, ladeArbeitszeiten, loescheArbeitszeit, aktualisiereArbeitszeit, ladeEinsaetze, setzeEinsatz, aktualisiereEinsatzMeldung, setzeArbeitszeitFuerEinsatz } from '../lib/db';
 import { MONATSNAMEN, donnerstagDerKW, kwLabel } from '../lib/kalender';
+import { istTgAktivFuer } from '../lib/saison';
 import { ermittleStundenlohn, ermittleStundenlohnZusammen } from '../lib/berechnung';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
 import { istEinsatzbereit, effektiverStandardAustraegerId } from '../utils';
@@ -225,7 +226,7 @@ function ZeitübersichtInhalt() {
           const byTg = new Map<string, typeof einsListe[number]>();
           for (const e of einsListe) byTg.set(e.teilgebietId, e);
           for (const tg of teilgebiete) {
-            if (!tg.isActive || tg.istAuslagestelle) continue;
+            if (!istTgAktivFuer(tg, a) || tg.istAuslagestelle) continue;
             const e = byTg.get(tg.id);
             // Effektiver Austräger ermitteln
             let effektivId: string | null = null;

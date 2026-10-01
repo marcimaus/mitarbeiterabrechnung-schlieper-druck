@@ -46,6 +46,12 @@ import type {
   AuditLog,
 } from '../types';
 import { Link } from 'react-router-dom';
+import {
+  MONATE_KURZ,
+  istSaisonTeilgebiet,
+  istAktuellInSaisonpause,
+  saisonPauseText,
+} from '../lib/saison';
 
 // ---- Hilfsfunktionen -------------------------------------------------------
 
@@ -67,6 +73,7 @@ const DEFAULT_FORM: Omit<
   isActive: true,
   istAuslagestelle: false,
   nichtImVerteilplan: false,
+  saisonPauseMonate: [],
 };
 
 const inputClass =
@@ -510,6 +517,16 @@ function TeilgebieteInhalt() {
                   {tg.nichtImVerteilplan && (
                     <span className="ml-2 text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full font-medium" title="Nicht im Verteilplan">
                       🚫 Verteilplan
+                    </span>
+                  )}
+                  {istSaisonTeilgebiet(tg) && (
+                    <span
+                      className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                        istAktuellInSaisonpause(tg) ? 'bg-sky-200 text-sky-900' : 'bg-sky-50 text-sky-800'
+                      }`}
+                      title={`Saisonteilgebiet — keine Belieferung: ${saisonPauseText(tg.saisonPauseMonate)}`}
+                    >
+                      ❄ Saison{istAktuellInSaisonpause(tg) ? ' · zzt. Pause' : ''}
                     </span>
                   )}
                 </td>
@@ -1244,6 +1261,8 @@ function TeilgebietForm({
           isActive: initial.isActive,
           istAuslagestelle: initial.istAuslagestelle ?? false,
           nichtImVerteilplan: initial.nichtImVerteilplan ?? false,
+          // Immer als Array — ein geleertes Feld muss als [] gespeichert werden.
+          saisonPauseMonate: initial.saisonPauseMonate ?? [],
           auslagestelleAdresse: initial.auslagestelleAdresse,
           auslagestelleKontaktName: initial.auslagestelleKontaktName,
           auslagestelleKontaktTelefon: initial.auslagestelleKontaktTelefon,
@@ -1806,6 +1825,12 @@ function TeilgebietForm({
               </span>
             </span>
           </label>
+
+          <SaisonPauseEingabe
+            disabled={!isAdmin}
+            monate={form.saisonPauseMonate ?? []}
+            onChange={(m) => setForm((f) => ({ ...f, saisonPauseMonate: m }))}
+          />
         </fieldset>
       )}
 
@@ -3014,6 +3039,64 @@ function UmgesetzteAnpassungenReiter() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---- Saisonteilgebiet: Pausenmonate ----------------------------------------
+
+function SaisonPauseEingabe({
+  monate,
+  onChange,
+  disabled,
+}: {
+  monate: number[];
+  onChange: (m: number[]) => void;
+  disabled?: boolean;
+}) {
+  const set = new Set(monate);
+  const toggle = (m: number) => {
+    const n = new Set(set);
+    if (n.has(m)) n.delete(m);
+    else n.add(m);
+    onChange([...n].sort((a, b) => a - b));
+  };
+  return (
+    <div className="text-sm text-gray-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
+      <div className="font-medium">❄ Saisonteilgebiet — Monate ohne Belieferung</div>
+      <div className="text-xs text-gray-600 mb-2">
+        In den markierten Monaten ist das Teilgebiet automatisch inaktiv: es wird nicht
+        zusammengetragen und nicht ausgeliefert (maßgeblich ist der Erscheinungstag der Ausgabe).
+        Im Verteilplan bleibt es buchbar; bei der Übernahme einer Bestellung in einen Auftrag
+        wird es in diesen Monaten nicht übertragen.
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {MONATE_KURZ.map((label, i) => {
+          const m = i + 1;
+          const an = set.has(m);
+          return (
+            <button
+              key={m}
+              type="button"
+              disabled={disabled}
+              onClick={() => toggle(m)}
+              className={`w-12 py-1 rounded text-xs font-medium border transition-colors disabled:opacity-60 ${
+                an
+                  ? 'bg-sky-600 border-sky-600 text-white'
+                  : 'bg-white border-gray-300 text-gray-600 hover:bg-sky-100'
+              }`}
+              aria-pressed={an}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="text-xs mt-1.5 text-sky-900">
+        {monate.length > 0
+          ? <>Keine Belieferung: <b>{saisonPauseText(monate)}</b></>
+          : 'Ganzjährig beliefert (kein Saisonteilgebiet).'}
+      </div>
     </div>
   );
 }

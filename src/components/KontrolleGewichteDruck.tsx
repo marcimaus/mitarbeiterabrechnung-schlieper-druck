@@ -7,6 +7,7 @@
 // Spalten: Teilgebiet | Stk. | IST | Min. | IST | Max. | IST | Soll | Seiten Azb. | Beilagen Soll | Beilagen IST
 
 import { useMemo } from 'react';
+import { istTgAktivFuer } from '../lib/saison';
 import type { Ausgabe, Beilage, Parameter, Teilgebiet, Tour } from '../types';
 import {
   berechneGewichtAnzeigenblattKg,
@@ -62,7 +63,7 @@ export default function KontrolleGewichteDruck({
   const tolUnten = parameter.gewichtToleranzUntenProzent ?? 1;
 
   const zeilen: Zeile[] = useMemo(() => {
-    const aktive = teilgebiete.filter((tg) => tg.isActive);
+    const aktive = teilgebiete.filter((tg) => istTgAktivFuer(tg, ausgabe));
     aktive.sort((a, b) => {
       const tA = a.tourId ? (tourMap.get(a.tourId)?.name ?? 'zzz') : 'zzz';
       const tB = b.tourId ? (tourMap.get(b.tourId)?.name ?? 'zzz') : 'zzz';

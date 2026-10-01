@@ -680,6 +680,12 @@ export function einsaetzeJahrListener(
  * wird in „Ausgaben & Beilagen" als unvollständig erkennbar und kann
  * dort nachgepflegt werden.
  */
+/** Lädt eine einzelne Ausgabe (null, wenn nicht vorhanden). */
+export async function ladeAusgabe(id: string): Promise<Ausgabe | null> {
+  const snap = await getDoc(doc(db, 'ausgaben', id));
+  return snap.exists() ? ({ id: snap.id, ...snap.data() } as Ausgabe) : null;
+}
+
 export async function getOrCreateAusgabe(
   jahr: number,
   kw: number,
@@ -1039,6 +1045,7 @@ export async function schliessePeriodeAb(
     wegstreckeM: tg.wegstreckeM,
     tourId: tg.tourId,
     standardAustraegerId: tg.standardAustraegerId,
+    ...(tg.saisonPauseMonate?.length ? { saisonPauseMonate: tg.saisonPauseMonate } : {}),
   }));
 
   const periodeSnapshot: PeriodeSnapshot = {
@@ -1184,6 +1191,7 @@ export async function schreibeMonatswechselSnapshot(
     wegstreckeM: tg.wegstreckeM,
     tourId: tg.tourId,
     standardAustraegerId: tg.standardAustraegerId,
+    ...(tg.saisonPauseMonate?.length ? { saisonPauseMonate: tg.saisonPauseMonate } : {}),
   }));
 
   // Aus jedem MA-Ergebnis nur die Austragen-/Zusammentragen-Felder herausziehen

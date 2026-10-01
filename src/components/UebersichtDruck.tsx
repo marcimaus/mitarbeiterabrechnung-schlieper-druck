@@ -4,6 +4,7 @@
 // gewicht. Checkboxen zum manuellen Abhaken (Zusammentragen + Auslieferung).
 
 import { useMemo } from 'react';
+import { istTgAktivFuer } from '../lib/saison';
 import type {
   Abrechnungsperiode,
   Ausgabe,
@@ -78,7 +79,7 @@ export default function UebersichtDruck({
   }, [einsaetze]);
 
   const zeilen: Zeile[] = useMemo(() => {
-    const aktive = teilgebiete.filter((tg) => tg.isActive && !tg.istAuslagestelle);
+    const aktive = teilgebiete.filter((tg) => istTgAktivFuer(tg, ausgabe) && !tg.istAuslagestelle);
     aktive.sort((a, b) => {
       // Tour zuerst, dann Name (natural)
       const tA = a.tourId ? (tourMap.get(a.tourId)?.name ?? 'zzz') : 'zzz';

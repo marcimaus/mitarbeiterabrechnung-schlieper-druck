@@ -8,6 +8,7 @@
 // Gedruckt wird zwischen den Teilgebieten horizontal getrennt (Trennlinie).
 
 import { useMemo } from 'react';
+import { istTgAktivFuer } from '../lib/saison';
 import type { Ausgabe, Beilage, Teilgebiet, Tour } from '../types';
 
 interface Props {
@@ -28,7 +29,8 @@ export default function ZettelchenDruck({
   const tourMap = useMemo(() => new Map(touren.map((t) => [t.id, t])), [touren]);
 
   const zeilen = useMemo(() => {
-    const aktive = teilgebiete.filter((tg) => tg.isActive);
+    // Saisonteilgebiete in ihrer Pause werden nicht zusammengetragen.
+    const aktive = teilgebiete.filter((tg) => istTgAktivFuer(tg, ausgabe));
     // Sortierung: erst nach Tour, dann nach Name
     aktive.sort((a, b) => {
       const tA = a.tourId ? (tourMap.get(a.tourId)?.name ?? 'zzz') : 'zzz';
@@ -43,7 +45,7 @@ export default function ZettelchenDruck({
       const tour = tg.tourId ? tourMap.get(tg.tourId) : undefined;
       return { tg, ext, int, tour };
     });
-  }, [teilgebiete, beilagen, tourMap]);
+  }, [teilgebiete, beilagen, tourMap, ausgabe.kw, ausgabe.jahr]);
 
   return (
     <>

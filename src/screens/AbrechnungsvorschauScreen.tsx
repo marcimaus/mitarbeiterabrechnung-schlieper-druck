@@ -36,6 +36,7 @@ import type {
   InteresseTaetigkeit,
 } from '../types';
 import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
+import { istInSaisonpauseFuer } from '../lib/saison';
 
 const ALLE_INTERESSE_TAETIGKEITEN = Object.keys(INTERESSE_TAETIGKEIT_LABELS) as InteresseTaetigkeit[];
 
@@ -361,6 +362,7 @@ function AbrechnungsvorschauInhalt() {
               (e) => e.ausgabeId === ausgabe.id && e.teilgebietId === tg.id
             );
             if (!ex || ex.typ === 'standard' || ex.mitarbeiterId === ma.id) continue;
+            if (istInSaisonpauseFuer(tg, ausgabe)) continue;
             if (bezahlt.has(`${tg.id}|${ausgabe.jahr}|${ausgabe.kw}`)) continue;
             liste.push({
               kw: ausgabe.kw,

@@ -470,6 +470,15 @@ export interface Teilgebiet {
    * Gebiet, das Kunden nicht buchen können.
    */
   nichtImVerteilplan?: boolean;
+  /**
+   * Saisonteilgebiet: Monate (1–12), in denen das TG automatisch nicht
+   * beliefert wird (z. B. Winterpause einer Auslagestelle auf dem
+   * Campingplatz). Maßgeblich ist der Monat des Erscheinungstags
+   * (Donnerstag der KW). Im Verteilplan bleibt es buchbar; bei der
+   * Übernahme einer Bestellung in einen Auftrag fällt es in diesen
+   * Monaten heraus. Leer/fehlend = ganzjährig.
+   */
+  saisonPauseMonate?: number[];
   strassen: Strasse[];
   sonderauslagen: Sonderauslage[];
   nichtBeliefen: NichtBeliefen[];
@@ -554,6 +563,13 @@ export interface Ausgabe {
    * Tage ohne Eintrag: Vorarbeit fließt vollständig ein.
    */
   vorarbeitZeitfenster?: VorarbeitZeitfenster[];
+  /**
+   * Saisonteilgebiete, die in dieser Ausgabe trotz Saisonpause beliefert
+   * werden (ad hoc in „Einsätze" freigeschaltet). Bei der Übernahme einer
+   * Bestellung in den Auftrag werden sie trotzdem nicht automatisch
+   * aktiviert — im Auftrag sind sie dann aber manuell wählbar.
+   */
+  saisonAusnahmeTeilgebietIds?: string[];
   // ---- Selbsterfassung Zusammentragen (durch Zusammenträger) ----
   /**
    * Dokumentations-Kennzeichen „Erfassung geprüft": nur Admin/Abrechnung sehen
@@ -1275,6 +1291,8 @@ export interface TeilgebietSnapshot {
   wegstreckeM: number;
   tourId: string | null;
   standardAustraegerId: string | null;
+  /** Saisonpause zum Snapshot-Zeitpunkt (siehe Teilgebiet.saisonPauseMonate). */
+  saisonPauseMonate?: number[];
 }
 
 export interface PeriodeSnapshot {

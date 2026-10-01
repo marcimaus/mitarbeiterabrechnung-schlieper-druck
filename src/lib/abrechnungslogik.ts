@@ -34,6 +34,7 @@ import {
 import { berechneNettoMinuten } from './zeiterfassung';
 import { getISOWeek, getISOYear } from './kalender';
 import { vorarbeitAusgabe, kappeVorarbeit } from './vorarbeit';
+import { istInSaisonpauseFuer } from './saison';
 import type { Arbeitszeit, ZusammentragenEinsatz } from '../types';
 
 // ---- Ergebnistypen -----------------------------------------
@@ -543,6 +544,8 @@ export function berechneAbrechnung(
 
       for (const tg of meineGebiete) {
         for (const ausgabe of data.ausgaben) {
+          // Saisonteilgebiet in seiner Pause: keine Belieferung, kein Lohn.
+          if (istInSaisonpauseFuer(tg, ausgabe)) continue;
           const expliziterEinsatz = data.einsaetze.find(
             (e) => e.ausgabeId === ausgabe.id && e.teilgebietId === tg.id
           );

@@ -32,6 +32,7 @@ import {
   kwZeitraum,
   lokalesDatum,
 } from '../lib/vorarbeit';
+import { istTgAktivFuer } from '../lib/saison';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
 import { istEinsatzbereit } from '../utils';
 
@@ -138,8 +139,11 @@ function ZusammentragenInhalt() {
   // Map: teilgebietId → Einsatz (für normale Einträge)
   const tgMap = Object.fromEntries(normalEinsaetze.map((e) => [e.teilgebietId, e]));
 
+  // Saisonteilgebiete in ihrer Pause werden in dieser Ausgabe nicht zusammengetragen.
   const aktiveTeilgebiete = teilgebiete
-    .filter((tg) => tg.isActive)
+    .filter((tg) =>
+      selectedAusgabe ? istTgAktivFuer(tg, selectedAusgabe) : tg.isActive
+    )
     // Natural Sort: Uslar1 < Uslar2 < … < Uslar10
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
 
@@ -821,7 +825,7 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
 
   // Sichtbare TG: aktiv + (frei ODER mir zugeordnet). Fremd belegte ausblenden.
   const sichtbareTeilgebiete = teilgebiete
-    .filter((tg) => tg.isActive)
+    .filter((tg) => (ausgabe ? istTgAktivFuer(tg, ausgabe) : tg.isActive))
     .filter((tg) => {
       const e = tgMap[tg.id];
       return !e || e.mitarbeiterId === me.id;

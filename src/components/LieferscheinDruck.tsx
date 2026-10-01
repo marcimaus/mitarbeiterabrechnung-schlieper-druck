@@ -9,6 +9,7 @@
 // beliefert wird (für Nachdrucke bei verlorenen Zetteln).
 
 import { useState, useEffect, useMemo } from 'react';
+import { istInSaisonpauseFuer } from '../lib/saison';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { ladeAuslieferungsmemosFuerAusgaben } from '../lib/db';
@@ -192,6 +193,7 @@ export default function LieferscheinDruck({
         for (const kw of sortedKWs) {
           const ausgabe = periodeAusgaben.find((a) => a.kw === kw) ?? null;
           if (!ausgabe) continue; // ohne Ausgabe: keine Auslieferung dieser KW
+          if (istInSaisonpauseFuer(tg, ausgabe)) continue; // Saisonpause: keine Auslieferung
           const einsätzeList = einsaetzeByAusgabe.get(ausgabe.id) ?? [];
           const einsatz = einsätzeList.find((e) => e.teilgebietId === tg.id) ?? null;
           const springer =

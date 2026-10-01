@@ -54,6 +54,7 @@ import {
   loescheKwVermerk,
 } from '../lib/planung';
 import { getISOWeek, getISOYear } from '../lib/kalender';
+import { istTgAktivFuer } from '../lib/saison';
 import { ferienInKw, feiertageInKw, setzeFerienkalender } from '../lib/ferien';
 import { ferienkalenderListener } from '../lib/ferienkalender';
 import FerienlisterZusammentraeger from '../components/FerienlisterZusammentraeger';
@@ -458,7 +459,7 @@ function PlanungContent() {
       const ausgabeBeilagen = beilagenByAusgabe.get(a.id) ?? [];
       let summe = 0;
       for (const tg of teilgebiete) {
-        if (!tg.isActive || tg.istAuslagestelle) continue;
+        if (!istTgAktivFuer(tg, a) || tg.istAuslagestelle) continue;
         const intBeilagenTg = ausgabeBeilagen.filter(
           (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id),
         ).length;

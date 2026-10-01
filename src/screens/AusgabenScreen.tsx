@@ -39,9 +39,11 @@ import {
   protokolliereVorlage,
   vorlageAenderungen,
   vorlageTeilgebietIds,
+  vorlageSaisonpauseTeilgebiete,
   vorlageUebernahmeVermerken,
   vorlageUebernommenFuer,
 } from '../lib/beilagenVorlagen';
+import { istTgAktivFuer, istInSaisonpauseFuer } from '../lib/saison';
 
 export default function AusgabenScreen() {
   return (
@@ -959,8 +961,9 @@ function EinsaetzeUebersicht({ ausgabe }: { ausgabe: Ausgabe }) {
   }
 
   // Teilgebiete nach Tour gruppieren, natürlich sortiert (Uslar1 < Uslar2 < … < Uslar10)
+  // Saisonteilgebiete in ihrer Pause werden in dieser Ausgabe nicht beliefert.
   const aktiveTeilgebiete = teilgebiete
-    .filter((tg) => tg.isActive)
+    .filter((tg) => istTgAktivFuer(tg, ausgabe))
     .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
 
   // Gruppen aufbauen: zuerst bekannte Touren (alphabetisch), dann "Ohne Tour"
@@ -1468,7 +1471,8 @@ function VorlagenGruppe({
       </div>
       <div className="space-y-1.5">
         {liste.map((v) => {
-          const tgIds = vorlageTeilgebietIds(v, teilgebiete, touren);
+          // Stückzahl wie bei der Übernahme: ohne Saisonteilgebiete in ihrer Pause.
+          const tgIds = vorlageTeilgebietIds(v, teilgebiete, touren, ausgabe);
           const stk = stueckzahlVon(tgIds, teilgebiete);
           const schonUebernommen = vorlageUebernommenFuer(v, ausgabe.kw, ausgabe.jahr);
           // Dauerbestellung: je KW nur ein Auftrag (sonst doppelt angelegt).
@@ -1693,14 +1697,25 @@ function BeilageForm({
   );
   // Aus der Vorlage: aktuell gültige Teilgebiete laut Verteilplan.
   const [ausgewaehlteTeilgebiete, setAusgewaehlteTeilgebiete] = useState<string[]>(
-    () => initial?.teilgebietIds ?? (quelle ? vorlageTeilgebietIds(quelle, teilgebiete, touren) : [])
+    () =>
+      initial?.teilgebietIds ??
+      (quelle ? vorlageTeilgebietIds(quelle, teilgebiete, touren, ausgabe) : [])
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [tourFilterIds, setTourFilterIds] = useState<Set<string>>(new Set());
   const [plzFilterSet, setPlzFilterSet] = useState<Set<string>>(new Set());
 
-  const aktiveTeilgebiete = teilgebiete.filter((t) => t.isActive);
+  // Saisonteilgebiete in ihrer Pause sind für diese Ausgabe nicht wählbar
+  // (werden weder zusammengetragen noch ausgeliefert).
+  const aktiveTeilgebiete = teilgebiete.filter((t) => istTgAktivFuer(t, ausgabe));
+  const saisonPausiert = teilgebiete
+    .filter((t) => t.isActive && istInSaisonpauseFuer(t, ausgabe))
+    .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  const saisonPausiertIds = new Set(saisonPausiert.map((t) => t.id));
+  const quelleSaisonPausiert = quelle
+    ? vorlageSaisonpauseTeilgebiete(quelle, teilgebiete, touren, ausgabe)
+    : [];
   // Verfügbare PLZ aus aktiven TG, eindeutig + sortiert
   const verfuegbarePlz = Array.from(
     new Set(aktiveTeilgebiete.map((t) => t.plz).filter(Boolean))
@@ -1746,10 +1761,15 @@ function BeilageForm({
   }
 
   const vorlageStueckzahlAktuell = quelle
-    ? stueckzahlVon(vorlageTeilgebietIds(quelle, teilgebiete, touren), teilgebiete)
+    ? stueckzahlVon(vorlageTeilgebietIds(quelle, teilgebiete, touren, ausgabe), teilgebiete)
     : 0;
 
-  const gesamtStueckzahl = ausgewaehlteTeilgebiete.reduce((sum, id) => {
+  // Ein (älterer) Auftrag kann noch pausierte Saisonteilgebiete enthalten —
+  // diese werden beim Speichern entfernt.
+  const auftragTeilgebiete = ausgewaehlteTeilgebiete.filter((id) => !saisonPausiertIds.has(id));
+  const entferntePausierte = saisonPausiert.filter((t) => ausgewaehlteTeilgebiete.includes(t.id));
+
+  const gesamtStueckzahl = auftragTeilgebiete.reduce((sum, id) => {
     return sum + (teilgebiete.find((t) => t.id === id)?.stueckzahl ?? 0);
   }, 0);
 
@@ -1768,7 +1788,7 @@ function BeilageForm({
         gewichtGStk: gewicht,
         format,
         kennzeichen,
-        teilgebietIds: ausgewaehlteTeilgebiete,
+        teilgebietIds: auftragTeilgebiete,
       };
       if (initial) {
         await aktualisiereBeilage(initial.id, data);
@@ -1896,9 +1916,31 @@ function BeilageForm({
 
       {/* Teilgebiete auswählen */}
       <div>
+        {(saisonPausiert.length > 0 || quelleSaisonPausiert.length > 0) && (
+          <div className="mb-2 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2 text-xs text-sky-900">
+            {saisonPausiert.length > 0 && (
+              <div>
+                ❄ Saisonpause in {kwLabel(ausgabe.kw, ausgabe.jahr)} — nicht wählbar, wird nicht zusammengetragen
+                und nicht ausgeliefert: <b>{saisonPausiert.map((t) => t.name).join(', ')}</b>. Soll eines diese
+                Woche doch beliefert werden: unter „Einsätze" → „diese Woche beliefern", danach hier anhaken.
+              </div>
+            )}
+            {quelleSaisonPausiert.length > 0 && (
+              <div className="mt-0.5">
+                Aus der Bestellung nicht übernommen (Saisonpause):{' '}
+                {quelleSaisonPausiert.map((t) => t.name).join(', ')}.
+              </div>
+            )}
+            {entferntePausierte.length > 0 && (
+              <div className="mt-0.5 text-amber-800">
+                ⚠ Wird beim Speichern aus dem Auftrag entfernt: {entferntePausierte.map((t) => t.name).join(', ')}.
+              </div>
+            )}
+          </div>
+        )}
         <div className="flex items-center justify-between mb-2">
           <label className="text-sm font-medium text-gray-700">
-            Teilgebiete ({ausgewaehlteTeilgebiete.length} gewählt · {gesamtStueckzahl.toLocaleString('de-DE')} Stk)
+            Teilgebiete ({auftragTeilgebiete.length} gewählt · {gesamtStueckzahl.toLocaleString('de-DE')} Stk)
           </label>
           <button
             type="button"
@@ -2360,8 +2402,9 @@ function TeilgebietBeilagenUebersicht({ ausgabe, reloadKey }: { ausgabe: Ausgabe
     });
   }, [ausgabe.id, reloadKey]);
 
+  // Saisonteilgebiete in ihrer Pause werden in dieser Ausgabe nicht beliefert.
   const aktiveTeilgebiete = teilgebiete
-    .filter((tg) => tg.isActive)
+    .filter((tg) => istTgAktivFuer(tg, ausgabe))
     .sort((a, b) => {
       // Erst nach Tour, dann TG-Name (Natural Sort: Uslar1 < Uslar2 < … < Uslar10)
       const ta = touren.find((t) => t.id === a.tourId)?.name ?? 'zzz';

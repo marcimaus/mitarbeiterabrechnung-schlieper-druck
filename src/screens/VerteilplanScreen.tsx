@@ -25,6 +25,7 @@ import {
   loescheBeilagenVorlage,
   erstelleBeilage,
   getOrCreateAusgabe,
+  ladeAusgabe,
 } from '../lib/db';
 import {
   BEILAGEN_FORMATE,
@@ -41,9 +42,11 @@ import {
   vorlageUebernommenFuer,
   vorlageKwLabel,
   vorlageTeilgebietIds,
+  vorlageSaisonpauseTeilgebiete,
   vorlageTermine,
 } from '../lib/beilagenVorlagen';
 import { donnerstagDerKW, getCurrentKW, kwLabel, maxKWinJahr } from '../lib/kalender';
+import { istAktuellInSaisonpause, istInSaisonpause, istSaisonTeilgebiet, saisonPauseText } from '../lib/saison';
 import { berechneBeilagenPreis, eur, type BeilagenPreisErgebnis } from '../lib/beilagenPreis';
 
 export default function VerteilplanScreen() {
@@ -612,8 +615,12 @@ function VerteilplanInhalt() {
 
     setSpeichern(true);
     try {
-      const tgIds = vorlageTeilgebietIds(aktiveVorlage, teilgebiete, touren);
       const ausgabeId = await getOrCreateAusgabe(jahr, kw, parameter);
+      // Saisonteilgebiete in ihrer Pause werden nicht übertragen — außer sie
+      // sind für diese Ausgabe in „Einsätze" ausnahmsweise freigeschaltet.
+      const ausgabeBezug = (await ladeAusgabe(ausgabeId)) ?? { kw, jahr };
+      const tgIds = vorlageTeilgebietIds(aktiveVorlage, teilgebiete, touren, ausgabeBezug);
+      const pausiert = vorlageSaisonpauseTeilgebiete(aktiveVorlage, teilgebiete, touren, ausgabeBezug);
       const beilageId = await erstelleBeilage({
         ausgabeId,
         // Ohne Arbeitstitel wird vereinfachend der Kundenname verwendet.
@@ -635,6 +642,9 @@ function VerteilplanInhalt() {
         text:
           `Als Beilagenauftrag in ${kwLabel(kw, jahr)} übernommen (${tgIds.length} Teilgebiete, ` +
           `${nf(stueckzahlVon(tgIds, teilgebiete))} Stück). ` +
+          (pausiert.length > 0
+            ? `Nicht übertragen (Saisonpause): ${pausiert.map((tg) => tg.name).sort(nameSort).join(', ')}. `
+            : '') +
           (aktiveVorlage.istDauervorlage
             ? 'Dauerbestellung — bleibt verfügbar.'
             : 'Die Bestellung wurde archiviert.'),
@@ -1234,6 +1244,23 @@ function VerteilplanInhalt() {
         </div>
       )}
 
+      {/* Saisonteilgebiete der Auswahl, die in der KW des (gewählten) Termins
+          pausieren — fallen bei der Übernahme in den Auftrag heraus. */}
+      {(() => {
+        const { kw, jahr } = auftragsTeil ? kwKeyParse(auftragsTeil.kwKey) : { kw: null, jahr: null };
+        if (kw == null || jahr == null) return null;
+        const pausiert = aktiveTGs.filter((tg) => auswahl.has(tg.id) && istInSaisonpause(tg, kw, jahr));
+        if (pausiert.length === 0) return null;
+        return (
+          <div className="mb-4 bg-sky-50 border border-sky-200 rounded-lg px-4 py-2.5 text-sm text-sky-900">
+            ❄ In {kwLabel(kw, jahr)} wegen Saisonpause nicht beliefert:{' '}
+            <b>{pausiert.map((tg) => tg.name).join(', ')}</b> ({nf(summe(pausiert))} Stk) — diese
+            Teilgebiete werden bei der Übernahme in den Auftrag nicht übertragen (außer sie sind unter
+            „Einsätze" für diese Woche freigeschaltet).
+          </div>
+        );
+      })()}
+
       {/* Preisermittlung (Verkaufspreis laut Parametern) */}
       <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 mb-4">
         <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
@@ -1341,7 +1368,10 @@ function VerteilplanInhalt() {
                         className={`flex items-center gap-3 pl-10 pr-3 py-1.5 border-t border-gray-100 cursor-pointer text-sm ${an ? 'bg-blue-50' : 'hover:bg-gray-50'}`}
                       >
                         <Checkbox status={an ? 'all' : 'none'} onChange={() => toggleMenge([tg])} />
-                        <span className="flex-1 text-gray-800">{tg.name}</span>
+                        <span className="flex-1 text-gray-800">
+                          {tg.name}
+                          <SaisonVermerk tg={tg} />
+                        </span>
                         <span className="w-16 text-gray-500 tabular-nums">{tg.plz}</span>
                         <span className="w-20 text-right tabular-nums text-gray-900">{nf(tg.stueckzahl || 0)}</span>
                       </label>
@@ -1540,6 +1570,22 @@ function ArchivListe({
 }
 
 // ── Bildschirm-Hilfskomponenten ───────────────────────────────────────────────
+
+/** Vermerk „Saisonteilgebiet" (+ „zzt. nicht beliefert" in der Saisonpause). */
+function SaisonVermerk({ tg }: { tg: Teilgebiet }) {
+  if (!istSaisonTeilgebiet(tg)) return null;
+  const pause = istAktuellInSaisonpause(tg);
+  return (
+    <span
+      className={`ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+        pause ? 'bg-sky-200 text-sky-900' : 'bg-sky-50 text-sky-800 border border-sky-200'
+      }`}
+      title={`Saisonteilgebiet — keine Belieferung: ${saisonPauseText(tg.saisonPauseMonate)}. Buchbar; in Pausenmonaten wird es nicht in den Auftrag übertragen.`}
+    >
+      ❄ Saisonteilgebiet{pause ? ' · zzt. nicht beliefert' : ''}
+    </span>
+  );
+}
 
 /** TG-Namen einer PLZ; ausgewählte fett, damit die Auswahl auf einen Blick sichtbar ist. */
 function TgNamen({ tgs, auswahl }: { tgs: Teilgebiet[]; auswahl: Set<string> | null }) {
@@ -1894,7 +1940,14 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
               ...g.tgs.map((tg) => (
                 <tr key={tg.id}>
                   <td className="c">{box([tg])}</td>
-                  <td style={{ paddingLeft: '4mm' }}>{tg.name}</td>
+                  <td style={{ paddingLeft: '4mm' }}>
+                    {tg.name}
+                    {istSaisonTeilgebiet(tg) && (
+                      <span style={{ marginLeft: '2mm', fontSize: '5.5pt', color: '#0369a1' }}>
+                        Saisonteilgebiet (keine Belieferung {saisonPauseText(tg.saisonPauseMonate)})
+                      </span>
+                    )}
+                  </td>
                   <td>{tg.plz}</td>
                   <td className="r">{nf(tg.stueckzahl || 0)}</td>
                   <td className="r">{gew([tg])}</td>
