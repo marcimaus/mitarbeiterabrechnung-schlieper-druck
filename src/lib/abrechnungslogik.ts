@@ -33,6 +33,7 @@ import {
 } from './berechnung';
 import { berechneNettoMinuten } from './zeiterfassung';
 import { getISOWeek, getISOYear } from './kalender';
+import { vorarbeitAusgabe, kappeVorarbeit } from './vorarbeit';
 import type { Arbeitszeit, ZusammentragenEinsatz } from '../types';
 
 // ---- Ergebnistypen -----------------------------------------
@@ -702,52 +703,47 @@ export function berechneAbrechnung(
     // austragen   → nur wenn austragenNachIstZeit === true
     // zusammentragen → nur wenn zusammentragenNachIstZeit === true
     // vorarbeit   → nur wenn Ausgabe dieser Zeit vorarbeitFreigegeben === true
-    //               (Zuordnung: Datum der Arbeitszeit fällt in KW einer freigegebenen Ausgabe)
+    //               (Zuordnung: Datum der Arbeitszeit fällt in KW einer freigegebenen Ausgabe),
+    //               ggf. gekappt auf das Zeitfenster des Tages
     // sonstige    → IMMER
     const maArbeitszeitenAll = data.arbeitszeiten.filter(
       (a) => a.mitarbeiterId === ma.id && a.status === 'abgeschlossen' && !a.nichtBeruecksichtigen
     );
 
-    // Vorarbeit wird nur dann abgerechnet, wenn die konkrete zugeordnete Ausgabe
-    // das Kennzeichen "Vorarbeit erlaubt" gesetzt hat.
-    const ausgabenFreigegebenMap = new Map<string, boolean>(
-      data.ausgaben.map((a) => [a.id, !!a.vorarbeitFreigegeben])
-    );
-
-    const maArbeitszeiten = maArbeitszeitenAll.filter((a) => {
+    // Vorarbeit wird nur dann abgerechnet, wenn die zugeordnete Ausgabe (die
+    // der KW des Stempelbeginns, siehe `vorarbeitAusgabe`) das Kennzeichen
+    // "Vorarbeit erlaubt" gesetzt hat — wird beim nächsten Berechnen
+    // aufgegriffen, auch wenn das Kennzeichen NACH dem Einstempeln gesetzt
+    // wurde. Hat die Ausgabe für den Tag ein Zeitfenster, wird die Vorarbeit
+    // darauf gekappt (Rest = Zusammentragen, nicht nach Zeit vergütet).
+    const maArbeitszeiten: Arbeitszeit[] = [];
+    const maArbeitszeitenNichtAbgerechnet: Arbeitszeit[] = [];
+    for (const a of maArbeitszeitenAll) {
       switch (a.typ) {
         case 'austragen':
-          return effParams.austragenNachIstZeit === true;
+          (effParams.austragenNachIstZeit === true ? maArbeitszeiten : maArbeitszeitenNichtAbgerechnet).push(a);
+          break;
         case 'zusammentragen':
-          return effParams.zusammentragenNachIstZeit === true;
+          (effParams.zusammentragenNachIstZeit === true ? maArbeitszeiten : maArbeitszeitenNichtAbgerechnet).push(a);
+          break;
         case 'vorarbeit': {
-          // Vorarbeit wird abgerechnet, wenn:
-          //  (1) die direkt zugeordnete Ausgabe vorarbeitFreigegeben=true
-          //      hat — wird beim nächsten Berechnen aufgegriffen, auch wenn
-          //      das Kennzeichen NACH dem Einstempeln gesetzt wurde, oder
-          //  (2) keine ausgabeId an der Arbeitszeit gespeichert ist (z. B.
-          //      weil die Ausgabe der KW zur Stempelzeit noch nicht
-          //      existierte) UND eine Ausgabe der gleichen KW/Jahr-Kombi
-          //      mit vorarbeitFreigegeben=true existiert.
-          if (a.ausgabeId) {
-            return ausgabenFreigegebenMap.get(a.ausgabeId) === true;
+          const ausgabe = vorarbeitAusgabe(a, data.ausgaben);
+          if (!ausgabe?.vorarbeitFreigegeben) {
+            maArbeitszeitenNichtAbgerechnet.push(a);
+            break;
           }
-          const d = new Date(a.startTime);
-          const kw = getISOWeek(d);
-          const jahr = getISOYear(d);
-          return data.ausgaben.some(
-            (x) => x.jahr === jahr && x.kw === kw && x.vorarbeitFreigegeben === true
-          );
+          const gekappt = kappeVorarbeit(a, ausgabe);
+          if (gekappt.vorarbeitKappung?.verguetetMin === 0) maArbeitszeitenNichtAbgerechnet.push(gekappt);
+          else maArbeitszeiten.push(gekappt);
+          break;
         }
         case 'sonstige':
-          return true;
+          maArbeitszeiten.push(a);
+          break;
         default:
-          return false;
+          maArbeitszeitenNichtAbgerechnet.push(a);
       }
-    });
-    const maArbeitszeitenNichtAbgerechnet = maArbeitszeitenAll.filter(
-      (a) => !maArbeitszeiten.includes(a)
-    );
+    }
 
     const zeitMinuten = maArbeitszeiten.reduce(
       (s, a) => s + berechneNettoMinuten(a), 0
@@ -1019,8 +1015,10 @@ export function aggregiereStatistikStunden(
   for (const e of ergebnisse) {
     // Ist-Stunden aus der Stempeluhr — alle erfassten Zeiten, gelohnt wie
     // nicht gelohnt (für die Statistik zählt die geleistete Arbeitszeit).
+    // Durch Zeitfenster gekappte Vorarbeit zählt nur mit dem Anteil im
+    // Fenster — der Rest ist Zusammentragen (bereits in der Soll-Zeit).
     for (const a of [...e.arbeitszeiten, ...e.arbeitszeitenNichtAbgerechnet]) {
-      const std = berechneNettoMinuten(a) / 60;
+      const std = (a.vorarbeitKappung ? a.vorarbeitKappung.verguetetMin : berechneNettoMinuten(a)) / 60;
       if (a.typ === 'sonstige') istSonstige += std;
       else if (a.typ === 'vorarbeit') istVorarbeit += std;
     }

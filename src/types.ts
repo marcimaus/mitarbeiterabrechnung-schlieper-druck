@@ -515,6 +515,27 @@ export interface Sondervereinbarung {
 
 export type AusgabeStatus = 'geplant' | 'laufend' | 'abgeschlossen';
 
+/** Zeitfenster für Vorarbeit an einem Tag — `von`/`bis` einzeln oder kombiniert. */
+export interface VorarbeitZeitfenster {
+  datum: string;   // YYYY-MM-DD (Tag innerhalb der KW der Ausgabe)
+  von?: string;    // HH:MM — Vorarbeit davor wird nicht vergütet
+  bis?: string;    // HH:MM — Vorarbeit danach wird nicht vergütet
+}
+
+/**
+ * Ergebnis der Zeitfenster-Kappung einer Vorarbeit-Arbeitszeit. Wird nur
+ * in der Lohnberechnung an die (geklonte) Arbeitszeit gehängt, nie in der
+ * Collection `arbeitszeiten` gespeichert.
+ */
+export interface VorarbeitKappung {
+  originalStart: number;
+  originalEnd: number;
+  originalNettoMin: number;
+  verguetetMin: number;
+  von?: string;
+  bis?: string;
+}
+
 export interface Ausgabe {
   id: string;
   kw: number;
@@ -526,6 +547,13 @@ export interface Ausgabe {
   status: AusgabeStatus;
   /** Wenn true, darf selbsterfasste Vorarbeit für diese Ausgabe in Lohnberechnung einfließen. */
   vorarbeitFreigegeben?: boolean;
+  /**
+   * Optionale Zeitfenster je Arbeitstag der KW, auf die die gestempelte
+   * Vorarbeit begrenzt wird (vergessenes Ausstempeln). Vorarbeit außerhalb
+   * des Fensters gilt als Zusammentragen und wird nicht nach Zeit vergütet.
+   * Tage ohne Eintrag: Vorarbeit fließt vollständig ein.
+   */
+  vorarbeitZeitfenster?: VorarbeitZeitfenster[];
   // ---- Selbsterfassung Zusammentragen (durch Zusammenträger) ----
   /**
    * Dokumentations-Kennzeichen „Erfassung geprüft": nur Admin/Abrechnung sehen
@@ -954,6 +982,8 @@ export interface Arbeitszeit {
   nichtBeruecksichtigen?: boolean;
   /** Begründung, warum der Eintrag ignoriert werden soll (optional). */
   nichtBeruecksichtigenGrund?: string;
+  /** Nur berechnet (Lohnberechnung): Kappung durch das Vorarbeit-Zeitfenster der Ausgabe. */
+  vorarbeitKappung?: VorarbeitKappung;
 }
 
 // ---- Zusammentragen ----------------------------------------

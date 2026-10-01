@@ -14,6 +14,7 @@ import type {
 import { memoKategorieLabel, ROLLEN_LABELS } from '../types';
 import type { MitarbeiterAbrechnung, PeriodeData } from './abrechnungslogik';
 import { formatierDatum, berechneNettoMinuten } from './zeiterfassung';
+import { zeitfensterText } from './vorarbeit';
 
 // Einheitliche Kopfzeilen-Formatierung für die Archiv-Blätter.
 const HEADER_BLAU = 'FF1D4ED8';
@@ -252,9 +253,12 @@ export async function exportiereAbrechnung(
     ];
     for (const { az, abgerechnet } of zeilen) {
       const nettoH = Math.max(0, berechneNettoMinuten(az)) / 60;
+      const k = az.vorarbeitKappung;
       const hinweis = az.nichtBeruecksichtigen
         ? `nicht berücksichtigt${az.nichtBeruecksichtigenGrund ? ': ' + az.nichtBeruecksichtigenGrund : ''}`
-        : '';
+        : k
+          ? `Zeitfenster ${zeitfensterText(k)}: erfasst ${formatierDatum(k.originalStart)} ${new Date(k.originalStart).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}–${new Date(k.originalEnd).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}, Rest als Zusammentragen`
+          : '';
       const r = wsZe.addRow([
         er.mitarbeiter.name,
         er.mitarbeiter.nummer,

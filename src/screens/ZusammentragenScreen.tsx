@@ -7,16 +7,31 @@ import {
   ladeZusammentragenEinsaetze,
   setzeZusammentragenEinsatz,
   loescheZusammentragenEinsatz,
-  ladeArbeitszeitenFuerAusgabe,
+  ladeVorarbeitKandidatenFuerKw,
   erstelleArbeitszeit,
   aktualisiereArbeitszeit,
   loescheArbeitszeit,
   aktualisiereAusgabe,
 } from '../lib/db';
-import type { Ausgabe, Beilage, ZusammentragenEinsatz, Arbeitszeit, Mitarbeiter } from '../types';
+import type { Ausgabe, Beilage, ZusammentragenEinsatz, Arbeitszeit, Mitarbeiter, VorarbeitZeitfenster } from '../types';
 import { kwLabel, getCurrentKW } from '../lib/kalender';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
-import { pruefeZeitUeberlappung, formatiereUeberlappungsFehler } from '../lib/zeiterfassung';
+import {
+  pruefeZeitUeberlappung,
+  formatiereUeberlappungsFehler,
+  berechneNettoMinuten,
+  formatierDauer,
+  formatierZeit,
+} from '../lib/zeiterfassung';
+import {
+  vorarbeitAusgabe,
+  kappeVorarbeit,
+  zeitfensterFuer,
+  zeitfensterText,
+  tageDerKw,
+  kwZeitraum,
+  lokalesDatum,
+} from '../lib/vorarbeit';
 import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
 import { istEinsatzbereit } from '../utils';
 
@@ -441,7 +456,8 @@ function ZusammentragenInhalt() {
                 <span className="font-semibold text-amber-900">Vorarbeit für diese Ausgabe erlauben</span>
               </label>
               <span className="text-xs text-amber-700">
-                (Zusatzarbeit vor dem eigentlichen Zusammentragen, wird nach Zeit abgerechnet)
+                (Zusatzarbeit vor dem eigentlichen Zusammentragen, wird nach Zeit abgerechnet —
+                gilt für alle in {kwLabel(selectedAusgabe.kw, selectedAusgabe.jahr)} als „Vorarbeit" erfassten Zeiten)
               </span>
             </div>
 
@@ -483,9 +499,16 @@ function ZusammentragenInhalt() {
 
             {vorarbeitAktiv && (
               <ArbeitszeitVorarbeitSektion
-                ausgabeId={selectedAusgabe.id}
+                ausgabe={selectedAusgabe}
+                alleAusgaben={ausgaben}
                 gesperrt={istGesperrt}
                 zusammentraeger={zusammentraeger}
+                mitarbeiter={mitarbeiter}
+                onZeitfensterGespeichert={(fenster) =>
+                  setAusgaben((prev) =>
+                    prev.map((a) => (a.id === selectedAusgabe.id ? { ...a, vorarbeitZeitfenster: fenster } : a))
+                  )
+                }
               />
             )}
           </div>
@@ -1145,20 +1168,214 @@ function VorarbeitZeitEingabe({
   );
 }
 
+// ---- Zeitfenster für Vorarbeit ---------------------------------
+// Je Arbeitstag der KW optional ein Zeitfenster (von und/oder bis). Die
+// gestempelte Vorarbeit des Tages wird in der Abrechnung darauf gekappt —
+// außerhalb gilt sie als Zusammentragen (keine Zeitvergütung).
+
+function wochentagLabel(datum: string): string {
+  return new Date(`${datum}T12:00:00`).toLocaleDateString('de-DE', {
+    weekday: 'short',
+    day: '2-digit',
+    month: '2-digit',
+  });
+}
+
+/** Erfasste Vorarbeit je Tag — für die Tagesauswahl der Zeitfenster. */
+type VorarbeitTagInfo = { anzahl: number; erstStart: number; letztEnde: number | null };
+
+function VorarbeitZeitfensterEditor({
+  ausgabe,
+  vorarbeitTage,
+  gesperrt,
+  onGespeichert,
+}: {
+  ausgabe: Ausgabe;
+  vorarbeitTage: Map<string, VorarbeitTagInfo>;
+  gesperrt: boolean;
+  onGespeichert: (fenster: VorarbeitZeitfenster[]) => void;
+}) {
+  const tage = tageDerKw(ausgabe.kw, ausgabe.jahr);
+  const gespeichert = ausgabe.vorarbeitZeitfenster ?? [];
+  const [draft, setDraft] = useState<VorarbeitZeitfenster[]>(gespeichert);
+  const [saving, setSaving] = useState(false);
+
+  const geaendert = JSON.stringify(draft) !== JSON.stringify(gespeichert);
+  // Neue Zeile: bevorzugt der nächste Tag mit erfasster Vorarbeit, der noch
+  // kein Zeitfenster hat — sonst irgendein freier Tag der KW.
+  const freieTage = tage.filter((t) => !draft.some((f) => f.datum === t));
+  const freieVorarbeitTage = freieTage.filter((t) => vorarbeitTage.has(t));
+  const naechsterTag = freieVorarbeitTage[0] ?? freieTage[0];
+
+  function tagOption(t: string) {
+    const info = vorarbeitTage.get(t);
+    return (
+      <option key={t} value={t}>
+        {wochentagLabel(t)}
+        {info ? ` — ${info.anzahl} Vorarbeit-Zeit${info.anzahl === 1 ? '' : 'en'}` : ''}
+      </option>
+    );
+  }
+  const fehler = draft
+    .map((f) => {
+      if (f.von && f.bis && f.von >= f.bis) return `${wochentagLabel(f.datum)}: „von" muss vor „bis" liegen.`;
+      return null;
+    })
+    .filter((x): x is string => x !== null);
+
+  function aendere(i: number, patch: Partial<VorarbeitZeitfenster>) {
+    setDraft((prev) => prev.map((f, j) => (j === i ? { ...f, ...patch } : f)));
+  }
+
+  async function speichern() {
+    if (fehler.length > 0) return;
+    // Leere Felder entfernen (Firestore: kein undefined), Tage ohne von/bis verwerfen.
+    const bereinigt = draft
+      .filter((f) => f.von || f.bis)
+      .map((f) => ({ datum: f.datum, ...(f.von ? { von: f.von } : {}), ...(f.bis ? { bis: f.bis } : {}) }))
+      .sort((a, b) => a.datum.localeCompare(b.datum));
+    setSaving(true);
+    try {
+      await aktualisiereAusgabe(ausgabe.id, { vorarbeitZeitfenster: bereinigt });
+      onGespeichert(bereinigt);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-5 pt-4 border-t border-amber-200">
+      <div className="flex items-center justify-between mb-1 gap-3 flex-wrap">
+        <h3 className="text-sm font-semibold text-amber-900">Zeitfenster für Vorarbeit (optional)</h3>
+        {!gesperrt && naechsterTag && (
+          <button
+            onClick={() => setDraft((prev) => [...prev, { datum: naechsterTag }])}
+            className="text-xs bg-white border border-amber-400 text-amber-800 px-2.5 py-1 rounded hover:bg-amber-100 font-medium"
+          >
+            + Tag hinzufügen
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-amber-700 mb-3">
+        Ohne Zeitfenster fließt die gesamte am Tag erfasste Vorarbeit ein. Mit Zeitfenster wird nur
+        die Vorarbeit innerhalb des Fensters vergütet — davor bzw. danach gilt sie als Zusammentragen
+        und wird nicht extra vergütet (z. B. bei vergessenem Ausstempeln). „Von" und „Bis" können
+        auch einzeln angegeben werden.
+      </p>
+
+      {draft.length === 0 && (
+        <p className="text-xs text-amber-700 italic">Kein Zeitfenster — Vorarbeit der ganzen KW fließt vollständig ein.</p>
+      )}
+
+      <div className="space-y-2">
+        {draft.map((f, i) => {
+          const waehlbar = tage.filter((t) => t === f.datum || !draft.some((x) => x.datum === t));
+          const mitVorarbeit = waehlbar.filter((t) => vorarbeitTage.has(t));
+          const ohneVorarbeit = waehlbar.filter((t) => !vorarbeitTage.has(t));
+          const info = vorarbeitTage.get(f.datum);
+          return (
+          <div key={i} className="flex items-center gap-2 flex-wrap bg-white rounded-lg border border-amber-200 px-3 py-2">
+            <select
+              value={f.datum}
+              disabled={gesperrt}
+              onChange={(e) => aendere(i, { datum: e.target.value })}
+              className={`border rounded px-2 py-1.5 text-sm ${info ? 'border-gray-300' : 'border-red-300 bg-red-50'}`}
+            >
+              {mitVorarbeit.length > 0 && (
+                <optgroup label="Tage mit erfasster Vorarbeit">{mitVorarbeit.map(tagOption)}</optgroup>
+              )}
+              {ohneVorarbeit.length > 0 && (
+                <optgroup label="Tage ohne erfasste Vorarbeit">{ohneVorarbeit.map(tagOption)}</optgroup>
+              )}
+            </select>
+            <label className="text-xs text-gray-500">von</label>
+            <input
+              type="time"
+              value={f.von ?? ''}
+              disabled={gesperrt}
+              onChange={(e) => aendere(i, { von: e.target.value || undefined })}
+              className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+            <label className="text-xs text-gray-500">bis</label>
+            <input
+              type="time"
+              value={f.bis ?? ''}
+              disabled={gesperrt}
+              onChange={(e) => aendere(i, { bis: e.target.value || undefined })}
+              className="border border-gray-300 rounded px-2 py-1.5 text-sm"
+            />
+            <span className="text-xs text-amber-800 ml-1">
+              {f.von || f.bis ? `vergütet ${zeitfensterText(f)}` : 'ohne Begrenzung'}
+            </span>
+            {info ? (
+              <span className="text-xs text-gray-500" title="Früheste Stempelung bis späteste Stempelung des Tages">
+                (erfasst {formatierZeit(info.erstStart)}–{info.letztEnde ? formatierZeit(info.letztEnde) : 'aktiv'})
+              </span>
+            ) : (
+              <span className="text-xs text-red-600">⚠ an diesem Tag keine Vorarbeit erfasst</span>
+            )}
+            {!gesperrt && (
+              <button
+                onClick={() => setDraft((prev) => prev.filter((_, j) => j !== i))}
+                className="ml-auto text-red-400 hover:text-red-600 text-sm px-2 py-0.5 rounded hover:bg-red-50"
+                title="Zeitfenster entfernen"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          );
+        })}
+      </div>
+
+      {fehler.length > 0 && (
+        <div className="mt-2 text-xs text-red-700">{fehler.join(' ')}</div>
+      )}
+
+      {geaendert && !gesperrt && (
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            onClick={speichern}
+            disabled={saving || fehler.length > 0}
+            className="bg-amber-600 text-white px-3 py-1.5 rounded text-sm font-medium hover:bg-amber-700 disabled:opacity-50"
+          >
+            {saving ? '...' : 'Zeitfenster speichern'}
+          </button>
+          <button
+            onClick={() => setDraft(gespeichert)}
+            className="text-gray-500 hover:text-gray-700 text-sm px-2"
+          >
+            Verwerfen
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Arbeitszeit-basierte Vorarbeit-Sektion -------------------
-// Zeigt alle Arbeitszeit-Einträge mit typ='vorarbeit' und ausgabeId=<aktuelle Ausgabe>
-// Ermöglicht Neuanlage, Bearbeitung (Start/Ende) und Löschen.
+// Zeigt alle Arbeitszeit-Einträge mit typ='vorarbeit', die zur Ausgabe
+// gehören — maßgeblich ist die KW des Stempelbeginns (siehe lib/vorarbeit),
+// nicht eine beim Stempeln gewählte Ausgabe. Zeigt je Eintrag, welcher
+// Anteil nach Zeitfenster vergütet wird. Ermöglicht Neuanlage, Bearbeitung
+// (Start/Ende) und Löschen.
 
 function ArbeitszeitVorarbeitSektion({
-  ausgabeId,
+  ausgabe,
+  alleAusgaben,
   gesperrt,
   zusammentraeger,
+  mitarbeiter,
+  onZeitfensterGespeichert,
 }: {
-  ausgabeId: string;
+  ausgabe: Ausgabe;
+  alleAusgaben: Ausgabe[];
   gesperrt: boolean;
-  zusammentraeger: ReturnType<typeof useApp>['mitarbeiter'];
+  zusammentraeger: Mitarbeiter[];
+  mitarbeiter: Mitarbeiter[];
+  onZeitfensterGespeichert: (fenster: VorarbeitZeitfenster[]) => void;
 }) {
-  const [zeiten, setZeiten] = useState<Arbeitszeit[]>([]);
+  const [kandidaten, setKandidaten] = useState<Arbeitszeit[]>([]);
   const [loading, setLoading] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [neuForm, setNeuForm] = useState(false);
@@ -1166,8 +1383,7 @@ function ArbeitszeitVorarbeitSektion({
   async function reload() {
     setLoading(true);
     try {
-      const all = await ladeArbeitszeitenFuerAusgabe(ausgabeId);
-      setZeiten(all.filter((a) => a.typ === 'vorarbeit').sort((a, b) => b.startTime - a.startTime));
+      setKandidaten(await ladeVorarbeitKandidatenFuerKw(ausgabe.id, kwZeitraum(ausgabe.kw, ausgabe.jahr)));
     } finally {
       setLoading(false);
     }
@@ -1176,21 +1392,43 @@ function ArbeitszeitVorarbeitSektion({
   useEffect(() => {
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ausgabeId]);
+  }, [ausgabe.id]);
 
-  function formatDauer(a: Arbeitszeit): string {
-    if (!a.endTime) return '— aktiv —';
-    const ms = a.endTime - a.startTime - (a.gesamtPauseMinuten ?? 0) * 60_000;
-    const min = Math.max(0, Math.round(ms / 60_000));
-    const h = Math.floor(min / 60);
-    const m = min % 60;
-    return `${h}h ${m.toString().padStart(2, '0')}min`;
+  const zeiten = kandidaten
+    .filter((a) => vorarbeitAusgabe(a, alleAusgaben)?.id === ausgabe.id)
+    .sort((a, b) => a.startTime - b.startTime);
+
+  const tage = (() => {
+    const map = new Map<string, Arbeitszeit[]>();
+    for (const z of zeiten) {
+      const k = lokalesDatum(z.startTime);
+      map.set(k, [...(map.get(k) ?? []), z]);
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  })();
+
+  const vorarbeitTage = new Map<string, VorarbeitTagInfo>(
+    tage.map(([datum, liste]) => {
+      const enden = liste.map((z) => z.endTime);
+      return [datum, {
+        anzahl: liste.length,
+        erstStart: Math.min(...liste.map((z) => z.startTime)),
+        letztEnde: enden.some((e) => e == null) ? null : Math.max(...(enden as number[])),
+      }];
+    })
+  );
+
+  /** Vergütete Minuten (nach Zeitfenster) — null bei laufender Stempelung / ignoriert. */
+  function verguetet(a: Arbeitszeit): number | null {
+    if (a.status !== 'abgeschlossen' || a.nichtBeruecksichtigen) return null;
+    const k = kappeVorarbeit(a, ausgabe);
+    return k.vorarbeitKappung ? k.vorarbeitKappung.verguetetMin : berechneNettoMinuten(a);
   }
 
-  function formatDatum(ts: number): string {
-    const d = new Date(ts);
-    return d.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  }
+  const summeErfasst = zeiten
+    .filter((a) => a.status === 'abgeschlossen' && !a.nichtBeruecksichtigen)
+    .reduce((s, a) => s + berechneNettoMinuten(a), 0);
+  const summeVerguetet = zeiten.reduce((s, a) => s + (verguetet(a) ?? 0), 0);
 
   async function handleLoeschen(id: string) {
     if (!confirm('Diesen Vorarbeit-Eintrag wirklich löschen?')) return;
@@ -1199,11 +1437,28 @@ function ArbeitszeitVorarbeitSektion({
   }
 
   return (
+    <>
+    <VorarbeitZeitfensterEditor
+      // Neu aufsetzen bei Ausgabewechsel bzw. gespeichertem Stand
+      key={`${ausgabe.id}|${JSON.stringify(ausgabe.vorarbeitZeitfenster ?? [])}`}
+      ausgabe={ausgabe}
+      vorarbeitTage={vorarbeitTage}
+      gesperrt={gesperrt}
+      onGespeichert={onZeitfensterGespeichert}
+    />
     <div className="mt-5 pt-4 border-t border-amber-200">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <h3 className="text-sm font-semibold text-amber-900">
-          Erfasste Vorarbeitszeiten (aus Zeiterfassung) — {zeiten.length}
+          Erfasste Vorarbeitszeiten {kwLabel(ausgabe.kw, ausgabe.jahr)} (aus Zeiterfassung) — {zeiten.length}
         </h3>
+        {zeiten.length > 0 && (
+          <span className="text-xs text-amber-900">
+            erfasst {formatierDauer(summeErfasst)}
+            {Math.round(summeVerguetet) !== Math.round(summeErfasst) && (
+              <> · <span className="font-semibold">vergütet {formatierDauer(summeVerguetet)}</span></>
+            )}
+          </span>
+        )}
         {!gesperrt && !neuForm && (
           <button
             onClick={() => setNeuForm(true)}
@@ -1217,58 +1472,92 @@ function ArbeitszeitVorarbeitSektion({
       {loading && <p className="text-xs text-amber-700">Lade...</p>}
 
       {!loading && zeiten.length === 0 && !neuForm && (
-        <p className="text-xs text-amber-700 italic">Noch keine Arbeitszeit-Einträge für diese Ausgabe erfasst.</p>
+        <p className="text-xs text-amber-700 italic">In dieser KW wurde noch keine Vorarbeit erfasst.</p>
       )}
 
-      <div className="space-y-2">
-        {zeiten.map((z) => {
-          const ma = zusammentraeger.find((m) => m.id === z.mitarbeiterId)
-            ?? { id: z.mitarbeiterId, name: '(unbekannt / andere Rolle)' } as { id: string; name: string };
-          const isEditing = editId === z.id;
-          if (isEditing) {
-            return (
-              <ArbeitszeitEditForm
-                key={z.id}
-                arbeitszeit={z}
-                maName={ma.name}
-                onCancel={() => setEditId(null)}
-                onSaved={async () => { setEditId(null); await reload(); }}
-              />
-            );
-          }
+      <div className="space-y-3">
+        {tage.map(([datum, liste]) => {
+          const fenster = zeitfensterFuer({ startTime: liste[0].startTime }, ausgabe);
           return (
-            <div key={z.id} className="flex items-center gap-3 bg-white rounded-lg border border-amber-200 px-4 py-2">
-              <span className="font-medium text-gray-900 w-40 shrink-0 text-sm">{ma.name}</span>
-              <span className="text-xs text-gray-600">
-                {formatDatum(z.startTime)}
-                {z.endTime ? ` → ${formatDatum(z.endTime)}` : ''}
-              </span>
-              <span className="text-xs font-semibold text-amber-800 ml-2">{formatDauer(z)}</span>
-              <span className="text-[10px] uppercase tracking-wide text-gray-400 ml-auto">{z.quelle}</span>
-              {!gesperrt && (
-                <>
-                  <button
-                    onClick={() => setEditId(z.id)}
-                    className="text-blue-500 hover:text-blue-700 text-xs px-2 py-0.5 rounded hover:bg-blue-50"
-                  >
-                    Bearbeiten
-                  </button>
-                  <button
-                    onClick={() => handleLoeschen(z.id)}
-                    className="text-red-400 hover:text-red-600 text-sm px-2 py-0.5 rounded hover:bg-red-50"
-                    title="Eintrag löschen"
-                  >
-                    ✕
-                  </button>
-                </>
-              )}
+            <div key={datum}>
+              <div className="flex items-center gap-2 mb-1 text-xs">
+                <span className="font-semibold text-amber-900">{wochentagLabel(datum)}</span>
+                {fenster ? (
+                  <span className="bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded">
+                    Zeitfenster: vergütet {zeitfensterText(fenster)}
+                  </span>
+                ) : (
+                  <span className="text-amber-700">ohne Zeitfenster</span>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                {liste.map((z) => {
+                  const ma = mitarbeiter.find((m) => m.id === z.mitarbeiterId);
+                  if (editId === z.id) {
+                    return (
+                      <ArbeitszeitEditForm
+                        key={z.id}
+                        arbeitszeit={z}
+                        maName={ma?.name ?? '(unbekannt)'}
+                        onCancel={() => setEditId(null)}
+                        onSaved={async () => { setEditId(null); await reload(); }}
+                      />
+                    );
+                  }
+                  const netto = berechneNettoMinuten(z);
+                  const verg = verguetet(z);
+                  const gekappt = verg != null && Math.round(verg) !== Math.round(netto);
+                  return (
+                    <div key={z.id} className="flex items-center gap-3 flex-wrap bg-white rounded-lg border border-amber-200 px-4 py-2">
+                      <span className="font-medium text-gray-900 w-40 shrink-0 text-sm">{ma?.name ?? '(unbekannt)'}</span>
+                      <span className="text-xs text-gray-600">
+                        {formatierZeit(z.startTime)}
+                        {z.endTime ? ` → ${lokalesDatum(z.endTime) !== datum ? wochentagLabel(lokalesDatum(z.endTime)) + ' ' : ''}${formatierZeit(z.endTime)}` : ''}
+                      </span>
+                      <span className={`text-xs font-semibold ml-2 ${gekappt ? 'text-gray-400 line-through' : 'text-amber-800'}`}>
+                        {z.endTime ? formatierDauer(netto) : '— aktiv —'}
+                      </span>
+                      {gekappt && (
+                        <span
+                          className="text-xs font-semibold text-green-700"
+                          title={`${formatierDauer(netto - verg)} außerhalb des Zeitfensters — gilt als Zusammentragen, nicht nach Zeit vergütet`}
+                        >
+                          vergütet {formatierDauer(verg)}
+                          <span className="font-normal text-gray-500"> ({formatierDauer(netto - verg)} als Zusammentragen)</span>
+                        </span>
+                      )}
+                      {z.nichtBeruecksichtigen && (
+                        <span className="text-[10px] bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">🚫 ignoriert</span>
+                      )}
+                      <span className="text-[10px] uppercase tracking-wide text-gray-400 ml-auto">{z.quelle}</span>
+                      {!gesperrt && (
+                        <>
+                          <button
+                            onClick={() => setEditId(z.id)}
+                            className="text-blue-500 hover:text-blue-700 text-xs px-2 py-0.5 rounded hover:bg-blue-50"
+                          >
+                            Bearbeiten
+                          </button>
+                          <button
+                            onClick={() => handleLoeschen(z.id)}
+                            className="text-red-400 hover:text-red-600 text-sm px-2 py-0.5 rounded hover:bg-red-50"
+                            title="Eintrag löschen"
+                          >
+                            ✕
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           );
         })}
 
         {neuForm && (
           <ArbeitszeitNeuForm
-            ausgabeId={ausgabeId}
+            ausgabe={ausgabe}
             zusammentraeger={zusammentraeger}
             onCancel={() => setNeuForm(false)}
             onSaved={async () => { setNeuForm(false); await reload(); }}
@@ -1276,25 +1565,29 @@ function ArbeitszeitVorarbeitSektion({
         )}
       </div>
     </div>
+    </>
   );
 }
 
 // ---- Neu-Form für Arbeitszeit-Vorarbeit -----------------------
 
 function ArbeitszeitNeuForm({
-  ausgabeId,
+  ausgabe,
   zusammentraeger,
   onCancel,
   onSaved,
 }: {
-  ausgabeId: string;
-  zusammentraeger: ReturnType<typeof useApp>['mitarbeiter'];
+  ausgabe: Ausgabe;
+  zusammentraeger: Mitarbeiter[];
   onCancel: () => void;
   onSaved: () => Promise<void> | void;
 }) {
+  const ausgabeId = ausgabe.id;
   const { abrechnungsperioden } = useApp();
-  const heute = new Date();
-  const defDatum = heute.toISOString().slice(0, 10);
+  // Vorbelegung: heute, wenn in der KW der Ausgabe — sonst deren Montag.
+  const kwTage = tageDerKw(ausgabe.kw, ausgabe.jahr);
+  const heuteDatum = lokalesDatum(Date.now());
+  const defDatum = kwTage.includes(heuteDatum) ? heuteDatum : kwTage[0];
   const [maId, setMaId] = useState('');
   const [datum, setDatum] = useState(defDatum);
   const [startZeit, setStartZeit] = useState('08:00');
@@ -1396,6 +1689,12 @@ function ArbeitszeitNeuForm({
           Abbrechen
         </button>
       </div>
+      {!kwTage.includes(datum) && (
+        <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+          ⚠ Das Datum liegt nicht in {kwLabel(ausgabe.kw, ausgabe.jahr)} — die Zeit wird der
+          Ausgabe der KW des Datums zugeordnet (falls vorhanden).
+        </div>
+      )}
       {warnungPeriode && (
         <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
           ⚠ <span className="font-medium">{warnungPeriode.bezeichnung}</span> ist

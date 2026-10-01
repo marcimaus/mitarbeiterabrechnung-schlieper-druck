@@ -904,6 +904,30 @@ export async function ladeArbeitszeitenFuerAusgabe(ausgabeId: string): Promise<A
   return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Arbeitszeit));
 }
 
+/**
+ * Lädt die Vorarbeit-Kandidaten einer Ausgabe: alle Arbeitszeiten, die in
+ * der KW begonnen haben (Zusammenträger wählen keine KW aus), plus die
+ * explizit der Ausgabe zugeordneten. Die endgültige Zuordnung trifft
+ * `vorarbeitAusgabe` (lib/vorarbeit).
+ */
+export async function ladeVorarbeitKandidatenFuerKw(
+  ausgabeId: string,
+  zeitraum: { start: number; ende: number },
+): Promise<Arbeitszeit[]> {
+  const [kwSnap, zugeordnet] = await Promise.all([
+    getDocs(query(
+      collection(db, 'arbeitszeiten'),
+      where('startTime', '>=', zeitraum.start),
+      where('startTime', '<', zeitraum.ende),
+    )),
+    ladeArbeitszeitenFuerAusgabe(ausgabeId),
+  ]);
+  const map = new Map<string, Arbeitszeit>();
+  for (const d of kwSnap.docs) map.set(d.id, { id: d.id, ...d.data() } as Arbeitszeit);
+  for (const a of zugeordnet) map.set(a.id, a);
+  return [...map.values()].filter((a) => a.typ === 'vorarbeit');
+}
+
 // ---- Fahrt-Erfassung (neue Collection) ----------------------
 
 export async function ladeFahrten(filter?: {

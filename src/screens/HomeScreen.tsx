@@ -4,6 +4,7 @@ import { abonniereReklamationen, ausgabenListener, ladeEinsaetzeFuerJahre, mitar
 import { urlaubsAusstehendListener, urlaubsWochenListener } from '../lib/planung';
 import { aktiveSessions, vorarbeitArbeitszeitenListener } from '../lib/zeiterfassung';
 import { getCurrentKW, getISOWeek, getISOYear, kwLabel, maxKWinJahr } from '../lib/kalender';
+import { vorarbeitAusgabe } from '../lib/vorarbeit';
 import { analysiereRestmengen, juengstePerioden, type TgRestmengeStat } from '../lib/restmengenanalyse';
 import { berechneTilgungsplan, darlehenStatus } from '../lib/darlehen';
 import { formatierEuro } from '../lib/berechnung';
@@ -107,11 +108,7 @@ export default function HomeScreen() {
     return () => unsub();
   }, [isAdminAuthenticated]);
   const vorarbeitOhneFreigabe = (() => {
-    const freigabeProAusgabe = new Map(ausgaben.map((a) => [a.id, !!a.vorarbeitFreigegeben]));
-    // Fallback: über (jahr, kw) der Stempelzeit — falls Stempelung ohne
-    // explizite Ausgaben-Zuordnung erfolgte (analog zur Abrechnungslogik).
-    const freigegebenInKw = (jahr: number, kw: number) =>
-      ausgaben.some((x) => x.jahr === jahr && x.kw === kw && x.vorarbeitFreigegeben === true);
+    // Zuordnung zur Ausgabe analog zur Abrechnungslogik (KW der Stempelzeit).
     type Eintrag = {
       mitarbeiterId: string;
       mitarbeiterName: string;
@@ -127,9 +124,7 @@ export default function HomeScreen() {
       const startD = new Date(a.startTime);
       const jahr = getISOYear(startD);
       const kw = getISOWeek(startD);
-      const istFreigegeben = a.ausgabeId
-        ? freigabeProAusgabe.get(a.ausgabeId) === true
-        : freigegebenInKw(jahr, kw);
+      const istFreigegeben = vorarbeitAusgabe(a, ausgaben)?.vorarbeitFreigegeben === true;
       if (istFreigegeben) continue;
       const ma = mitarbeiter.find((m) => m.id === a.mitarbeiterId);
       const name = ma?.name ?? 'Unbekannt';

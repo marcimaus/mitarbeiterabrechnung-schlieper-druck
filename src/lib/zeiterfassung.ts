@@ -473,8 +473,9 @@ export function formatierDatum(timestamp: number): string {
 }
 
 export function formatierDauer(minuten: number): string {
-  const h = Math.floor(minuten / 60);
-  const m = Math.round(minuten % 60);
+  const gerundet = Math.round(minuten);
+  const h = Math.floor(gerundet / 60);
+  const m = gerundet % 60;
   return `${h}:${m.toString().padStart(2, '0')} h`;
 }
 

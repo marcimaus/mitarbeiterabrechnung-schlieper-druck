@@ -27,9 +27,11 @@ import {
   istMinderjährig,
 } from '../lib/berechnung';
 import { berechneNettoMinuten } from '../lib/zeiterfassung';
+import { zeitfensterText } from '../lib/vorarbeit';
 import type {
   Abrechnungsperiode,
   Arbeitszeit,
+  VorarbeitKappung,
   Ausgabe,
   Beilage,
   Einsatz,
@@ -145,6 +147,9 @@ interface BonusZeile {
 interface ZeitZeile {
   az: Arbeitszeit;
   nettoMin: number;
+  /** Vergütete Minuten — kleiner als nettoMin bei Vorarbeit-Zeitfenster-Kappung. */
+  verguetetMin: number;
+  kappung?: VorarbeitKappung;
   abgerechnet: boolean;
   satz: number;
   grund?: string;
@@ -374,15 +379,25 @@ export default function AbrechnungsAufschluesselung({
 
   // ---- Zeiterfassung ------------------------------------------------
   const abgerechnetIds = new Set(er.arbeitszeiten.map((a) => a.id));
+  // Kappung durch Vorarbeit-Zeitfenster hängt an den berechneten Kopien.
+  const kappungById = new Map(
+    [...er.arbeitszeiten, ...er.arbeitszeitenNichtAbgerechnet]
+      .filter((a) => a.vorarbeitKappung)
+      .map((a) => [a.id, a.vorarbeitKappung!])
+  );
   const zeitZeilen: ZeitZeile[] = data.arbeitszeiten
     .filter((a) => a.mitarbeiterId === ma.id)
     .sort((a, b) => a.startTime - b.startTime)
     .map((az) => {
       const abgerechnet = abgerechnetIds.has(az.id);
       const satz = az.typ === 'vorarbeit' || az.typ === 'zusammentragen' ? satzZus : satzAustr;
+      const kappung = kappungById.get(az.id);
+      const nettoMin = berechneNettoMinuten(az);
       let grund: string | undefined;
       if (!abgerechnet) {
-        if (az.nichtBeruecksichtigen) {
+        if (kappung && !az.nichtBeruecksichtigen) {
+          grund = `vollständig außerhalb Zeitfenster (${zeitfensterText(kappung)}) — gilt als Zusammentragen`;
+        } else if (az.nichtBeruecksichtigen) {
           grund = `als „nicht berücksichtigen" markiert${az.nichtBeruecksichtigenGrund ? `: ${az.nichtBeruecksichtigenGrund}` : ''}`;
         } else if (az.status !== 'abgeschlossen') grund = 'noch nicht ausgestempelt';
         else if (ma.hatFestgehalt) grund = 'Festgehalt — Zeit fließt nicht ein';
@@ -391,7 +406,8 @@ export default function AbrechnungsAufschluesselung({
         else if (az.typ === 'vorarbeit') grund = 'Ausgabe nicht für Vorarbeit freigegeben';
         else grund = 'nicht abgerechnet';
       }
-      return { az, nettoMin: berechneNettoMinuten(az), abgerechnet, satz, grund };
+      const verguetetMin = kappung ? kappung.verguetetMin : nettoMin;
+      return { az, nettoMin, verguetetMin, kappung, abgerechnet, satz, grund };
     });
   const zeitTage = (() => {
     const map = new Map<string, ZeitZeile[]>();
@@ -402,7 +418,7 @@ export default function AbrechnungsAufschluesselung({
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   })();
   const zeitMinGesamt = zeitZeilen.reduce((s, z) => s + z.nettoMin, 0);
-  const zeitMinAbgerechnet = zeitZeilen.filter((z) => z.abgerechnet).reduce((s, z) => s + z.nettoMin, 0);
+  const zeitMinAbgerechnet = zeitZeilen.filter((z) => z.abgerechnet).reduce((s, z) => s + z.verguetetMin, 0);
   const aufteilung = zeitLohnAufteilung(er);
   const zeitVorarbeitLohn = aufteilung?.vorarbeit ?? 0;
   const zeitUebrigeLohn = aufteilung ? aufteilung.uebrige : er.zeitLohn;
@@ -541,7 +557,15 @@ export default function AbrechnungsAufschluesselung({
   if (ignorierteZeiten.length > 0) {
     hinweise.push({ stufe: 'info', text: `${ignorierteZeiten.length} Zeiterfassung(en) als „nicht berücksichtigen" markiert.` });
   }
-  const vorarbeitNichtFrei = vorarbeitStempel.filter((z) => !z.abgerechnet && z.az.status === 'abgeschlossen' && !z.az.nichtBeruecksichtigen);
+  const vorarbeitGekappt = vorarbeitStempel.filter((z) => z.kappung && !z.az.nichtBeruecksichtigen);
+  if (vorarbeitGekappt.length > 0 && !ma.hatFestgehalt) {
+    const gekapptMin = vorarbeitGekappt.reduce((s, z) => s + (z.nettoMin - z.verguetetMin), 0);
+    hinweise.push({
+      stufe: 'info',
+      text: `${vorarbeitGekappt.length} gestempelte Vorarbeit durch Zeitfenster der Ausgabe begrenzt — ${stdMin(gekapptMin / 60)} außerhalb gelten als Zusammentragen (nicht nach Zeit vergütet).`,
+    });
+  }
+  const vorarbeitNichtFrei = vorarbeitStempel.filter((z) => !z.abgerechnet && !z.kappung && z.az.status === 'abgeschlossen' && !z.az.nichtBeruecksichtigen);
   if (vorarbeitNichtFrei.length > 0 && !ma.hatFestgehalt) {
     hinweise.push({
       stufe: 'warnung',
@@ -1128,7 +1152,9 @@ export default function AbrechnungsAufschluesselung({
           leer={vorarbeitZt.length === 0 && vorarbeitStempel.length === 0 && !ztNichtVerguetet.some((x) => x.z.istVorarbeit)}
         >
           <Schluessel>
-            Vorarbeit wird nur vergütet, wenn die Ausgabe der KW für Vorarbeit freigegeben ist.
+            Vorarbeit wird nur vergütet, wenn die Ausgabe der KW (Datum der Stempelung) für Vorarbeit
+            freigegeben ist. Hat die Ausgabe für den Tag ein Zeitfenster, wird nur die Vorarbeit
+            innerhalb des Fensters vergütet; der Rest gilt als Zusammentragen.
             Lohn = Minuten ÷ 60 × {zahl(satzZus, 2)} €/h (Zusammentragen-Satz). Minuten-Einträge beim
             Zusammentragen zählen zur Position Zusammentragen, gestempelte Vorarbeit zum Zeitlohn.
           </Schluessel>
@@ -1617,11 +1643,18 @@ function ZeitZeileTr({ z, tagAnzeigen, anzTagesZeilen }: { z: ZeitZeile; tagAnze
       <td className={`${td} text-right font-mono`}>{stdMin(z.nettoMin / 60)}</td>
       <td className={td}>
         {z.abgerechnet
-          ? <span className="text-green-700">✓ × {zahl(z.satz, 2)} €/h</span>
+          ? <span className="text-green-700">
+              ✓ {z.kappung ? `${stdMin(z.verguetetMin / 60)} ` : ''}× {zahl(z.satz, 2)} €/h
+              {z.kappung && (
+                <span className="block text-amber-700">
+                  Zeitfenster {zeitfensterText(z.kappung)}: {stdMin((z.nettoMin - z.verguetetMin) / 60)} als Zusammentragen
+                </span>
+              )}
+            </span>
           : <span className="text-amber-700">✗ {z.grund}</span>}
       </td>
       <td className={`${td} text-right font-mono ${z.abgerechnet ? 'font-semibold' : ''}`}>
-        {z.abgerechnet ? eur((z.nettoMin / 60) * z.satz) : '—'}
+        {z.abgerechnet ? eur((z.verguetetMin / 60) * z.satz) : '—'}
       </td>
     </tr>
   );

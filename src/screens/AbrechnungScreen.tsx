@@ -37,7 +37,8 @@ import {
 import { sichereTeilgebietsdokuAktuell } from '../lib/teilgebietsdoku';
 import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
-import { getISOWeek, getISOYear } from '../lib/kalender';
+import { getISOWeek } from '../lib/kalender';
+import { vorarbeitAusgabe, zeitfensterText } from '../lib/vorarbeit';
 import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet, Arbeitszeit, Einsatz } from '../types';
 import {
   austraegerwechselPlanListener,
@@ -94,14 +95,8 @@ function ermittleVorarbeitOhneFreigabe(
   data: { ausgaben: Ausgabe[]; arbeitszeiten: Arbeitszeit[] },
   mitarbeiter: Mitarbeiter[],
 ): { name: string; minuten: number; kws: number[] }[] {
-  const freigabeMap = new Map(data.ausgaben.map((a) => [a.id, !!a.vorarbeitFreigegeben]));
-  const istFreigegeben = (a: Arbeitszeit): boolean => {
-    if (a.ausgabeId) return freigabeMap.get(a.ausgabeId) === true;
-    const d = new Date(a.startTime);
-    return data.ausgaben.some(
-      (x) => x.jahr === getISOYear(d) && x.kw === getISOWeek(d) && x.vorarbeitFreigegeben === true,
-    );
-  };
+  const istFreigegeben = (a: Arbeitszeit): boolean =>
+    vorarbeitAusgabe(a, data.ausgaben)?.vorarbeitFreigegeben === true;
 
   const offene = data.arbeitszeiten.filter(
     (a) =>
@@ -2911,6 +2906,14 @@ function DetailAnsicht({
                       {new Date(az.startTime).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' })}
                     </span>
                     <span className="ml-2 text-gray-500">{az.typ}</span>
+                    {az.vorarbeitKappung && (
+                      <span
+                        className="ml-2 text-xs text-amber-700"
+                        title="Vorarbeit außerhalb des Zeitfensters der Ausgabe gilt als Zusammentragen und wird nicht nach Zeit vergütet"
+                      >
+                        Zeitfenster {zeitfensterText(az.vorarbeitKappung)} — erfasst {stdMin(az.vorarbeitKappung.originalNettoMin / 60)}
+                      </span>
+                    )}
                   </div>
                   <div className="text-gray-800 font-medium">{stdMin(nettoMin / 60)}</div>
                 </div>
@@ -2935,10 +2938,13 @@ function DetailAnsicht({
           if (typenImBlock.has('zusammentragen')) {
             gruende.push('Zusammentragen: über Stapel/Stückzahl abgerechnet');
           }
-          if (typenImBlock.has('vorarbeit')) {
+          if (er.arbeitszeitenNichtAbgerechnet.some((a) => a.typ === 'vorarbeit' && !a.vorarbeitKappung)) {
             gruende.push(
               'Vorarbeit: in keiner Ausgabe dieser Periode freigegeben (Kennzeichen „Vorarbeit freigegeben" in Ausgabenplanung setzen)'
             );
+          }
+          if (er.arbeitszeitenNichtAbgerechnet.some((a) => a.vorarbeitKappung)) {
+            gruende.push('Vorarbeit: vollständig außerhalb des Zeitfensters der Ausgabe — gilt als Zusammentragen');
           }
         }
         return (
@@ -2968,6 +2974,11 @@ function DetailAnsicht({
                         })}
                       </span>
                       <span className="ml-2">{az.typ}</span>
+                      {az.vorarbeitKappung && (
+                        <span className="ml-2 text-xs text-amber-700">
+                          außerhalb Zeitfenster {zeitfensterText(az.vorarbeitKappung)}
+                        </span>
+                      )}
                     </div>
                     <div className="font-medium">{stdMin(nettoMin / 60)}</div>
                   </div>
