@@ -21,7 +21,6 @@ import {
   type TgAuswertung,
 } from '../lib/teilgebietAuswertung';
 import { saisonPauseText } from '../lib/saison';
-import { formatDonnerstag } from '../lib/kalender';
 
 type LohnAuswahl = 'beide' | 'erwachsene' | 'minderjaehrige';
 
@@ -869,10 +868,7 @@ function TgBericht({
             <thead>
               <tr>
                 <th>KW</th>
-                <th>Erscheint</th>
                 <th className="n">Seiten</th>
-                <th className="n">Beilagen vorab / lose</th>
-                <th className="n">Beilagen g/Exemplar</th>
                 <th className="n">Soll-Zeit</th>
                 <th className="n">Gewichts­zulagen</th>
                 {spalten.map((s) => <th key={s.key} className="n">Verdienst {s.label}</th>)}
@@ -883,16 +879,12 @@ function TgBericht({
                 z.inSaisonpause ? (
                   <tr key={z.ausgabeId} className="grau">
                     <td>{z.kw}/{z.jahr}</td>
-                    <td>{formatDonnerstag(z.kw, z.jahr)}</td>
-                    <td colSpan={5 + spalten.length}>nicht beliefert (Saisonpause)</td>
+                    <td colSpan={3 + spalten.length}>nicht beliefert (Saisonpause)</td>
                   </tr>
                 ) : (
                   <tr key={z.ausgabeId}>
                     <td>{z.kw}/{z.jahr}</td>
-                    <td>{formatDonnerstag(z.kw, z.jahr)}</td>
                     <td className="n">{z.seitenzahl}</td>
-                    <td className="n">{z.beilagenInt} / {z.beilagenExt}</td>
-                    <td className="n">{zahl(z.beilagenGewichtG, 1)}</td>
                     <td className="n">{stdMin(z.zeitH)}</td>
                     <td className="n">{eur(z.gewichtsbonusAnzeigenblatt + z.gewichtsbonusBeilagen)}</td>
                     {lohnZellen(z.gesamt)}
