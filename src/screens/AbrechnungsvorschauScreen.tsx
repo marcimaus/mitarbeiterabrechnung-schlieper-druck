@@ -2,11 +2,13 @@
 // Einzel-MA-Vorschau für eine Abrechnungsperiode, optional erweitert um
 // zusätzliche Teilgebiete (Was-wäre-wenn). Nützlich z. B. um einem
 // Interessenten zu zeigen, was er verdienen würde, wenn er ein bestimmtes
-// Gebiet übernähme.
+// Gebiet übernähme. Dritter Bereich „Teilgebiet auswerten": Gebiets-
+// beschreibung + Verdienstmöglichkeiten für Interessenten (A4/PDF).
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
+import TeilgebietAuswertung from '../components/TeilgebietAuswertung';
 import AbrechnungsAufschluesselung, {
   type AufschluesselungKontext,
   type Vertretung,
@@ -74,7 +76,7 @@ export default function AbrechnungsvorschauScreen() {
 function AbrechnungsvorschauInhalt() {
   const { mitarbeiter, teilgebiete, touren, abrechnungsperioden, parameter, variablePeriodenZusaetze, lohnkontoBuchungen } = useApp();
 
-  const [modus, setModus] = useState<'ma' | 'manuell'>('ma');
+  const [modus, setModus] = useState<'ma' | 'manuell' | 'tg'>('ma');
   const [maId, setMaId] = useState('');
   const [periodeId, setPeriodeId] = useState('');
   const [extraTgIds, setExtraTgIds] = useState<string[]>([]);
@@ -557,7 +559,7 @@ function AbrechnungsvorschauInhalt() {
       </p>
 
       {/* Modus-Toggle */}
-      <div className="mb-4 flex gap-2">
+      <div className="mb-4 flex flex-wrap gap-2">
         <button
           type="button"
           onClick={() => setModus('ma')}
@@ -575,6 +577,15 @@ function AbrechnungsvorschauInhalt() {
           }`}
         >
           ✏️ Manuelle Eingabe (z. B. neuer Bewerber)
+        </button>
+        <button
+          type="button"
+          onClick={() => setModus('tg')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+            modus === 'tg' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+          }`}
+        >
+          📍 Teilgebiet auswerten
         </button>
       </div>
 
@@ -953,6 +964,9 @@ function AbrechnungsvorschauInhalt() {
           </div>
         </div>
       )}
+
+      {/* Modus „Teilgebiet auswerten" */}
+      {modus === 'tg' && <TeilgebietAuswertung />}
 
       {/* Ergebnis — MA-Modus */}
       {modus === 'ma' && ergebnis && kontext && (
