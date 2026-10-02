@@ -31,7 +31,12 @@ import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaeti
 // Re-Export, damit die Tab-Komponente unten den selben Typen-Pfad nutzt.
 import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
-import { nameMitFestgehaltSymbol } from '../utils';
+import {
+  nameMitFestgehaltSymbol,
+  hatOffenesWeiteresInteresse,
+  istInInteressentenAuswertung,
+  interessentenRang,
+} from '../utils';
 import { eur } from '../lib/abrechnungslogik';
 
 type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'lieferadressen' | 'anmeldung' | 'lohnkonto' | 'verdienstbescheinigung';
@@ -104,6 +109,50 @@ const ALLE_INTERESSE_TAETIGKEITEN: InteresseTaetigkeit[] = [
   'buero',
 ];
 
+function WeiteresInteresseBadge() {
+  return (
+    <span
+      className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 whitespace-nowrap"
+      title="Bestehender Mitarbeiter mit Interesse an weiterer Tätigkeit"
+    >
+      💡 weitere Tätigkeit
+    </span>
+  );
+}
+
+/**
+ * Chips der Listenzeile: Interessenten zeigen ihre Interessen statt Rollen;
+ * bestehende MAs zeigen ihre Rollen und — bei offenem Interesse an weiterer
+ * Tätigkeit — zusätzlich die Interessen.
+ */
+function InteresseChips({ m }: { m: Mitarbeiter }) {
+  const zeigeInteresse = m.istInteressent || hatOffenesWeiteresInteresse(m);
+  return (
+    <>
+      {!m.istInteressent && m.rollen.map((r) => (
+        <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+          {ROLLEN_LABELS[r]}
+        </span>
+      ))}
+      {zeigeInteresse && (m.interesseTaetigkeiten ?? []).map((t) => (
+        <span
+          key={`int-${t}`}
+          className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full"
+          title={m.istInteressent ? 'Interesse für Tätigkeit' : 'Interesse an weiterer Tätigkeit'}
+        >
+          {m.istInteressent ? '' : '💡 '}{INTERESSE_TAETIGKEIT_LABELS[t]}
+        </span>
+      ))}
+      {zeigeInteresse && (m.interessentOrte ?? []).map((o) => (
+        <span key={`ort-${o}`} className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full" title="Interesse für Ort / Teilgebiet">📍 {o}</span>
+      ))}
+      {zeigeInteresse && m.autoVorhanden && (
+        <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full" title="Auto vorhanden">🚗 Auto</span>
+      )}
+    </>
+  );
+}
+
 export default function MitarbeiterScreen() {
   return (
     <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
@@ -174,14 +223,14 @@ function MitarbeiterInhalt() {
 
   const gefiltert = mitarbeiter.filter((m) => {
     // Interessenten-Filter: 'ohne' (Standard) blendet Interessenten aus,
-    // 'nur' zeigt ausschließlich Interessenten, '' zeigt alle.
+    // 'nur' zeigt ausschließlich Interessenten + bestehende MAs mit
+    // Interesse an weiterer Tätigkeit, '' zeigt alle.
     if (filterInteressent === 'ohne' && m.istInteressent) return false;
-    if (filterInteressent === 'nur' && !m.istInteressent) return false;
-    // Tätigkeits-Filter: nur sinnvoll bei Interessenten — wird auch nur dort
-    // angewendet. Andere MAs (kein istInteressent) bleiben unberührt, außer
-    // der Filter ist aktiv UND wir suchen explizit nach Tätigkeit.
+    if (filterInteressent === 'nur' && !istInInteressentenAuswertung(m)) return false;
+    // Tätigkeits-Filter: nur sinnvoll bei Interessenten bzw. MAs mit
+    // offenem Interesse an weiterer Tätigkeit — alle anderen fallen raus.
     if (filterInteresseTaetigkeit) {
-      if (!m.istInteressent) return false;
+      if (!istInInteressentenAuswertung(m)) return false;
       const list = m.interesseTaetigkeiten ?? [];
       if (!list.includes(filterInteresseTaetigkeit)) return false;
     }
@@ -236,10 +285,18 @@ function MitarbeiterInhalt() {
   });
 
   // Sortierung nach Datum der Kontaktaufnahme (nur wenn Interessenten
-  // angezeigt werden). Fehlende Daten immer ans Ende.
-  if (filterInteressent !== 'ohne' && sortierung !== 'standard') {
+  // angezeigt werden). Fehlende Daten immer ans Ende. Bei „nur
+  // Interessenten" stehen bestehende MAs mit Interesse an weiterer
+  // Tätigkeit immer oben (priorisiert).
+  const priorisieren = filterInteressent === 'nur';
+  if (filterInteressent !== 'ohne' && (sortierung !== 'standard' || priorisieren)) {
     const richtung = sortierung === 'kontaktNeu' ? -1 : 1;
     gefiltert.sort((a, b) => {
+      if (priorisieren) {
+        const r = interessentenRang(a) - interessentenRang(b);
+        if (r !== 0) return r;
+      }
+      if (sortierung === 'standard') return 0;
       const da = a.interessentKontaktDatum ?? '';
       const db = b.interessentKontaktDatum ?? '';
       if (!da && !db) return 0;
@@ -269,6 +326,11 @@ function MitarbeiterInhalt() {
             {mitarbeiter.filter((m) => m.istInteressent && !m.interessentDeinteressiert).length > 0 && (
               <span className="ml-2 text-amber-700">
                 · {mitarbeiter.filter((m) => m.istInteressent && !m.interessentDeinteressiert).length} Interessenten
+              </span>
+            )}
+            {mitarbeiter.filter(hatOffenesWeiteresInteresse).length > 0 && (
+              <span className="ml-2 text-amber-700" title="Bestehende Mitarbeiter mit Interesse an weiterer Tätigkeit">
+                · {mitarbeiter.filter(hatOffenesWeiteresInteresse).length} MA mit Interesse an weiterer Tätigkeit
               </span>
             )}
           </p>
@@ -390,7 +452,7 @@ function MitarbeiterInhalt() {
           title="Filter Interessenten"
         >
           <option value="ohne">ohne Interessenten</option>
-          <option value="nur">💡 nur Interessenten</option>
+          <option value="nur">💡 nur Interessenten (inkl. MA mit Interesse)</option>
           <option value="">alle (inkl. Interessenten)</option>
         </select>
         {filterInteressent !== 'ohne' && (
@@ -533,23 +595,7 @@ function MitarbeiterInhalt() {
                     </div>
                   )}
                   <div className="flex flex-wrap gap-1">
-                    {m.istInteressent && m.autoVorhanden && (
-                      <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full" title="Auto vorhanden">🚗 Auto</span>
-                    )}
-                    {m.istInteressent && (m.interessentOrte ?? []).map((o) => (
-                      <span key={`ort-${o}`} className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full" title="Interesse für Ort / Teilgebiet">📍 {o}</span>
-                    ))}
-                    {m.istInteressent
-                      ? (m.interesseTaetigkeiten ?? []).map((t) => (
-                          <span key={t} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
-                            {INTERESSE_TAETIGKEIT_LABELS[t]}
-                          </span>
-                        ))
-                      : m.rollen.map((r) => (
-                          <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                            {ROLLEN_LABELS[r]}
-                          </span>
-                        ))}
+                    <InteresseChips m={m} />
                   </div>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
@@ -568,6 +614,7 @@ function MitarbeiterInhalt() {
                       {m.isActive ? 'Aktiv' : 'Inaktiv'}
                     </span>
                   )}
+                  {hatOffenesWeiteresInteresse(m) && <WeiteresInteresseBadge />}
                   <span className="text-blue-600 text-xs font-medium">Bearbeiten ›</span>
                 </div>
               </div>
@@ -682,23 +729,7 @@ function MitarbeiterInhalt() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
-                      {m.istInteressent && m.autoVorhanden && (
-                        <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full" title="Auto vorhanden">🚗 Auto</span>
-                      )}
-                      {m.istInteressent && (m.interessentOrte ?? []).map((o) => (
-                        <span key={`ort-${o}`} className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full" title="Interesse für Ort / Teilgebiet">📍 {o}</span>
-                      ))}
-                      {m.istInteressent
-                        ? (m.interesseTaetigkeiten ?? []).map((t) => (
-                            <span key={t} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
-                              {INTERESSE_TAETIGKEIT_LABELS[t]}
-                            </span>
-                          ))
-                        : m.rollen.map((r) => (
-                            <span key={r} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                              {ROLLEN_LABELS[r]}
-                            </span>
-                          ))}
+                      <InteresseChips m={m} />
                     </div>
                   </td>
                   <td className="px-4 py-3 text-gray-600">
@@ -769,6 +800,9 @@ function MitarbeiterInhalt() {
                       }`}>
                         {m.isActive ? 'Aktiv' : 'Inaktiv'}
                       </span>
+                    )}
+                    {hatOffenesWeiteresInteresse(m) && (
+                      <div className="mt-1"><WeiteresInteresseBadge /></div>
                     )}
                   </td>
                   {isAdmin && (
@@ -892,6 +926,7 @@ function MitarbeiterForm({
         ausgabenBonusKommentar: initial.ausgabenBonusKommentar,
         isActive: initial.isActive,
         istInteressent: initial.istInteressent ?? false,
+        interesseWeitereTaetigkeit: initial.interesseWeitereTaetigkeit ?? false,
         interessentDeinteressiert: initial.interessentDeinteressiert ?? false,
         interesseTaetigkeiten: initial.interesseTaetigkeiten ? [...initial.interesseTaetigkeiten] : [],
         autoVorhanden: initial.autoVorhanden ?? false,
@@ -1001,6 +1036,8 @@ function MitarbeiterForm({
           nummer: initial?.nummer ?? '',
           autoVorhanden: form.autoVorhanden ?? false,
           interessentOrte: orte.length > 0 ? orte : undefined,
+          // „Weitere Tätigkeit" gilt nur für bestehende MAs.
+          interesseWeitereTaetigkeit: false,
           rollen: [] as Rolle[],
           teilgebietFreigaben: [],
           nochNichtAngemeldet: false,
@@ -1261,6 +1298,133 @@ function MitarbeiterForm({
     );
   }
 
+  // Interessens-Felder (Tätigkeiten, Auto, Orte, Kontaktdatum, Link, Memo) —
+  // gemeinsam genutzt von Interessenten und bestehenden MAs mit Interesse an
+  // weiterer Tätigkeit.
+  const interesseFelder = (
+    <>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Tätigkeiten — Interesse besteht für (Mehrfachauswahl)
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {ALLE_INTERESSE_TAETIGKEITEN.map((t) => {
+            const aktiv = (form.interesseTaetigkeiten ?? []).includes(t);
+            return (
+              <label key={t} className={`flex items-center gap-2 rounded-lg border px-3 py-2 cursor-pointer text-sm ${
+                aktiv ? 'border-blue-500 bg-blue-50 text-blue-800' : 'border-gray-200 hover:bg-gray-50'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={aktiv}
+                  onChange={() => setForm((f) => {
+                    const cur = f.interesseTaetigkeiten ?? [];
+                    return {
+                      ...f,
+                      interesseTaetigkeiten: cur.includes(t)
+                        ? cur.filter((x) => x !== t)
+                        : [...cur, t],
+                    };
+                  })}
+                  className="rounded"
+                />
+                {INTERESSE_TAETIGKEIT_LABELS[t]}
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
+      <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 cursor-pointer text-sm">
+        <input
+          type="checkbox"
+          checked={form.autoVorhanden ?? false}
+          onChange={(e) => setForm((f) => ({ ...f, autoVorhanden: e.target.checked }))}
+          className="rounded"
+        />
+        🚗 <strong>Auto vorhanden</strong>
+        <span className="text-xs text-gray-500">(z. B. für Fahrer / Springer / Austräger)</span>
+      </label>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Interesse für Teilgebiete / Orte
+        </label>
+        {(form.interessentOrte ?? []).length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {(form.interessentOrte ?? []).map((o) => (
+              <span key={o} className="inline-flex items-center gap-1 text-sm bg-blue-50 border border-blue-200 text-blue-800 px-2 py-0.5 rounded-full">
+                📍 {o}
+                <button
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, interessentOrte: (f.interessentOrte ?? []).filter((x) => x !== o) }))}
+                  className="text-blue-500 hover:text-red-600 leading-none"
+                  title={`„${o}" entfernen`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            list="interessent-ort-vorschlaege"
+            value={neuerOrt}
+            onChange={(e) => setNeuerOrt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); ortHinzufuegen(); }
+            }}
+            placeholder="Teilgebiet oder Ort, z. B. Uslar"
+            className={inputClass}
+          />
+          <datalist id="interessent-ort-vorschlaege">
+            {ortVorschlaege.map((o) => <option key={o} value={o} />)}
+          </datalist>
+          <button
+            type="button"
+            onClick={ortHinzufuegen}
+            disabled={!neuerOrt.trim()}
+            className="shrink-0 px-3 py-2 text-sm rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-40"
+          >
+            + Hinzufügen
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <FormField label="Datum der Kontaktaufnahme">
+          <input
+            type="date"
+            value={form.interessentKontaktDatum ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, interessentKontaktDatum: e.target.value || undefined }))}
+            className={inputClass}
+          />
+        </FormField>
+        <FormField label="Link zu Korrespondenz (Google Mail / Drive)">
+          <input
+            type="url"
+            value={form.interessentKorrespondenzLink ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, interessentKorrespondenzLink: e.target.value || undefined }))}
+            placeholder="https://mail.google.com/..."
+            className={inputClass}
+          />
+        </FormField>
+      </div>
+
+      <FormField label="Memo (Einschätzung, Eindruck, Notizen)">
+        <textarea
+          value={form.interessentMemo ?? ''}
+          onChange={(e) => setForm((f) => ({ ...f, interessentMemo: e.target.value || undefined }))}
+          rows={4}
+          className={inputClass}
+          placeholder="z. B. ‚Sehr motivierter Bewerber, würde gerne zusätzlich mittwochs aushelfen.‘"
+        />
+      </FormField>
+    </>
+  );
+
   const TABS: { id: MaFormTab; label: string; count?: number }[] = form.istInteressent
     ? [{ id: 'stammdaten', label: 'Interessent-Daten' }]
     : [
@@ -1362,6 +1526,64 @@ function MitarbeiterForm({
           </div>
         </label>
       </div>
+
+      {/* Bestehender MA: Interesse an weiterer Tätigkeit — ohne Auswirkung
+          auf Abrechnung, Rollen oder Auswahllisten. */}
+      {!form.istInteressent && (
+        <div className={`rounded-lg border p-3 ${form.interesseWeitereTaetigkeit ? 'border-amber-300 bg-amber-50' : 'border-gray-200 bg-gray-50'}`}>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.interesseWeitereTaetigkeit ?? false}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setForm((f) => ({
+                  ...f,
+                  interesseWeitereTaetigkeit: next,
+                  // Neu bekundetes Interesse: „Desinteressiert" zurücksetzen und
+                  // Kontaktdatum mit heute vorbelegen, falls noch leer.
+                  ...(next && !f.interesseWeitereTaetigkeit ? { interessentDeinteressiert: false } : {}),
+                  ...(next && !f.interessentKontaktDatum
+                    ? { interessentKontaktDatum: new Date().toISOString().slice(0, 10) }
+                    : {}),
+                }));
+              }}
+              className="mt-0.5 rounded"
+            />
+            <div className="flex-1">
+              <div className="text-sm font-semibold text-gray-800">
+                💡 Interesse an weiterer Tätigkeit
+              </div>
+              <p className="text-xs text-gray-600 mt-0.5">
+                Mitarbeiter möchte zusätzlich tätig werden (z. B. ein weiteres
+                Teilgebiet austragen). Erscheint in der Interessenten-Auswertung
+                vor den Interessenten. Keine Auswirkung auf Abrechnung, Rollen
+                oder Freigaben.
+              </p>
+            </div>
+          </label>
+          {form.interesseWeitereTaetigkeit && (
+            <div className="mt-3 space-y-4 rounded-lg border border-amber-200 bg-white p-4">
+              {interesseFelder}
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.interessentDeinteressiert ?? false}
+                    onChange={(e) => setForm((f) => ({ ...f, interessentDeinteressiert: e.target.checked }))}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-gray-700">
+                    <strong>Desinteressiert</strong> — Interesse erledigt bzw.
+                    zurückgezogen. Der Mitarbeiter bleibt aktiv, erscheint aber
+                    nicht mehr in der Interessenten-Auswertung.
+                  </span>
+                </label>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Interessent-spezifische Felder */}
       {form.istInteressent && (
@@ -1516,125 +1738,7 @@ function MitarbeiterForm({
             return null;
           })()}
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Tätigkeiten — Interesse besteht für (Mehrfachauswahl)
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {ALLE_INTERESSE_TAETIGKEITEN.map((t) => {
-                const aktiv = (form.interesseTaetigkeiten ?? []).includes(t);
-                return (
-                  <label key={t} className={`flex items-center gap-2 rounded-lg border px-3 py-2 cursor-pointer text-sm ${
-                    aktiv ? 'border-blue-500 bg-blue-50 text-blue-800' : 'border-gray-200 hover:bg-gray-50'
-                  }`}>
-                    <input
-                      type="checkbox"
-                      checked={aktiv}
-                      onChange={() => setForm((f) => {
-                        const cur = f.interesseTaetigkeiten ?? [];
-                        return {
-                          ...f,
-                          interesseTaetigkeiten: cur.includes(t)
-                            ? cur.filter((x) => x !== t)
-                            : [...cur, t],
-                        };
-                      })}
-                      className="rounded"
-                    />
-                    {INTERESSE_TAETIGKEIT_LABELS[t]}
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-
-          <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 cursor-pointer text-sm">
-            <input
-              type="checkbox"
-              checked={form.autoVorhanden ?? false}
-              onChange={(e) => setForm((f) => ({ ...f, autoVorhanden: e.target.checked }))}
-              className="rounded"
-            />
-            🚗 <strong>Auto vorhanden</strong>
-            <span className="text-xs text-gray-500">(z. B. für Fahrer / Springer / Austräger)</span>
-          </label>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Interesse für Teilgebiete / Orte
-            </label>
-            {(form.interessentOrte ?? []).length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {(form.interessentOrte ?? []).map((o) => (
-                  <span key={o} className="inline-flex items-center gap-1 text-sm bg-blue-50 border border-blue-200 text-blue-800 px-2 py-0.5 rounded-full">
-                    📍 {o}
-                    <button
-                      type="button"
-                      onClick={() => setForm((f) => ({ ...f, interessentOrte: (f.interessentOrte ?? []).filter((x) => x !== o) }))}
-                      className="text-blue-500 hover:text-red-600 leading-none"
-                      title={`„${o}" entfernen`}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <input
-                type="text"
-                list="interessent-ort-vorschlaege"
-                value={neuerOrt}
-                onChange={(e) => setNeuerOrt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') { e.preventDefault(); ortHinzufuegen(); }
-                }}
-                placeholder="Teilgebiet oder Ort, z. B. Uslar"
-                className={inputClass}
-              />
-              <datalist id="interessent-ort-vorschlaege">
-                {ortVorschlaege.map((o) => <option key={o} value={o} />)}
-              </datalist>
-              <button
-                type="button"
-                onClick={ortHinzufuegen}
-                disabled={!neuerOrt.trim()}
-                className="shrink-0 px-3 py-2 text-sm rounded-lg border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-40"
-              >
-                + Hinzufügen
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <FormField label="Datum der Kontaktaufnahme">
-              <input
-                type="date"
-                value={form.interessentKontaktDatum ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, interessentKontaktDatum: e.target.value || undefined }))}
-                className={inputClass}
-              />
-            </FormField>
-            <FormField label="Link zu Korrespondenz (Google Mail / Drive)">
-              <input
-                type="url"
-                value={form.interessentKorrespondenzLink ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, interessentKorrespondenzLink: e.target.value || undefined }))}
-                placeholder="https://mail.google.com/..."
-                className={inputClass}
-              />
-            </FormField>
-          </div>
-
-          <FormField label="Memo (Einschätzung, Eindruck, Notizen)">
-            <textarea
-              value={form.interessentMemo ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, interessentMemo: e.target.value || undefined }))}
-              rows={4}
-              className={inputClass}
-              placeholder="z. B. ‚Sehr motivierter Bewerber, würde gerne zusätzlich mittwochs aushelfen.‘"
-            />
-          </FormField>
+          {interesseFelder}
 
           {/* Eltern-Kontaktdaten — nur sichtbar bei (potenziell) Minderjährigen.
               Alle Felder optional. Berechnung wie im Alters-Info-Banner. */}

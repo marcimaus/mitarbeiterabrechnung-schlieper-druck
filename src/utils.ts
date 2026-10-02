@@ -24,6 +24,42 @@ export function istEinsatzbereit(m: {
   return m.isActive === true && m.abgemeldet !== true;
 }
 
+type InteresseFelder = {
+  isActive: boolean;
+  istInteressent?: boolean;
+  interesseWeitereTaetigkeit?: boolean;
+  interessentDeinteressiert?: boolean;
+};
+
+/**
+ * Bestehender (echter, aktiver) MA mit Interesse an weiterer Tätigkeit,
+ * das noch nicht erledigt / zurückgezogen ist.
+ */
+export function hatOffenesWeiteresInteresse(m: InteresseFelder): boolean {
+  return !m.istInteressent
+    && m.interesseWeitereTaetigkeit === true
+    && m.isActive === true
+    && m.interessentDeinteressiert !== true;
+}
+
+/**
+ * Gehört der Datensatz in die Interessenten-Auswertung? Interessenten
+ * (Bewerber) oder bestehende MAs mit Interesse an weiterer Tätigkeit.
+ * Deinteressierte Interessenten bleiben enthalten (Ausblenden über
+ * „nur aktive"); bei MAs zählt nur offenes Interesse.
+ */
+export function istInInteressentenAuswertung(m: InteresseFelder): boolean {
+  return m.istInteressent === true || hatOffenesWeiteresInteresse(m);
+}
+
+/**
+ * Sortier-Rang für die Interessenten-Auswertung: bestehende MAs mit
+ * Interesse an weiterer Tätigkeit zuerst (0), danach alle übrigen (1).
+ */
+export function interessentenRang(m: InteresseFelder): number {
+  return hatOffenesWeiteresInteresse(m) ? 0 : 1;
+}
+
 /**
  * Einmal pro Browser-Session den User fragen, ob der Monatswechsel bereits
  * durchgeführt wurde. Wird verwendet, bevor stammdaten-relevante Felder

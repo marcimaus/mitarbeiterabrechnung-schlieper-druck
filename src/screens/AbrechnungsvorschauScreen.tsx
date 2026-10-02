@@ -39,6 +39,11 @@ import type {
 } from '../types';
 import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
 import { istInSaisonpauseFuer } from '../lib/saison';
+import {
+  hatOffenesWeiteresInteresse,
+  istInInteressentenAuswertung,
+  interessentenRang,
+} from '../utils';
 
 const ALLE_INTERESSE_TAETIGKEITEN = Object.keys(INTERESSE_TAETIGKEIT_LABELS) as InteresseTaetigkeit[];
 
@@ -108,6 +113,7 @@ function AbrechnungsvorschauInhalt() {
     return [...mitarbeiter]
       .filter((m) => {
         if (m.istInteressent) return true;
+        if (hatOffenesWeiteresInteresse(m)) return true;
         if (m.rollen?.includes('austräger')) return true;
         if (m.rollen?.includes('zusammenträger')) return true;
         return false;
@@ -135,11 +141,11 @@ function AbrechnungsvorschauInhalt() {
   }
 
   const gefilterteMa = useMemo(() => {
-    return maKandidaten.filter((m) => {
+    const liste = maKandidaten.filter((m) => {
       if (filterInteressent === 'ohne' && m.istInteressent) return false;
-      if (filterInteressent === 'nur' && !m.istInteressent) return false;
+      if (filterInteressent === 'nur' && !istInInteressentenAuswertung(m)) return false;
       if (filterInteresseTaetigkeit) {
-        if (!m.istInteressent) return false;
+        if (!istInInteressentenAuswertung(m)) return false;
         if (!(m.interesseTaetigkeiten ?? []).includes(filterInteresseTaetigkeit)) return false;
       }
       if (nurAktive) {
@@ -172,6 +178,12 @@ function AbrechnungsvorschauInhalt() {
       }
       return true;
     });
+    // Interessenten-Auswertung: bestehende MAs mit Interesse an weiterer
+    // Tätigkeit vor den Interessenten (sort ist stabil → sonst nach Name).
+    if (filterInteressent === 'nur' || filterInteresseTaetigkeit) {
+      liste.sort((a, b) => interessentenRang(a) - interessentenRang(b));
+    }
+    return liste;
   }, [
     maKandidaten, filterInteressent, filterInteresseTaetigkeit, nurAktive, filterText,
     filterOrtPlz, filterRolle, filterMinijob, filterSvFrei, filterAnmeldung, filterFahrtkosten,
@@ -616,6 +628,7 @@ function AbrechnungsvorschauInhalt() {
                 Ausgewählt: <span className="font-semibold">{ma.name}</span>{' '}
                 {ma.nummer && <span className="font-mono text-blue-700">({ma.nummer})</span>}
                 {ma.istInteressent && <span className="ml-2 text-xs text-amber-700">💡 Interessent</span>}
+                {hatOffenesWeiteresInteresse(ma) && <span className="ml-2 text-xs text-amber-700">💡 weitere Tätigkeit</span>}
               </div>
               <button
                 type="button"
@@ -716,7 +729,7 @@ function AbrechnungsvorschauInhalt() {
                   >
                     <option value="">alle (inkl. Interessenten)</option>
                     <option value="ohne">ohne Interessenten</option>
-                    <option value="nur">💡 nur Interessenten</option>
+                    <option value="nur">💡 nur Interessenten (inkl. MA mit Interesse)</option>
                   </select>
                   {filterInteressent !== 'ohne' && (
                     <select
@@ -1042,6 +1055,7 @@ function MaAuswahl({
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-gray-900 truncate">{m.name}</span>
                   {m.istInteressent && <span className="text-xs text-amber-700">💡 Interessent</span>}
+                  {hatOffenesWeiteresInteresse(m) && <span className="text-xs text-amber-700">💡 weitere Tätigkeit</span>}
                   {inaktiv(m) && <span className="text-xs text-gray-400">inaktiv</span>}
                 </div>
                 <div className="text-xs text-gray-400 font-mono">{m.nummer}</div>
@@ -1074,6 +1088,9 @@ function MaAuswahl({
                   <td className="px-3 py-2 font-mono text-gray-500">{m.nummer}</td>
                   <td className="px-3 py-2 text-xs text-gray-600">
                     {m.istInteressent ? <span className="text-amber-700">💡 Interessent</span> : rollenText(m)}
+                    {hatOffenesWeiteresInteresse(m) && (
+                      <span className="ml-1 text-amber-700">{rollenText(m) ? '· ' : ''}💡 weitere Tätigkeit</span>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-xs text-gray-600">
                     {m.adresse?.plz && <span className="font-mono">{m.adresse.plz}</span>}{' '}

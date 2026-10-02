@@ -331,9 +331,20 @@ export interface Mitarbeiter {
    */
   istInteressent?: boolean;
   /**
+   * Kennzeichen „Interesse an weiterer Tätigkeit": bestehender (echter) MA
+   * hat Interesse an zusätzlicher Arbeit bekundet (z. B. ein weiteres TG
+   * austragen). Nutzt dieselben Interessenten-Felder (Tätigkeiten, Orte,
+   * Kontaktdatum, Memo, Korrespondenz-Link, Deinteressiert), hat aber
+   * KEINE Auswirkung auf Abrechnung, Rollen oder Auswahllisten. Wird in der
+   * Interessenten-Auswertung vor den Interessenten angezeigt.
+   */
+  interesseWeitereTaetigkeit?: boolean;
+  /**
    * „Deinteressiert": Interessent hat kein Interesse mehr. Datensatz bleibt
    * in den Stammdaten, wird aber nicht mehr in Listen vorgeschlagen.
-   * Wirkung analog zu isActive=false bei normalen MAs.
+   * Wirkung analog zu isActive=false bei normalen MAs. Bei
+   * `interesseWeitereTaetigkeit` bedeutet es nur „Interesse erledigt /
+   * zurückgezogen" — der MA bleibt aktiv.
    */
   interessentDeinteressiert?: boolean;
   /** Tätigkeiten, für die Interesse besteht (Mehrfachauswahl). */
