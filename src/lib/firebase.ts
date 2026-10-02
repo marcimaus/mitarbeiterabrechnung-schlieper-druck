@@ -17,6 +17,15 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app);
 
+// Emulator (nur lokal, falls VITE_USE_EMULATOR=true). MUSS vor jeder anderen
+// Nutzung der Firestore-Instanz erfolgen — insbesondere vor
+// enableIndexedDbPersistence —, sonst wirft connectFirestoreEmulator
+// („Firestore has already been started…"). Daher steht dieser Block VOR der
+// Persistenz-Aktivierung. (Für Produktion ist der Block inaktiv.)
+if (import.meta.env.VITE_USE_EMULATOR === 'true') {
+  connectFirestoreEmulator(db, 'localhost', 8080);
+}
+
 // Offline-Persistenz aktivieren (IndexedDB)
 enableIndexedDbPersistence(db).catch((err) => {
   if (err.code === 'failed-precondition') {
@@ -27,10 +36,5 @@ enableIndexedDbPersistence(db).catch((err) => {
     console.warn('Firestore-Persistenz: Browser unterstützt kein IndexedDB.');
   }
 });
-
-// Emulator (nur lokal, falls VITE_USE_EMULATOR=true)
-if (import.meta.env.VITE_USE_EMULATOR === 'true') {
-  connectFirestoreEmulator(db, 'localhost', 8080);
-}
 
 export default app;
