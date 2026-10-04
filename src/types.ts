@@ -813,6 +813,29 @@ export interface Abrechnungsperiode {
     }>;
   };
   gesperrtAm?: number;                // Zeitstempel des Abschlusses
+  /**
+   * Kennzeichen „Echtabrechnung": die mit der App berechneten Werte wurden
+   * tatsächlich zur Lohnberechnung verwendet (keine Testdaten). Nur bei
+   * abgeschlossener Periode setzbar; bleibt beim Wieder-Öffnen erhalten.
+   */
+  echtabrechnung?: boolean;
+  echtabrechnungGesetztAm?: number;
+  echtabrechnungGesetztVon?: string;
+  /** Datum der Übermittlung an das Steuer-/Lohnbüro (ISO YYYY-MM-DD). */
+  lohnbueroUebermitteltAm?: string;
+  /** Link in Google Drive (übermittelte Abrechnungsdaten + Auswertungen). */
+  lohnbueroDriveLink?: string;
+  /**
+   * Nachträgliche Änderungsmitteilungen an das Lohnbüro (z. B. Fehler in der
+   * Abrechnung) — Freitext, was dem Lohnbüro mitgeteilt wurde.
+   */
+  lohnbueroAenderungsmitteilung?: string;
+  /**
+   * Aus der Änderungsmitteilung ist in der Folgeperiode etwas zu
+   * berücksichtigen/prüfen — dann zeigt die Abrechnung der Folgeperiode den
+   * Text von `lohnbueroAenderungsmitteilung` als Hinweis an.
+   */
+  inFolgeperiodeBeruecksichtigen?: boolean;
   erstelltAm: number;
 }
 

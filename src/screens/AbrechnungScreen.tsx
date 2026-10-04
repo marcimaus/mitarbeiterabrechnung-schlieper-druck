@@ -10,6 +10,7 @@ import { exportiereAbrechnung, exportiereLohnuebermittlung } from '../lib/export
 import {
   schliessePeriodeAb,
   oeffnePeriodeWieder,
+  aktualisiereAbrechnungsperiode,
   erstelleVorschuss,
   aktualisiereVorschuss,
   loescheVorschuss,
@@ -358,6 +359,18 @@ function AbrechnungInhalt() {
   );
 
   const selectedPeriode = sortedPerioden.find((p) => p.id === selectedPeriodeId);
+
+  // Direkte Vorperiode (Vormonat), sofern sie eine nachträgliche
+  // Änderungsmitteilung mit „in Folgeperiode zu berücksichtigen" trägt.
+  const vorperiodeMitHinweis = (() => {
+    if (!selectedPeriode) return undefined;
+    const vmJahr = selectedPeriode.monat === 1 ? selectedPeriode.jahr - 1 : selectedPeriode.jahr;
+    const vmMonat = selectedPeriode.monat === 1 ? 12 : selectedPeriode.monat - 1;
+    const vp = abrechnungsperioden.find((p) => p.jahr === vmJahr && p.monat === vmMonat);
+    return vp?.echtabrechnung && vp.inFolgeperiodeBeruecksichtigen && vp.lohnbueroAenderungsmitteilung?.trim()
+      ? vp
+      : undefined;
+  })();
 
   async function handleBerechnen() {
     if (!selectedPeriode || !params) return;
@@ -746,7 +759,10 @@ function AbrechnungInhalt() {
 
   async function handlePeriodeWiederOeffnen() {
     if (!selectedPeriode) return;
-    if (!confirm(`Periode "${selectedPeriode.bezeichnung}" wieder öffnen? Alle Daten bleiben erhalten, Eingaben sind wieder möglich.`)) return;
+    const echtHinweis = selectedPeriode.echtabrechnung
+      ? '\n\n⚠ Die Periode ist als Echtabrechnung gekennzeichnet (an das Lohnbüro übermittelt). Korrekturen ggf. als Änderungsmitteilung festhalten.'
+      : '';
+    if (!confirm(`Periode "${selectedPeriode.bezeichnung}" wieder öffnen? Alle Daten bleiben erhalten, Eingaben sind wieder möglich.${echtHinweis}`)) return;
     await oeffnePeriodeWieder(selectedPeriode.id);
   }
 
@@ -950,6 +966,7 @@ function AbrechnungInhalt() {
               <option key={p.id} value={p.id}>
                 {p.bezeichnung}
                 {p.status === 'abgeschlossen' ? ' ✓' : ''}
+                {p.echtabrechnung ? ' · Echtabrechnung' : ''}
                 {' '}(KW {p.kalenderwochen.join(', ')})
               </option>
             ))}
@@ -1137,6 +1154,36 @@ function AbrechnungInhalt() {
         {fehler && (
           <div className="mt-3 bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
             {fehler}
+          </div>
+        )}
+
+        {/* Kennzeichen „Echtabrechnung" + Übermittlung an das Lohnbüro */}
+        {selectedPeriode && <LohnbueroUebermittlungBlock periode={selectedPeriode} />}
+
+        {/* Hinweis aus der Vorperiode: nachträgliche Änderungsmitteilung an das
+            Lohnbüro, die in dieser Periode zu berücksichtigen/prüfen ist. */}
+        {vorperiodeMitHinweis && (
+          <div className="mt-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm">
+            <div className="font-semibold text-red-900 mb-1">
+              ⚠ Aus {vorperiodeMitHinweis.bezeichnung} zu berücksichtigen / prüfen
+            </div>
+            <p className="text-xs text-red-800 mb-1.5">
+              Nach der Übermittlung von {vorperiodeMitHinweis.bezeichnung} wurde dem
+              Lohnbüro folgende Änderung mitgeteilt:
+            </p>
+            <div className="text-red-950 whitespace-pre-wrap break-words bg-white/60 border border-red-200 rounded px-3 py-2">
+              {vorperiodeMitHinweis.lohnbueroAenderungsmitteilung}
+            </div>
+            {/^https?:\/\//i.test(vorperiodeMitHinweis.lohnbueroDriveLink ?? '') && (
+              <a
+                href={vorperiodeMitHinweis.lohnbueroDriveLink}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex items-center text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1"
+              >
+                🔗 Unterlagen {vorperiodeMitHinweis.bezeichnung} in Google Drive
+              </a>
+            )}
           </div>
         )}
 
@@ -3748,6 +3795,235 @@ function PeriodenMemoBlock({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ============================================================
+// LohnbueroUebermittlungBlock — Kennzeichen „Echtabrechnung"
+// ============================================================
+// Kennzeichnet, dass die App-Werte der Periode tatsächlich zur Lohnberechnung
+// verwendet wurden (keine Testdaten). Setzbar erst nach Periodenabschluss;
+// danach Übermittlungsdatum, Drive-Link und nachträgliche
+// Änderungsmitteilungen an das Lohnbüro erfassbar. Die Folgefelder bleiben
+// auch nach einem Wieder-Öffnen bearbeitbar (Korrekturfall).
+
+function LohnbueroUebermittlungBlock({ periode }: { periode: Abrechnungsperiode }) {
+  const { userRole, adminName } = useApp();
+  const istAdmin = userRole === 'admin';
+  const istAbgeschlossen = periode.status === 'abgeschlossen';
+  const [datum, setDatum] = useState(periode.lohnbueroUebermitteltAm ?? '');
+  const [link, setLink] = useState(periode.lohnbueroDriveLink ?? '');
+  const [mitteilung, setMitteilung] = useState(periode.lohnbueroAenderungsmitteilung ?? '');
+  const [speichert, setSpeichert] = useState(false);
+
+  // Bei Periodenwechsel bzw. Änderung von außen lokale Eingaben nachziehen.
+  useEffect(() => {
+    setDatum(periode.lohnbueroUebermitteltAm ?? '');
+    setLink(periode.lohnbueroDriveLink ?? '');
+    setMitteilung(periode.lohnbueroAenderungsmitteilung ?? '');
+  }, [periode.id, periode.lohnbueroUebermitteltAm, periode.lohnbueroDriveLink, periode.lohnbueroAenderungsmitteilung]);
+
+  const geaendert =
+    datum !== (periode.lohnbueroUebermitteltAm ?? '') ||
+    link.trim() !== (periode.lohnbueroDriveLink ?? '') ||
+    mitteilung.trim() !== (periode.lohnbueroAenderungsmitteilung ?? '');
+
+  async function speichere(data: Partial<Abrechnungsperiode>) {
+    setSpeichert(true);
+    try {
+      await aktualisiereAbrechnungsperiode(periode.id, data);
+    } catch (e: any) {
+      alert('Fehler beim Speichern: ' + (e.message ?? e));
+    } finally {
+      setSpeichert(false);
+    }
+  }
+
+  async function handleEchtabrechnung(an: boolean) {
+    if (an) {
+      if (!istAbgeschlossen) return;
+      if (!confirm(
+        `Periode "${periode.bezeichnung}" als Echtabrechnung kennzeichnen?\n\n` +
+        'Damit wird festgehalten, dass die mit der App berechneten Werte tatsächlich ' +
+        'zur Lohnberechnung verwendet wurden (keine Testdaten).'
+      )) return;
+      await speichere({
+        echtabrechnung: true,
+        echtabrechnungGesetztAm: Date.now(),
+        echtabrechnungGesetztVon: adminName || userRole || '',
+      });
+    } else {
+      if (!confirm(
+        `Kennzeichen „Echtabrechnung" für "${periode.bezeichnung}" entfernen?\n\n` +
+        'Übermittlungsdatum, Drive-Link und Änderungsmitteilung bleiben gespeichert, ' +
+        'werden aber ausgeblendet; ein Hinweis in der Folgeperiode erscheint nicht mehr.'
+      )) return;
+      await speichere({ echtabrechnung: false });
+    }
+  }
+
+  async function handleSpeichern() {
+    await speichere({
+      lohnbueroUebermitteltAm: datum,
+      lohnbueroDriveLink: link.trim(),
+      lohnbueroAenderungsmitteilung: mitteilung.trim(),
+      // Ohne Mitteilungstext gibt es nichts zu berücksichtigen.
+      ...(mitteilung.trim() ? {} : { inFolgeperiodeBeruecksichtigen: false }),
+    });
+  }
+
+  const linkGueltig = /^https?:\/\//i.test(link.trim());
+
+  if (!periode.echtabrechnung) {
+    return (
+      <div className="mt-3 flex items-center gap-2 text-sm">
+        <label
+          className={`flex items-center gap-2 ${
+            istAbgeschlossen && istAdmin ? 'cursor-pointer text-gray-700' : 'cursor-not-allowed text-gray-400'
+          }`}
+          title={
+            !istAbgeschlossen
+              ? 'Erst setzbar, wenn die Periode abgeschlossen ist'
+              : !istAdmin
+                ? 'Nur Admin'
+                : 'Kennzeichnet, dass die App-Werte tatsächlich zur Lohnberechnung verwendet wurden'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={false}
+            disabled={!istAbgeschlossen || !istAdmin || speichert}
+            onChange={() => handleEchtabrechnung(true)}
+          />
+          Echtabrechnung — Werte wurden zur Lohnberechnung verwendet (keine Testdaten)
+        </label>
+        {!istAbgeschlossen && (
+          <span className="text-xs text-gray-400 italic">erst nach Periodenabschluss setzbar</span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-emerald-300 bg-emerald-50/60 px-4 py-3 text-sm">
+      <div className="flex items-center gap-3 flex-wrap">
+        <label className={`flex items-center gap-2 font-semibold text-emerald-900 ${istAdmin ? 'cursor-pointer' : ''}`}>
+          <input
+            type="checkbox"
+            checked
+            disabled={!istAdmin || speichert}
+            onChange={() => handleEchtabrechnung(false)}
+          />
+          ✔ Echtabrechnung — Werte wurden zur Lohnberechnung verwendet
+        </label>
+        {periode.echtabrechnungGesetztAm && (
+          <span className="text-xs text-emerald-700">
+            gesetzt am {new Date(periode.echtabrechnungGesetztAm).toLocaleDateString('de-DE')}
+            {periode.echtabrechnungGesetztVon ? ` von ${periode.echtabrechnungGesetztVon}` : ''}
+          </span>
+        )}
+        {!istAbgeschlossen && (
+          <span className="text-xs bg-orange-100 text-orange-800 px-2 py-0.5 rounded">
+            ⚠ Periode wurde nach der Übermittlung wieder geöffnet
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-[auto_1fr]">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-gray-700">An Steuerbüro übermittelt am</span>
+          <input
+            type="date"
+            value={datum}
+            disabled={!istAdmin}
+            onChange={(e) => setDatum(e.target.value)}
+            className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white disabled:bg-gray-50"
+          />
+        </label>
+        <label className="flex flex-col gap-1 min-w-0">
+          <span className="text-xs font-medium text-gray-700">
+            Link Google Drive (übermittelte Abrechnungsdaten &amp; Auswertungen)
+          </span>
+          <div className="flex items-center gap-2">
+            <input
+              type="url"
+              value={link}
+              disabled={!istAdmin}
+              placeholder="https://drive.google.com/…"
+              onChange={(e) => setLink(e.target.value)}
+              className="flex-1 min-w-0 border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white disabled:bg-gray-50"
+            />
+            {linkGueltig && (
+              <a
+                href={link.trim()}
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 text-xs border border-blue-200 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded px-2 py-1"
+              >
+                🔗 öffnen
+              </a>
+            )}
+          </div>
+        </label>
+      </div>
+
+      <label className="mt-3 flex flex-col gap-1">
+        <span className="text-xs font-medium text-gray-700">
+          Nachträgliche Änderungsmitteilungen an das Lohnbüro (was wurde mitgeteilt, z. B. Fehler in der Abrechnung)
+        </span>
+        <textarea
+          value={mitteilung}
+          disabled={!istAdmin}
+          rows={3}
+          placeholder="Nur ausfüllen, wenn nach der Übermittlung noch Korrekturen an das Lohnbüro gemeldet wurden."
+          onChange={(e) => setMitteilung(e.target.value)}
+          className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm bg-white disabled:bg-gray-50"
+        />
+      </label>
+
+      <div className="mt-2 flex items-center gap-3 flex-wrap">
+        <label
+          className={`flex items-center gap-2 ${
+            periode.lohnbueroAenderungsmitteilung && istAdmin ? 'cursor-pointer text-gray-800' : 'cursor-not-allowed text-gray-400'
+          }`}
+          title={
+            periode.lohnbueroAenderungsmitteilung
+              ? 'Zeigt die Änderungsmitteilung als Hinweis in der Abrechnung der Folgeperiode an'
+              : 'Erst eine Änderungsmitteilung erfassen und speichern'
+          }
+        >
+          <input
+            type="checkbox"
+            checked={!!periode.inFolgeperiodeBeruecksichtigen}
+            disabled={!periode.lohnbueroAenderungsmitteilung || !istAdmin || speichert}
+            onChange={(e) => speichere({ inFolgeperiodeBeruecksichtigen: e.target.checked })}
+          />
+          In Folgeperiode zu berücksichtigen
+        </label>
+        {istAdmin && geaendert && (
+          <>
+            <button
+              onClick={handleSpeichern}
+              disabled={speichert}
+              className="ml-auto bg-emerald-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50"
+            >
+              {speichert ? 'Speichere…' : 'Speichern'}
+            </button>
+            <button
+              onClick={() => {
+                setDatum(periode.lohnbueroUebermitteltAm ?? '');
+                setLink(periode.lohnbueroDriveLink ?? '');
+                setMitteilung(periode.lohnbueroAenderungsmitteilung ?? '');
+              }}
+              disabled={speichert}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              Verwerfen
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
