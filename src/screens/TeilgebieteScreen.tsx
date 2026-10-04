@@ -3,11 +3,11 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import AenderungsProtokollModal from '../components/AenderungsProtokollModal';
+import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
 import { bestaetigeMonatswechselEinmalProSession } from '../utils';
 import {
   erstelleTeilgebiet,
   aktualisiereTeilgebiet,
-  aktualisiereMitarbeiter,
   setzeStueckzahlAnpassung,
   loescheStueckzahlAnpassung,
   einsaetzeJahrListener,
@@ -1209,7 +1209,7 @@ function TeilgebietForm({
   onSave: (stand: Teilgebiet, neuAngelegt: boolean) => void;
   onCancel: () => void;
 }) {
-  const { touren, mitarbeiter, userRole, adminName } = useApp();
+  const { touren, mitarbeiter, teilgebiete, abrechnungsperioden, userRole, adminName } = useApp();
   const isAdmin = userRole === 'admin';
   // „Abrechnung“ darf an bestehenden Teilgebieten Sonderauslagen,
   // Nicht beliefern und Freigaben pflegen — alles andere bleibt Admin.
@@ -1395,19 +1395,32 @@ function TeilgebietForm({
       const hinzuzufuegen = [...neu].filter((id) => !alt.has(id));
       const zuEntfernen = [...alt].filter((id) => !neu.has(id));
 
+      // Mit Eintrag im Mitarbeiter-Änderungsprotokoll; ein neu angelegtes
+      // Teilgebiet steht noch nicht in `teilgebiete` — Name für das Protokoll
+      // daher ergänzen.
+      const maProtokollOpts = {
+        adminName,
+        ktx: {
+          mitarbeiter,
+          abrechnungsperioden,
+          teilgebiete: teilgebiete.some((t) => t.id === tgId)
+            ? teilgebiete
+            : [...teilgebiete, { id: tgId, name: payload.name } as Teilgebiet],
+        },
+      };
       const updates: Promise<void>[] = [];
       for (const maId of hinzuzufuegen) {
         const m = mitarbeiter.find((x) => x.id === maId);
         if (!m) continue;
         const liste = [...(m.teilgebietFreigaben ?? [])];
         if (!liste.includes(tgId)) liste.push(tgId);
-        updates.push(aktualisiereMitarbeiter(maId, { teilgebietFreigaben: liste }));
+        updates.push(aktualisiereMitarbeiterMitProtokoll(m, { teilgebietFreigaben: liste }, maProtokollOpts));
       }
       for (const maId of zuEntfernen) {
         const m = mitarbeiter.find((x) => x.id === maId);
         if (!m) continue;
         const liste = (m.teilgebietFreigaben ?? []).filter((x) => x !== tgId);
-        updates.push(aktualisiereMitarbeiter(maId, { teilgebietFreigaben: liste }));
+        updates.push(aktualisiereMitarbeiterMitProtokoll(m, { teilgebietFreigaben: liste }, maProtokollOpts));
       }
       await Promise.all(updates);
 

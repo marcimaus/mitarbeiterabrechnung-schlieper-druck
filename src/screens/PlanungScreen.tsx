@@ -20,6 +20,7 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import AenderungsProtokollModal from '../components/AenderungsProtokollModal';
+import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
 import {
   alleKWsImJahr,
   getCurrentKW,
@@ -618,8 +619,19 @@ function PlanungContent() {
     [zusammentraegerMa],
   );
 
+  /** MA-Kennzeichen ändern, mit Eintrag im Stammdaten-Änderungsprotokoll.
+   *  (Die reine Sortierung per Pfeil-Buttons wird nicht protokolliert.) */
+  async function aendereMa(maId: string, data: Partial<Mitarbeiter>) {
+    const alt = mitarbeiter.find((m) => m.id === maId);
+    if (!alt) return aktualisiereMitarbeiter(maId, data);
+    await aktualisiereMitarbeiterMitProtokoll(alt, data, {
+      adminName,
+      ktx: { mitarbeiter, teilgebiete, abrechnungsperioden },
+    });
+  }
+
   async function toggleZusammenAbruf(maId: string, neu: boolean) {
-    await aktualisiereMitarbeiter(maId, { zusammenAufAbruf: neu });
+    await aendereMa(maId, { zusammenAufAbruf: neu });
   }
 
   // Hinweis: Die frühere Bulk-Aktion `markiereUnbesetzteAusgabenAlsLuecke`
@@ -692,10 +704,10 @@ function PlanungContent() {
   );
 
   async function urlaubMaAusblenden(maId: string) {
-    await aktualisiereMitarbeiter(maId, { urlaubsplanungAusgeblendet: true });
+    await aendereMa(maId, { urlaubsplanungAusgeblendet: true });
   }
   async function urlaubMaEinblenden(maId: string) {
-    await aktualisiereMitarbeiter(maId, { urlaubsplanungAusgeblendet: false });
+    await aendereMa(maId, { urlaubsplanungAusgeblendet: false });
   }
 
   async function verschiebeUrlaub(maId: string, richtung: -1 | 1) {

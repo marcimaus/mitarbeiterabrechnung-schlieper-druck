@@ -400,6 +400,7 @@ const BEREICH_LABEL: Record<AuditLog['bereich'], string> = {
   'teilgebiets-anpassung': 'Teilgebietsanpassung (Stückzahl)',
   'teilgebiet-stammdaten': 'Teilgebietsdaten',
   zusammentragen: 'Zusammentragen (Nachtrag)',
+  'mitarbeiter-stammdaten': 'Mitarbeiter-Stammdaten',
 };
 
 const quelle = (e: AuditLog) => (e.automatisch ? 'App (Monatswechsel)' : 'manuell');
@@ -479,7 +480,10 @@ export interface TeilgebietsdokuKontext {
 
 /** Baut die komplette Teilgebietsdoku als Excel-Arbeitsmappe. */
 export async function baueTeilgebietsdoku(ktx: TeilgebietsdokuKontext): Promise<Blob> {
-  const { teilgebiete, touren, mitarbeiter, auditLog } = ktx;
+  const { teilgebiete, touren, mitarbeiter } = ktx;
+  // Mitarbeiter-Stammdaten gehören nicht in die Teilgebietsdoku (u. a. wegen
+  // Admin-only-Feldern wie der Admin-Notiz).
+  const auditLog = ktx.auditLog.filter((e) => e.bereich !== 'mitarbeiter-stammdaten');
   const jetzt = Date.now();
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Schlieper-Druck Mitarbeiterabrechnung';

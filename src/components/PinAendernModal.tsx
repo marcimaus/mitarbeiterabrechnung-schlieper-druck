@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { verifyPin, hashPin } from '../lib/auth';
-import { aktualisiereMitarbeiter } from '../lib/db';
+import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
 import Modal from './Modal';
 
 interface Props {
@@ -14,7 +14,7 @@ interface Props {
  * eigenen PIN. Erfordert die Eingabe des aktuellen PINs zur Bestätigung.
  */
 export default function PinAendernModal({ isOpen, onClose }: Props) {
-  const { mitarbeiter, mitarbeiterId } = useApp();
+  const { mitarbeiter, mitarbeiterId, adminName, teilgebiete, abrechnungsperioden } = useApp();
   const ma = mitarbeiterId ? mitarbeiter.find((m) => m.id === mitarbeiterId) : undefined;
 
   const [aktuellerPin, setAktuellerPin] = useState('');
@@ -55,7 +55,11 @@ export default function PinAendernModal({ isOpen, onClose }: Props) {
         return;
       }
       const hash = await hashPin(neuerPin);
-      await aktualisiereMitarbeiter(ma.id, { pinHash: hash });
+      await aktualisiereMitarbeiterMitProtokoll(ma, { pinHash: hash }, {
+        adminName: adminName || ma.name,
+        ktx: { mitarbeiter, teilgebiete, abrechnungsperioden },
+        praefix: 'Selbstverwaltung: ',
+      });
       setErfolg(true);
     } catch {
       setError('Fehler beim Speichern. Bitte erneut versuchen.');

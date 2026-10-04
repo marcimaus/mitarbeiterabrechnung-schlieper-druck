@@ -7,10 +7,13 @@
 // anpassung / Teilgebietsdaten) oder — mit eigenem Titel — auf ein einzelnes
 // Teilgebiet. Ermöglicht bei Reklamationen die Nachvollziehbarkeit, wer wann
 // was geändert hat. Wird aus der Personalplanung und aus der Teilgebiete-
-// Verwaltung geöffnet.
+// Verwaltung sowie (Bereich Mitarbeiter-Stammdaten) aus der Mitarbeiter-
+// Verwaltung geöffnet. Einträge zu Admin-only-Feldern (`nurAdmin`) sieht nur
+// der Admin.
 
 import { useMemo, useState } from 'react';
 import Modal from './Modal';
+import { useApp } from '../context/AppContext';
 import type { AuditLog } from '../types';
 
 const PROTOKOLL_AKTION_LABEL: Record<AuditLog['aktion'], string> = {
@@ -25,6 +28,7 @@ const PROTOKOLL_BEREICH_TITEL: Record<AuditLog['bereich'], string> = {
   'teilgebiets-anpassung': 'Änderungsprotokoll — Teilgebietsanpassung (Stückzahl)',
   'teilgebiet-stammdaten': 'Änderungsprotokoll — Teilgebietsdaten (Mengen, Straßen, Links)',
   zusammentragen: 'Änderungsprotokoll — Zusammentragen (Nachträge nach Monatswechsel)',
+  'mitarbeiter-stammdaten': 'Änderungsprotokoll — Mitarbeiter-Stammdaten',
 };
 
 function formatZeitstempel(ts: number): string {
@@ -50,11 +54,17 @@ export default function AenderungsProtokollModal({
   eintraege: AuditLog[];
   onClose: () => void;
 }) {
+  const { userRole } = useApp();
   const [filterText, setFilterText] = useState('');
+  // Admin-only-Einträge (z. B. Admin-Notiz) nur für Admins.
+  const sichtbar = useMemo(
+    () => (userRole === 'admin' ? eintraege : eintraege.filter((e) => !e.nurAdmin)),
+    [eintraege, userRole],
+  );
   const gefiltert = useMemo(() => {
     const suchtext = filterText.trim().toLowerCase();
-    if (!suchtext) return eintraege;
-    return eintraege.filter((e) =>
+    if (!suchtext) return sichtbar;
+    return sichtbar.filter((e) =>
       [
         e.teilgebietName,
         e.mitarbeiterName ?? '',
@@ -68,7 +78,7 @@ export default function AenderungsProtokollModal({
         .toLowerCase()
         .includes(suchtext),
     );
-  }, [eintraege, filterText]);
+  }, [sichtbar, filterText]);
 
   const fensterTitel =
     titel ?? (bereich ? PROTOKOLL_BEREICH_TITEL[bereich] : undefined) ?? 'Änderungsprotokoll';
@@ -84,7 +94,7 @@ export default function AenderungsProtokollModal({
           className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
         />
         <div className="text-[11px] text-gray-500">
-          {gefiltert.length} von {eintraege.length} Einträgen
+          {gefiltert.length} von {sichtbar.length} Einträgen
         </div>
         <div className="max-h-[60vh] overflow-y-auto border border-gray-200 rounded divide-y divide-gray-100">
           {gefiltert.length === 0 ? (
@@ -105,12 +115,26 @@ export default function AenderungsProtokollModal({
                         🤖 automatisch (App)
                       </span>
                     )}
+                    {e.nurAdmin && (
+                      <span
+                        className="text-[10px] font-normal text-amber-800 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5"
+                        title="Admin-only-Feld — dieser Eintrag ist nur für Admins sichtbar"
+                      >
+                        🔒 nur Admin
+                      </span>
+                    )}
                   </span>
                   <span className="text-gray-400">{formatZeitstempel(e.zeitstempel)}</span>
                 </div>
                 <div className="text-gray-600">
-                  <strong>{e.teilgebietName}</strong>
-                  {e.mitarbeiterName ? ` · ${e.mitarbeiterName}` : ''}
+                  {e.teilgebietName ? (
+                    <>
+                      <strong>{e.teilgebietName}</strong>
+                      {e.mitarbeiterName ? ` · ${e.mitarbeiterName}` : ''}
+                    </>
+                  ) : (
+                    <strong>{e.mitarbeiterName ?? ''}</strong>
+                  )}
                   {e.kwVon != null && (
                     <span className="text-gray-400">
                       {' '}

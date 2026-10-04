@@ -1,13 +1,10 @@
-import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
+import AenderungsProtokollModal from '../components/AenderungsProtokollModal';
 import {
-  erstelleMitarbeiter,
-  aktualisiereMitarbeiter,
-  deaktiviereMitarbeiter,
-  aktiviereMitarbeiter,
   ladeEinsaetzeFuerMitarbeiter,
   ladeArbeitszeiten,
   ladeFahrten,
@@ -22,12 +19,13 @@ import {
   setzeVerdienstbescheinigungWert,
   erstelleVerdienstbescheinigungFrage,
   loescheVerdienstbescheinigungFrage,
+  auditLogListener,
 } from '../lib/db';
 import VerdienstbescheinigungDruck from '../components/VerdienstbescheinigungDruck';
 import type { LohnbueroAbrechnung, LohnbueroDriveLink, VerdienstbescheinigungWert, VerdienstbescheinigungFrage, VerdienstbescheinigungAntwortTyp } from '../types';
 import { hashPin, ermittlePinAusHash } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse } from '../types';
+import type { AuditLog, Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse } from '../types';
 // Re-Export, damit die Tab-Komponente unten den selben Typen-Pfad nutzt.
 import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
@@ -38,6 +36,10 @@ import {
   interessentenRang,
 } from '../utils';
 import { eur } from '../lib/abrechnungslogik';
+import {
+  aktualisiereMitarbeiterMitProtokoll,
+  erstelleMitarbeiterMitProtokoll,
+} from '../lib/mitarbeiterProtokoll';
 
 type MaFormTab = 'stammdaten' | 'freigaben' | 'boni' | 'lieferadressen' | 'anmeldung' | 'lohnkonto' | 'verdienstbescheinigung';
 
@@ -187,6 +189,20 @@ function MitarbeiterInhalt() {
   const [filterInteressentOrt, setFilterInteressentOrt] = useState('');
   const [nurAktive, setNurAktive] = useState(true);
   const [verlaufFor, setVerlaufFor] = useState<Mitarbeiter | null>(null);
+  // Änderungsprotokoll der Stammdaten: 'alle' = alle Mitarbeiter, sonst ein MA.
+  const [protokollFuer, setProtokollFuer] = useState<Mitarbeiter | 'alle' | null>(null);
+  const [auditLog, setAuditLog] = useState<AuditLog[]>([]);
+  // Listener nur, solange das Protokoll offen ist.
+  useEffect(() => (protokollFuer ? auditLogListener(setAuditLog) : undefined), [protokollFuer]);
+  const protokollEintraege = useMemo(
+    () =>
+      auditLog.filter(
+        (e) =>
+          e.bereich === 'mitarbeiter-stammdaten' &&
+          (protokollFuer === 'alle' || e.mitarbeiterId === protokollFuer?.id),
+      ),
+    [auditLog, protokollFuer],
+  );
 
   // Maps: mitarbeiterId → Anzahl Buchungen / aktueller Saldo des Lohnkontos.
   // Saldo: Verschiebung (+), Verrechnung (−). Damit das Icon auch dann angezeigt
@@ -335,12 +351,21 @@ function MitarbeiterInhalt() {
             )}
           </p>
         </div>
-        <button
-          onClick={oeffneNeu}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          + Neuer Mitarbeiter
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setProtokollFuer('alle')}
+            className="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+            title="Änderungsprotokoll der Mitarbeiter-Stammdaten: wann wurde was bei wem von wem geändert"
+          >
+            📋 Änderungsprotokoll
+          </button>
+          <button
+            onClick={oeffneNeu}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+          >
+            + Neuer Mitarbeiter
+          </button>
+        </div>
       </div>
 
       {/* Filter */}
@@ -842,8 +867,23 @@ function MitarbeiterInhalt() {
           initial={editTarget}
           onSave={() => setShowForm(false)}
           onCancel={() => setShowForm(false)}
+          onProtokollOeffnen={editTarget ? () => setProtokollFuer(editTarget) : undefined}
         />
       </Modal>
+
+      {/* Änderungsprotokoll — nach dem Formular, damit es darüber liegt */}
+      {protokollFuer && (
+        <AenderungsProtokollModal
+          bereich="mitarbeiter-stammdaten"
+          titel={
+            protokollFuer === 'alle'
+              ? undefined
+              : `Änderungsprotokoll — ${protokollFuer.name}`
+          }
+          eintraege={protokollEintraege}
+          onClose={() => setProtokollFuer(null)}
+        />
+      )}
 
       {/* Lohnkonto-Verlauf Modal */}
       {verlaufFor && (
@@ -863,13 +903,30 @@ function MitarbeiterForm({
   initial,
   onSave,
   onCancel,
+  onProtokollOeffnen,
 }: {
   initial: Mitarbeiter | null;
   onSave: () => void;
   onCancel: () => void;
+  /** Öffnet das Änderungsprotokoll dieses Mitarbeiters (nur bei Bearbeitung). */
+  onProtokollOeffnen?: () => void;
 }) {
   const { parameter, teilgebiete, mitarbeiter, userRole, abrechnungsperioden, lohnkontoBuchungen, lohnbueroAbrechnungen, lohnbueroDriveLinks, adminName, verdienstbescheinigungFragen } = useApp();
   const isAdmin = userRole === 'admin';
+  const protokollOpts = { adminName, ktx: { mitarbeiter, teilgebiete, abrechnungsperioden } };
+
+  /** Speichert den Payload — neu oder als Änderung, jeweils mit Protokoll.
+   *  Die Admin-Notiz schreibt nur der Admin; für alle anderen bleibt sie
+   *  unangetastet (Schlüssel fehlt im Payload). */
+  async function speichere(payload: typeof DEFAULT_FORM) {
+    const { adminNotiz, ...rest } = payload;
+    const daten = isAdmin ? { ...rest, adminNotiz: adminNotiz?.trim() || undefined } : rest;
+    if (initial) {
+      await aktualisiereMitarbeiterMitProtokoll(initial, daten, protokollOpts);
+    } else {
+      await erstelleMitarbeiterMitProtokoll(daten, protokollOpts);
+    }
+  }
   // Bei Mitarbeitern mit Status "noch nicht angemeldet" direkt den Anmelde-Tab öffnen,
   // damit die offene Erfassung sofort sichtbar ist.
   const [tab, setTab] = useState<MaFormTab>(
@@ -935,6 +992,7 @@ function MitarbeiterForm({
         interessentKorrespondenzLink: initial.interessentKorrespondenzLink,
         interessentMemo: initial.interessentMemo,
         interessentAlterBeiErfassung: initial.interessentAlterBeiErfassung,
+        adminNotiz: initial.adminNotiz,
         abweichendeLieferadresseAktiv: initial.abweichendeLieferadresseAktiv ?? false,
         abweichendeLieferadresse: {
           strasse: initial.abweichendeLieferadresse?.strasse ?? '',
@@ -1043,11 +1101,7 @@ function MitarbeiterForm({
           nochNichtAngemeldet: false,
           abgemeldet: false,
         };
-        if (initial) {
-          await aktualisiereMitarbeiter(initial.id, payload);
-        } else {
-          await erstelleMitarbeiter(payload);
-        }
+        await speichere(payload);
         onSave();
       } catch (err) {
         setError('Fehler beim Speichern. Bitte erneut versuchen.');
@@ -1181,11 +1235,7 @@ function MitarbeiterForm({
         // „noch nicht angemeldet" markieren — analog zu Neuerfassung.
         ...(wurdeEntInteressent ? { nochNichtAngemeldet: true } : {}),
       };
-      if (initial) {
-        await aktualisiereMitarbeiter(initial.id, payload);
-      } else {
-        await erstelleMitarbeiter(payload);
-      }
+      await speichere(payload);
       onSave();
     } catch (err) {
       setError('Fehler beim Speichern. Bitte erneut versuchen.');
@@ -1279,13 +1329,13 @@ function MitarbeiterForm({
     }
     if (!confirm(bestaetigung)) return;
 
-    await deaktiviereMitarbeiter(initial.id);
+    await aktualisiereMitarbeiterMitProtokoll(initial, { isActive: false }, protokollOpts);
     onSave();
   }
 
   async function handleAktivieren() {
     if (!initial) return;
-    await aktiviereMitarbeiter(initial.id);
+    await aktualisiereMitarbeiterMitProtokoll(initial, { isActive: true }, protokollOpts);
     onSave();
   }
 
@@ -2845,6 +2895,25 @@ function MitarbeiterForm({
       )}
 
       </>)}
+
+      {/* Admin-Notiz — nur für Admin sichtbar und bearbeitbar */}
+      {isAdmin && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+          <label className="block text-sm font-medium text-amber-900 mb-1">
+            🔒 Admin-Notiz
+            <span className="ml-2 text-xs font-normal text-amber-700">
+              nur für Admin sichtbar und bearbeitbar
+            </span>
+          </label>
+          <textarea
+            value={form.adminNotiz ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, adminNotiz: e.target.value || undefined }))}
+            rows={4}
+            className={`${inputClass} bg-white`}
+            placeholder="Interne Notizen zum Mitarbeiter (Abrechnung und Mitarbeiter sehen dieses Feld nicht)"
+          />
+        </div>
+      )}
       </div>
       )}
 
@@ -3300,7 +3369,17 @@ function MitarbeiterForm({
       {/* Aktionen — immer sichtbar */}
       {error && <p className="text-red-600 text-sm mt-4">{error}</p>}
       <div className="flex items-center justify-between pt-5 mt-4 border-t border-gray-100">
-        <div>
+        <div className="flex items-center gap-4">
+          {onProtokollOeffnen && (
+            <button
+              type="button"
+              onClick={onProtokollOeffnen}
+              className="text-sm text-gray-600 hover:text-gray-800"
+              title="Änderungsprotokoll dieses Mitarbeiters: wann wurde was von wem geändert"
+            >
+              📋 Änderungsprotokoll
+            </button>
+          )}
           {initial && tab === 'stammdaten' && (
             initial.isActive ? (
               <button
@@ -3342,8 +3421,9 @@ function MitarbeiterForm({
 
 function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter }) {
   // Immer die aktuellen Daten aus dem Context holen (wird per Real-time-Listener aktualisiert)
-  const { mitarbeiter: alleMitarbeiter, userRole } = useApp();
+  const { mitarbeiter: alleMitarbeiter, userRole, adminName, teilgebiete, abrechnungsperioden } = useApp();
   const mitarbeiter = alleMitarbeiter.find((m) => m.id === initialMa.id) ?? initialMa;
+  const protokollOpts = { adminName, ktx: { mitarbeiter: alleMitarbeiter, teilgebiete, abrechnungsperioden } };
 
   const [neuerPin, setNeuerPin] = useState('');
   const [pinBestaetigung, setPinBestaetigung] = useState('');
@@ -3415,7 +3495,7 @@ function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter })
     setMessage('');
     try {
       const hash = await hashPin(neuerPin);
-      await aktualisiereMitarbeiter(mitarbeiter.id, { pinHash: hash });
+      await aktualisiereMitarbeiterMitProtokoll(mitarbeiter, { pinHash: hash }, protokollOpts);
       setNeuerPin('');
       setPinBestaetigung('');
       setShowPinForm(false);
@@ -3432,7 +3512,7 @@ function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter })
     if (!confirm(`PIN von "${mitarbeiter.name}" wirklich löschen?`)) return;
     setSaving(true);
     try {
-      await aktualisiereMitarbeiter(mitarbeiter.id, { pinHash: undefined });
+      await aktualisiereMitarbeiterMitProtokoll(mitarbeiter, { pinHash: undefined }, protokollOpts);
       setMessage('✓ PIN gelöscht');
       setTimeout(() => setMessage(''), 3000);
     } catch {
@@ -4471,6 +4551,7 @@ function VerdienstbescheinigungTab({
   lohnbueroDriveLinks: LohnbueroDriveLink[];
   fragenKatalog: VerdienstbescheinigungFrage[];
 }) {
+  const { mitarbeiter: alleMitarbeiter, teilgebiete, abrechnungsperioden } = useApp();
   const heute = new Date();
   // Default-Bereich: letzte 12 Monate (heute-1Jahr bis heute).
   const vorigesJahr = new Date(heute.getFullYear(), heute.getMonth() - 11, 1);
@@ -4806,7 +4887,10 @@ function VerdienstbescheinigungTab({
           ort: adresskopfEigeneEdit.ort.trim() || undefined,
         };
         const eigeneLeer = Object.values(eigeneClean).every((v) => v == null);
-        await aktualisiereMitarbeiter(mitarbeiter.id, {
+        // Live-Stand als Vergleichsbasis fürs Protokoll (der Reiter bleibt
+        // nach dem Speichern offen, `mitarbeiter` ist der Stand beim Öffnen).
+        const aktuell = alleMitarbeiter.find((m) => m.id === mitarbeiter.id) ?? mitarbeiter;
+        await aktualisiereMitarbeiterMitProtokoll(aktuell, {
           verdienstbescheinigungAnmerkung: anmerkungDruckEdit.trim() || undefined,
           verdienstbescheinigungInternesMemo: internesMemoEdit.trim() || undefined,
           arbeitsamtKontakt: kontaktLeer ? undefined : kontaktClean,
@@ -4816,7 +4900,7 @@ function VerdienstbescheinigungTab({
           arbeitsamtZeichenDrucken: arbeitsamtZeichenDruckenEdit || undefined,
           verdienstbescheinigungAdresskopfMode: adresskopfModeEdit,
           verdienstbescheinigungAdresskopfEigene: eigeneLeer ? undefined : eigeneClean,
-        });
+        }, { adminName, ktx: { mitarbeiter: alleMitarbeiter, teilgebiete, abrechnungsperioden } });
       }
       // Nach dem Speichern: neu laden, Eingabe-Caches leeren.
       const frisch = await ladeVerdienstbescheinigungWerte(mitarbeiter.id);

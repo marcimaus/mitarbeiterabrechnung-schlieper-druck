@@ -4,6 +4,7 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
 import { ladePeriodeData, berechneAbrechnung, eur, stdMin, zeitLohnAufteilung } from '../lib/abrechnungslogik';
+import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
 import { berechneNettoMinuten } from '../lib/zeiterfassung';
 import { exportiereAbrechnung, exportiereLohnuebermittlung } from '../lib/exportXlsx';
 import {
@@ -658,11 +659,16 @@ function AbrechnungInhalt() {
       });
 
       for (const m of abzumelden) {
-        await aktualisiereMitarbeiter(m.id, {
+        await aktualisiereMitarbeiterMitProtokoll(m, {
           abgemeldet: true,
           abmeldungUebermittlungDatum: m.abmeldungUebermittlungDatum ?? heuteIso,
           letzteAbrechnungsperiodeId: selectedPeriode.id,
           isActive: false,
+        }, {
+          adminName,
+          ktx: { mitarbeiter, teilgebiete, abrechnungsperioden },
+          praefix: `Periodenabschluss ${selectedPeriode.bezeichnung}: `,
+          automatisch: true,
         });
       }
       // 2) Berechnetes Ergebnis als Snapshot mitschreiben — danach lassen sich
@@ -3755,8 +3761,17 @@ function AnAbmeldungenListe({
   istGesperrt: boolean;
   ergebnisse: MitarbeiterAbrechnung[];
 }) {
-  const { mitarbeiter, teilgebiete: _teilgebiete } = useApp();
-  void _teilgebiete;
+  const { mitarbeiter, teilgebiete, abrechnungsperioden, adminName } = useApp();
+
+  /** MA-Änderung mit Eintrag im Stammdaten-Änderungsprotokoll. */
+  async function aendereMa(maId: string, data: Partial<Mitarbeiter>) {
+    const alt = mitarbeiter.find((x) => x.id === maId);
+    if (!alt) return aktualisiereMitarbeiter(maId, data);
+    await aktualisiereMitarbeiterMitProtokoll(alt, data, {
+      adminName,
+      ktx: { mitarbeiter, teilgebiete, abrechnungsperioden },
+    });
+  }
 
   // IDs der MA, die in der aktuellen Berechnung mit Beträgen vorkommen
   const idsMitBetrag = new Set<string>();
@@ -3832,11 +3847,11 @@ function AnAbmeldungenListe({
       );
       return;
     }
-    await aktualisiereMitarbeiter(m.id, { abmeldungUebermittlungDatum: datum || undefined });
+    await aendereMa(m.id, { abmeldungUebermittlungDatum: datum || undefined });
   }
 
   async function handleAuswahlAb(m: Mitarbeiter) {
-    await aktualisiereMitarbeiter(m.id, { letzteAbrechnungsperiodeId: periode.id });
+    await aendereMa(m.id, { letzteAbrechnungsperiodeId: periode.id });
     setShowAuswahlAb(false);
   }
 
@@ -3850,9 +3865,9 @@ function AnAbmeldungenListe({
       if (!confirm(
         `„${m.name}" wurde von „${ersetzendeMa.name}" als ersetzt markiert. Soll diese Verknüpfung aufgehoben werden?`
       )) return;
-      await aktualisiereMitarbeiter(ersetzendeMa.id, { ersetztMitarbeiterId: undefined });
+      await aendereMa(ersetzendeMa.id, { ersetztMitarbeiterId: undefined });
     }
-    await aktualisiereMitarbeiter(m.id, { letzteAbrechnungsperiodeId: undefined });
+    await aendereMa(m.id, { letzteAbrechnungsperiodeId: undefined });
   }
 
   // Kandidaten für die manuelle Auswahl
@@ -3876,7 +3891,7 @@ function AnAbmeldungenListe({
     if (!confirm(
       `„${eintrag.name}" wieder aktivieren? Das Abmelde-Kennzeichen, das Abmeldedatum und die letzte Abrechnungsperiode werden zurückgesetzt; der MA wird wieder als aktiv markiert.`
     )) return;
-    await aktualisiereMitarbeiter(eintrag.mitarbeiterId, {
+    await aendereMa(eintrag.mitarbeiterId, {
       abgemeldet: false,
       isActive: true,
       abmeldungUebermittlungDatum: undefined,

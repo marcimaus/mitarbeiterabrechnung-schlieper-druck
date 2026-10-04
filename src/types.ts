@@ -382,6 +382,12 @@ export interface Mitarbeiter {
    * historischen PDF-Daten.
    */
   istLegacy?: boolean;
+  /**
+   * Interne Admin-Notiz — freier Text, den ausschließlich der Admin sieht
+   * und bearbeitet (Abrechnung/Mitarbeiter sehen das Feld nicht). Änderungen
+   * landen im Änderungsprotokoll als `nurAdmin`-Einträge.
+   */
+  adminNotiz?: string;
   erstelltAm: number;     // Unix-Timestamp ms
   aktualisiertAm: number;
 }
@@ -1669,7 +1675,9 @@ export interface AuditLog {
     /** Direkte Pflege der Teilgebietsdaten (Stammdaten, Straßenliste, Links). */
     | 'teilgebiet-stammdaten'
     /** Nachträge im Zusammentragen nach dem Monatswechsel. */
-    | 'zusammentragen';
+    | 'zusammentragen'
+    /** Änderungen an den Mitarbeiter-Stammdaten (teilgebietId/-Name = ''). */
+    | 'mitarbeiter-stammdaten';
   aktion: 'erstellt' | 'geaendert' | 'geloescht';
   teilgebietId: string;
   /** Snapshot — Teilgebiet kann später umbenannt/gelöscht werden. */
@@ -1703,6 +1711,11 @@ export interface AuditLog {
    * Eingaben), gilt der Eintrag als manuell.
    */
   automatisch?: boolean;
+  /**
+   * true = Eintrag betrifft ein Admin-only-Feld (z. B. die Admin-Notiz am
+   * Mitarbeiter) und wird nur angemeldeten Admins angezeigt.
+   */
+  nurAdmin?: boolean;
 }
 
 // ---- Hilfsfunktionen / Utils-Typen -------------------------

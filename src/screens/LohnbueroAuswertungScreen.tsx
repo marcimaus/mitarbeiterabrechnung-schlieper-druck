@@ -15,6 +15,7 @@ import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import { useApp } from '../context/AppContext';
 import { eur } from '../lib/abrechnungslogik';
+import { protokolliereNeuanlage } from '../lib/mitarbeiterProtokoll';
 import {
   erstelleLegacyMitarbeiter,
   weiseLohnbueroNameRohZu,
@@ -1247,6 +1248,7 @@ function ZuordnenModal({
   anzahlAbrechnungen: number;
   anzahlAnmeldungen: number;
 }) {
+  const { adminName } = useApp();
   const [modus, setModus] = useState<'bestehend' | 'neu'>('bestehend');
   const [suche, setSuche] = useState('');
   const [neuName, setNeuName] = useState('');
@@ -1325,6 +1327,10 @@ function ZuordnenModal({
           return;
         }
         zielId = await erstelleLegacyMitarbeiter(n, num);
+        await protokolliereNeuanlage(
+          { id: zielId, name: n, nummer: num, istLegacy: true },
+          { adminName, praefix: 'Lohnbüro-Zuordnung: ' },
+        );
       }
       const result = await weiseLohnbueroNameRohZu(nameRoh, zielId);
       onClose();
