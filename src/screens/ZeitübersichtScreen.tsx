@@ -1609,6 +1609,53 @@ function RestmengenReiter({
 // ---- Firmenweite Rest-/Fehlmengen je Teilgebiet (alle MA) --
 
 /** Netto-Minuten einer selbstgemeldeten Austräger-Arbeitszeit (von/bis/Pause). */
+/**
+ * Einsatz-Dokument für eine Austrag-Meldung (Restmenge/Arbeitszeit) holen.
+ * Existiert für (Ausgabe, Teilgebiet) bereits ein Einsatz, wird nur dessen ID
+ * geliefert — Typ und Austräger bleiben UNVERÄNDERT. Früher wurde der Einsatz
+ * per `setzeEinsatz` auf typ='standard' überschrieben; dadurch verlor ein
+ * eingetragener Springer seine Vergütung (bzw. ein unbesetztes TG zahlte
+ * plötzlich den Standardausträger). Gehört der Einsatz einem anderen
+ * (Springer eines anderen MA / unbesetzt / Ausfall), wird vorher gefragt.
+ * Nur wenn noch keiner existiert, wird ein Standard-Einsatz angelegt.
+ * Liefert null, wenn der User abbricht.
+ */
+async function einsatzFuerMeldung(
+  ausgabe: Ausgabe,
+  teilgebietId: string,
+  mitarbeiterId: string,
+  maName: (id: string | null) => string,
+): Promise<string | null> {
+  const vorhanden = (await ladeEinsaetze(ausgabe.id)).find((e) => e.teilgebietId === teilgebietId);
+  if (!vorhanden) {
+    return setzeEinsatz({
+      ausgabeId: ausgabe.id,
+      kw: ausgabe.kw,
+      jahr: ausgabe.jahr,
+      teilgebietId,
+      mitarbeiterId,
+      typ: 'standard',
+    });
+  }
+  const gehoertAnderem = vorhanden.typ !== 'standard' && vorhanden.mitarbeiterId !== mitarbeiterId;
+  if (gehoertAnderem) {
+    const eingetragen =
+      vorhanden.typ === 'springer'
+        ? `Springer ${maName(vorhanden.mitarbeiterId)}`
+        : vorhanden.typ === 'ausfall'
+          ? 'Ausfall'
+          : 'unbesetzt';
+    const ok = confirm(
+      `Für dieses Teilgebiet ist in ${kwLabel(ausgabe.kw, ausgabe.jahr)} „${eingetragen}" eingetragen.\n\n` +
+        `Die Meldung (Restmenge/Zeit) wird an diesen Einsatz gehängt — wer das Gebiet vergütet bekommt, ` +
+        `ändert sich dadurch NICHT. Soll ${maName(mitarbeiterId)} stattdessen vergütet werden, bitte im ` +
+        `Einsätze-Screen den Springer / Standard setzen.\n\nMeldung trotzdem speichern?`,
+    );
+    if (!ok) return null;
+  }
+  return vorhanden.id;
+}
+
 function nettoMinutenAz(az: { von: string; bis: string; pausenMinuten?: number }): number {
   const [vH, vM] = az.von.split(':').map(Number);
   const [bH, bM] = az.bis.split(':').map(Number);
@@ -1850,6 +1897,8 @@ function RestmengeNacherfassenForm({
   const [azPausen, setAzPausen] = useState(String(initial?.arbeitszeit?.pausenMinuten ?? 0));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const { mitarbeiter } = useApp();
+  const maName = (id: string | null) => (id ? mitarbeiter.find((m) => m.id === id)?.name ?? id : '—');
 
   const aktiveTeilgebiete = [...teilgebiete]
     .filter((t) => t.isActive && !t.istAuslagestelle)
@@ -1887,17 +1936,16 @@ function RestmengeNacherfassenForm({
       const ausgabe = ausgaben.find((a) => a.id === ausgabeId);
       if (!ausgabe) throw new Error('Ausgabe nicht gefunden.');
       // Beim Bearbeiten existierender Meldung: einsatzId vorhanden — direkt
-      // updaten. Beim Nacherfassen: einsatz finden oder neu anlegen.
+      // updaten. Beim Nacherfassen: einsatz finden (Typ/Austräger bleiben
+      // unverändert) oder neu anlegen.
       let einsatzId = initial?.einsatzId;
       if (!einsatzId) {
-        einsatzId = await setzeEinsatz({
-          ausgabeId,
-          kw: ausgabe.kw,
-          jahr: ausgabe.jahr,
-          teilgebietId: tgId,
-          mitarbeiterId,
-          typ: 'standard',
-        });
+        const id = await einsatzFuerMeldung(ausgabe, tgId, mitarbeiterId, maName);
+        if (!id) {
+          setSaving(false);
+          return;
+        }
+        einsatzId = id;
       }
       const arbeitszeit = hatAzAngaben
         ? {
@@ -2340,7 +2388,7 @@ function NeueZeitForm({
   onSaved: () => void;
   onCancel: () => void;
 }) {
-  const { abrechnungsperioden, teilgebiete } = useApp();
+  const { abrechnungsperioden, teilgebiete, mitarbeiter: alleMitarbeiter } = useApp();
   const sortiert = [...aktiveMitarbeiter].sort((a, b) => a.name.localeCompare(b.name));
   const heute = new Date();
   const heuteIso = `${heute.getFullYear()}-${(heute.getMonth() + 1).toString().padStart(2, '0')}-${heute.getDate().toString().padStart(2, '0')}`;
@@ -2501,15 +2549,14 @@ function NeueZeitForm({
       ) {
         try {
           const ausgabe = ausgaben.find((a) => a.id === ausgabeId);
-          if (ausgabe) {
-            const einsatzId = await setzeEinsatz({
-              ausgabeId,
-              kw: ausgabe.kw,
-              jahr: ausgabe.jahr,
-              teilgebietId: tgId,
-              mitarbeiterId: maId,
-              typ: 'standard',
-            });
+          // Bestehender Einsatz behält Typ/Austräger (kein Überschreiben
+          // eines Springers) — siehe einsatzFuerMeldung.
+          const einsatzId = ausgabe
+            ? await einsatzFuerMeldung(ausgabe, tgId, maId, (id) =>
+                id ? alleMitarbeiter.find((m) => m.id === id)?.name ?? id : '—',
+              )
+            : null;
+          if (einsatzId) {
             await aktualisiereEinsatzMeldung(einsatzId, {
               restmenge: Number(restmenge) || 0,
               fehlmenge: fehlmengeAn ? (Number(fehlmenge) || 0) : 0,
