@@ -210,6 +210,7 @@ import {
   KW_VERMERK_KATEGORIE_LABELS,
   KW_VERMERK_KATEGORIE_STYLE,
   type KwVermerk,
+  type UmgesetzterStandardWechsel,
   type KwVermerkKategorie,
   type DrucksaalPlanung,
   type DrucksaalTaetigkeit,
@@ -227,8 +228,9 @@ import {
   type AuditLog,
   type FerienkalenderEintrag,
 } from '../types';
-import { ausgabenListener, beilagenListener, beilagenVorlagenListener, schreibeAuditLog, auditLogListener } from '../lib/db';
+import { ausgabenListener, beilagenListener, beilagenVorlagenListener, schreibeAuditLog, auditLogListener, umgesetzteAnpassungenListener } from '../lib/db';
 import { berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
+import { effektiverStandardAustraegerId } from '../utils';
 import type { Beilage, BeilagenVorlage } from '../types';
 import { Link } from 'react-router-dom';
 import {
@@ -339,6 +341,33 @@ function PlanungContent() {
     () => new Set([...gesperrteKws, ...monatswechselKws]),
     [gesperrteKws, monatswechselKws],
   );
+  /**
+   * Standardausträger, der in einer fixierten KW (Monatswechsel/Abschluss)
+   * laut Perioden-Snapshot galt — genau wie im Einsätze-Screen. Nur Anzeige:
+   * Wird ein TG beim Monatswechsel als unbesetzt übernommen, ist der Live-
+   * Standardausträger leer; vergangene Monate sollen trotzdem den damaligen
+   * Austräger zeigen statt „unbesetzt". null = kein Snapshot bzw. unbesetzt.
+   */
+  const historischerStandard = (tg: Teilgebiet, kw: number): string | null => {
+    if (fixierteKws.has(kw)) {
+      const snap = effektiverStandardAustraegerId(tg, jahr, kw, abrechnungsperioden);
+      if (snap) return snap;
+    }
+    // Ohne Perioden-Snapshot (z. B. Monat ohne angelegte Periode): Protokoll
+    // der beim Monatswechsel umgesetzten Wechsel — der bisherige
+    // Standardausträger hat bis einschließlich „letzte Ausgabe" verteilt.
+    // Maßgeblich ist der erste Wechsel, dessen letzte Ausgabe ≥ KW liegt.
+    const wechsel = umgesetzteWechsel
+      .filter(
+        (w) =>
+          w.teilgebietId === tg.id &&
+          w.letzteAusgabeJahr != null &&
+          w.letzteAusgabeKw != null &&
+          cmpJahrKw(jahr, kw, w.letzteAusgabeJahr, w.letzteAusgabeKw) <= 0,
+      )
+      .sort((a, b) => cmpJahrKw(a.letzteAusgabeJahr!, a.letzteAusgabeKw!, b.letzteAusgabeJahr!, b.letzteAusgabeKw!))[0];
+    return wechsel?.bisherigerAustraegerId ?? null;
+  };
   const [urlaube, setUrlaube] = useState<UrlaubsEintrag[]>([]);
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [wechselplan, setWechselplan] = useState<StandardAustraegerWechselPlan[]>([]);
@@ -350,6 +379,9 @@ function PlanungContent() {
   >(null);
   // KW-Vermerke (Kopfzeilen-Hinweise: Sonderseiten-Themen, Ferien, …).
   const [kwVermerke, setKwVermerke] = useState<KwVermerk[]>([]);
+  // Beim Monatswechsel umgesetzte Standard-Wechsel — Quelle für den
+  // damaligen Austräger in vergangenen KWs (nur Anzeige).
+  const [umgesetzteWechsel, setUmgesetzteWechsel] = useState<UmgesetzterStandardWechsel[]>([]);
   const [vermerkModalKw, setVermerkModalKw] = useState<number | null>(null);
 
   // Vereinheitlichte Liste der Wechsel-Sektion: enthält ALLE Zeilen,
@@ -403,7 +435,10 @@ function PlanungContent() {
     const u7 = austraegerwechselPlanListener(setWechselplan);
     const u8 = auditLogListener(setAuditLog);
     const u9 = kwVermerkeListener(jahr, setKwVermerke);
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); };
+    const u10 = umgesetzteAnpassungenListener((list) =>
+      setUmgesetzteWechsel(list.filter((a): a is UmgesetzterStandardWechsel => a.art === 'wechsel')),
+    );
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); };
   }, [jahr]);
 
   // Lookup KW → Vermerk (max. ein Vermerk je KW).
@@ -1856,6 +1891,7 @@ function PlanungContent() {
                         jahr={jahr}
                         kw={kw}
                         einsatz={ausfallIdx.get(`${kw}-${plan.teilgebietId}`)}
+                        historischerStandardId={historischerStandard(tg, kw)}
                         mitarbeiterById={mitarbeiterById}
                         onClickAusfall={() => setAusfallModal({ kw, teilgebietId: plan.teilgebietId })}
                       />
@@ -4223,6 +4259,7 @@ function WechselCell({
   jahr,
   kw,
   einsatz,
+  historischerStandardId,
   mitarbeiterById,
   onClickAusfall,
 }: {
@@ -4231,6 +4268,12 @@ function WechselCell({
   kw: number;
   /** Konkreter Einsatz für (kw, tg) — typischerweise Lücken- oder Springer-Einsatz. */
   einsatz: Einsatz | undefined;
+  /**
+   * Standardausträger laut Perioden-Snapshot (nur fixierte KWs, sonst null).
+   * Hat die KW keinen abweichenden Einsatz, war das TG damals durch ihn
+   * besetzt — dann wird er angezeigt statt „unbesetzt".
+   */
+  historischerStandardId: string | null;
   mitarbeiterById: Map<string, Mitarbeiter>;
   /**
    * Klick auf JEDE Zelle → Ausfall-Modal für diese KW. Der Wechselplan
@@ -4339,6 +4382,24 @@ function WechselCell({
           title={`Springer: ${ma?.name ?? '?'} — Klick öffnet die Ausfall-Maske`}
         >
           🟢 {kurz}
+        </button>
+      );
+    }
+    // Fixierter Monat ohne abweichenden Einsatz: damals durch den
+    // Standardausträger laut Snapshot besetzt (wie im Einsätze-Screen) —
+    // z. B. TG, das erst beim Monatswechsel als unbesetzt übernommen wurde.
+    const hatAbweichung = einsatz?.typ === 'ungeklärt' || einsatz?.typ === 'ausfall';
+    if (historischerStandardId && !hatAbweichung) {
+      const stdMa = mitarbeiterById.get(historischerStandardId);
+      const kurz = stdMa?.kuerzel || stdMa?.name?.split(' ')[0] || '?';
+      return (
+        <button
+          type="button"
+          onClick={onClickAusfall}
+          className="w-full text-[11px] py-1 rounded border bg-gray-50 border-gray-200 text-gray-600 leading-tight"
+          title={`Damals Standardausträger: ${stdMa?.name ?? '?'} (Stand Monatswechsel/Abschluss, wie im Einsätze-Screen)`}
+        >
+          {kurz}
         </button>
       );
     }
