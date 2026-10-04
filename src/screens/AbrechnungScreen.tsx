@@ -1321,11 +1321,16 @@ function AbrechnungInhalt() {
                 ). Stammdaten-Änderungen (Standardausträger, Stückzahlen) wirken sich
                 nicht mehr auf diese Periode aus. Vorschüsse, Boni, Lohnkonto,
                 Zeiten und Fahrtkosten sind weiter erfassbar. Nachträglich gemeldete
-                Ausfälle/Springer werden im Einsätze-Screen je Ausgabe nachgetragen
-                und wirken nur auf die betroffenen Austräger.
+                Ausfälle/Springer werden im Einsätze-Screen, Korrekturen beim
+                Zusammentragen im Zusammentragen-Screen je Ausgabe nachgetragen —
+                sie wirken nur auf die betroffenen Mitarbeiter.
                 {(() => {
                   const betroffen = (ergebnisse ?? []).filter(
-                    (er) => er.austraegerEinsaetze.some((e) => e.nachtrag) || (er.austraegerEinsaetzeEntfallen?.length ?? 0) > 0
+                    (er) =>
+                      er.austraegerEinsaetze.some((e) => e.nachtrag) ||
+                      (er.austraegerEinsaetzeEntfallen?.length ?? 0) > 0 ||
+                      er.zusammentragenEinsaetze.some((z) => z.nachtrag) ||
+                      (er.zusammentragenEinsaetzeEntfallen?.length ?? 0) > 0
                   );
                   return betroffen.length > 0 ? (
                     <span className="block mt-1 font-medium">
@@ -2826,7 +2831,7 @@ function DetailAnsicht({
       )}
 
       {/* Zusammentragen */}
-      {er.zusammentragenEinsaetze.length > 0 && (
+      {(er.zusammentragenEinsaetze.length > 0 || (er.zusammentragenEinsaetzeEntfallen?.length ?? 0) > 0) && (
         <div>
           <h4 className="font-semibold text-gray-700 mb-2 text-sm">Zusammentragen ({er.zusammentragenEinsaetze.length} Einsätze)</h4>
           <div className="overflow-hidden rounded border border-gray-200 bg-white">
@@ -2882,6 +2887,14 @@ function DetailAnsicht({
                           ) : (
                             <span className="text-gray-600">Zusammentragen</span>
                           )}
+                          {z.nachtrag && (
+                            <span
+                              className="ml-2 bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded"
+                              title="Nachtrag nach dem Monatswechsel — mit Teilgebiets-/Parameter-Stand des Monatswechsels neu gerechnet"
+                            >
+                              📌 Nachtrag
+                            </span>
+                          )}
                         </td>
                         <td className="px-2 py-1.5 text-right text-gray-600">{z.stueckzahl != null ? z.stueckzahl.toLocaleString('de-DE') : '—'}</td>
                         <td className="px-2 py-1.5 text-right text-gray-600">{z.istVorarbeit ? '—' : z.stapelBearbeitet}</td>
@@ -2897,6 +2910,18 @@ function DetailAnsicht({
                   flushSubtotal();
                   return out;
                 })()}
+                {(er.zusammentragenEinsaetzeEntfallen ?? []).map((z, i) => (
+                  <tr key={`zt-entfallen-${i}`} className="bg-gray-50/60 text-gray-400">
+                    <td className="px-2 py-1.5">{z.kw}</td>
+                    <td className="px-2 py-1.5" colSpan={7}>
+                      <span className="line-through">{z.istVorarbeit ? 'Vorarbeit' : z.teilgebietName ?? '—'}</span>
+                      <span className="ml-2 text-red-600">
+                        entfällt — Nachtrag nach Monatswechsel (fixiert waren {eur(z.lohn)})
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 text-right">—</td>
+                  </tr>
+                ))}
                 <tr className="bg-gray-50 border-t-2 border-gray-300 font-semibold">
                   <td className="px-2 py-1.5 text-gray-700" colSpan={7}>∑ Gesamt</td>
                   <td className="px-2 py-1.5 text-right text-gray-600">

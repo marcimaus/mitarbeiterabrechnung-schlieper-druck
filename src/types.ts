@@ -1040,6 +1040,15 @@ export interface ZusammentragenEinsatz {
    * Admin-Ansicht sowie den „prüfen"-Hinweis auf der Startseite.
    */
   selbsterfasst?: boolean;
+  /**
+   * Zeitpunkt (ms), zu dem der Eintrag NACH dem Monatswechsel seiner Periode
+   * als Nachtrag geändert wurde. Die Abrechnung rechnet diesen Eintrag dann
+   * neu (Teilgebiets-/Parameter-Stand des Monatswechsels), statt den fixierten
+   * Wert zu übernehmen. Analog `Einsatz.nachtragNachMonatswechselAm`.
+   */
+  nachtragNachMonatswechselAm?: number;
+  /** Anmerkung zum Nachtrag (Pflicht nach dem Monatswechsel). */
+  anmerkung?: string;
   erstelltAm: number;
   aktualisiertAm: number;
 }
@@ -1658,7 +1667,9 @@ export interface AuditLog {
     | 'dauerhafter-wechsel'
     | 'teilgebiets-anpassung'
     /** Direkte Pflege der Teilgebietsdaten (Stammdaten, Straßenliste, Links). */
-    | 'teilgebiet-stammdaten';
+    | 'teilgebiet-stammdaten'
+    /** Nachträge im Zusammentragen nach dem Monatswechsel. */
+    | 'zusammentragen';
   aktion: 'erstellt' | 'geaendert' | 'geloescht';
   teilgebietId: string;
   /** Snapshot — Teilgebiet kann später umbenannt/gelöscht werden. */

@@ -24,6 +24,7 @@ const PROTOKOLL_BEREICH_TITEL: Record<AuditLog['bereich'], string> = {
   'dauerhafter-wechsel': 'Änderungsprotokoll — Planung dauerhafter Ausfälle / Standard-Wechsel',
   'teilgebiets-anpassung': 'Änderungsprotokoll — Teilgebietsanpassung (Stückzahl)',
   'teilgebiet-stammdaten': 'Änderungsprotokoll — Teilgebietsdaten (Mengen, Straßen, Links)',
+  zusammentragen: 'Änderungsprotokoll — Zusammentragen (Nachträge nach Monatswechsel)',
 };
 
 function formatZeitstempel(ts: number): string {

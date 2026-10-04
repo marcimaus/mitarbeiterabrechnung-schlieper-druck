@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
+import Modal from '../components/Modal';
 import {
+  schreibeAuditLog,
   ladeAusgaben,
   ladeBeilagen,
   ladeZusammentragenEinsaetze,
@@ -33,7 +35,11 @@ import {
   lokalesDatum,
 } from '../lib/vorarbeit';
 import { istTgAktivFuer } from '../lib/saison';
-import { findAbgeschlossenePeriodeFuerZeitraum } from '../lib/abrechnungslogik';
+import {
+  findAbgeschlossenePeriodeFuerZeitraum,
+  effektiveParameter,
+  effektiveTeilgebiete,
+} from '../lib/abrechnungslogik';
 import { istEinsatzbereit } from '../utils';
 
 export default function ZusammentragenScreen() {
@@ -89,6 +95,15 @@ function ZusammentragenInhalt() {
   const [bulkMitarbeiterId, setBulkMitarbeiterId] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
 
+  // ---- Nachtrag nach Monatswechsel ----
+  // Einzelne Einträge bleiben änderbar; die Abrechnung rechnet dann nur die
+  // betroffene Zeile neu (Stand des Monatswechsels). Anmerkung ist Pflicht.
+  const [nachtrag, setNachtrag] = useState<ZtNachtrag | null>(null);
+  const [nachtragAnmerkung, setNachtragAnmerkung] = useState('');
+  const [nachtragSpeichert, setNachtragSpeichert] = useState(false);
+  // Erzwingt das Zurücksetzen der Vorarbeit-Eingabefelder nach Abbruch.
+  const [vorarbeitVersion, setVorarbeitVersion] = useState(0);
+
   useEffect(() => {
     ladeAusgaben().then((list) => {
       const sorted = [...list].sort((a, b) =>
@@ -131,6 +146,28 @@ function ZusammentragenInhalt() {
   };
 
   const selectedAusgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
+
+  const zugehoerigerPeriode = selectedAusgabe
+    ? abrechnungsperioden.find((p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen.includes(selectedAusgabe.kw))
+    : undefined;
+  const istAbgeschlossen = zugehoerigerPeriode?.status === 'abgeschlossen';
+  const istMonatswechsel = !!zugehoerigerPeriode?.monatswechselSnapshot;
+  // Sammel-Aktionen (Vorarbeit an/aus, Mehrfachzuweisung, Stempel-Vorarbeit)
+  // bleiben nach dem Monatswechsel gesperrt — sie würden viele Mitarbeiter
+  // auf einmal verschieben. Einzelne Einträge sind als Nachtrag änderbar.
+  const istGesperrt = istAbgeschlossen || istMonatswechsel;
+  const monatswechselAm = !istAbgeschlossen ? zugehoerigerPeriode?.monatswechselSnapshot?.erstelltAm : undefined;
+  const istNachtragModus = monatswechselAm != null;
+  const istNachtrag = (e: ZusammentragenEinsatz | undefined) =>
+    monatswechselAm != null && (e?.nachtragNachMonatswechselAm ?? 0) > monatswechselAm;
+
+  // Soll-Zeiten mit dem Stand, mit dem auch abgerechnet wird (nach dem
+  // Monatswechsel: Parameter- und Teilgebiets-Snapshot).
+  const effParameter = parameter ? effektiveParameter(parameter, zugehoerigerPeriode) : null;
+  const effStueckzahl = new Map(
+    effektiveTeilgebiete(teilgebiete, zugehoerigerPeriode).map((t) => [t.id, t.stueckzahl])
+  );
+  const stueckzahlFuer = (tg: { id: string; stueckzahl: number }) => effStueckzahl.get(tg.id) ?? tg.stueckzahl;
 
   // Einträge aufteilen
   const vorarbeitEintraege = alleEinsaetze.filter((e) => e.istVorarbeit);
@@ -230,21 +267,129 @@ function ZusammentragenInhalt() {
 
   // ---- Vorarbeit-Zeit aktualisieren ---
   async function handleVorarbeitZeitUpdate(einsatz: ZusammentragenEinsatz, h: number, m: number) {
+    const minuten = h * 60 + m;
+    if (minuten === (einsatz.vorarbeitMinuten ?? 0)) return;
+    if (istNachtragModus) {
+      oeffneNachtrag({ art: 'vorarbeit-zeit', einsatz, minuten }, einsatz.anmerkung);
+      return;
+    }
     await setzeZusammentragenEinsatz({
       ausgabeId: einsatz.ausgabeId,
       teilgebietId: einsatz.teilgebietId,
       mitarbeiterId: einsatz.mitarbeiterId,
       stapelBearbeitet: einsatz.stapelBearbeitet,
       istVorarbeit: true,
-      vorarbeitMinuten: h * 60 + m,
+      vorarbeitMinuten: minuten,
     });
     await reload();
   }
 
   // ---- Vorarbeit-Eintrag löschen ---
-  async function handleVorarbeitLoeschen(id: string) {
-    await loescheZusammentragenEinsatz(id);
+  async function handleVorarbeitLoeschen(einsatz: ZusammentragenEinsatz) {
+    if (istNachtragModus) {
+      oeffneNachtrag({ art: 'vorarbeit-loeschen', einsatz }, einsatz.anmerkung);
+      return;
+    }
+    await loescheZusammentragenEinsatz(einsatz.id);
     await reload();
+  }
+
+  // ---- Nachtrag nach Monatswechsel ---
+  function oeffneNachtrag(n: ZtNachtrag, vorbelegung?: string) {
+    setNachtragAnmerkung(vorbelegung ?? '');
+    setNachtrag(n);
+  }
+
+  function nachtragAbbrechen() {
+    setNachtrag(null);
+    setVorarbeitVersion((v) => v + 1);
+  }
+
+  const maName = (id: string | null | undefined) =>
+    id ? mitarbeiter.find((m) => m.id === id)?.name ?? id : null;
+
+  async function handleNachtragSpeichern() {
+    if (!nachtrag || !selectedAusgabe || !nachtragAnmerkung.trim()) return;
+    const anmerkung = nachtragAnmerkung.trim();
+    const kennzeichen = { nachtragNachMonatswechselAm: Date.now(), anmerkung };
+    const zusatz = ` — Nachtrag nach Monatswechsel; Anmerkung: "${anmerkung}"`;
+    const basis = {
+      adminName: adminName || (userRole === 'abrechnung' ? 'Abrechnung' : 'Unbekannt'),
+      bereich: 'zusammentragen' as const,
+      jahr: selectedAusgabe.jahr,
+      kwVon: selectedAusgabe.kw,
+      kwBis: selectedAusgabe.kw,
+    };
+    setNachtragSpeichert(true);
+    try {
+      if (nachtrag.art === 'zuweisung') {
+        const alt = tgMap[nachtrag.tgId];
+        if (nachtrag.neuerMaId) {
+          await setzeZusammentragenEinsatz({
+            ausgabeId: selectedAusgabe.id,
+            teilgebietId: nachtrag.tgId,
+            mitarbeiterId: nachtrag.neuerMaId,
+            stapelBearbeitet: selectedAusgabe.stapelAnzahl,
+            istVorarbeit: false,
+            ...kennzeichen,
+          });
+        } else if (alt) {
+          await loescheZusammentragenEinsatz(alt.id);
+        }
+        await schreibeAuditLog({
+          ...basis,
+          aktion: !alt ? 'erstellt' : nachtrag.neuerMaId ? 'geaendert' : 'geloescht',
+          teilgebietId: nachtrag.tgId,
+          teilgebietName: nachtrag.tgName,
+          mitarbeiterId: nachtrag.neuerMaId || null,
+          mitarbeiterName: maName(nachtrag.neuerMaId),
+          feld: 'Zusammenträger',
+          altWert: maName(alt?.mitarbeiterId) ?? '',
+          neuWert: maName(nachtrag.neuerMaId) ?? '',
+          beschreibung:
+            `Zusammentragen ${kwLabel(selectedAusgabe.kw, selectedAusgabe.jahr)}: ` +
+            `${maName(alt?.mitarbeiterId) ?? '— (nicht zugewiesen)'} → ${maName(nachtrag.neuerMaId) ?? '— (nicht zugewiesen)'}` +
+            zusatz,
+        });
+      } else {
+        const e = nachtrag.einsatz;
+        const alteZeit = formatierDauer(e.vorarbeitMinuten ?? 0);
+        if (nachtrag.art === 'vorarbeit-zeit') {
+          await setzeZusammentragenEinsatz({
+            ausgabeId: e.ausgabeId,
+            teilgebietId: e.teilgebietId,
+            mitarbeiterId: e.mitarbeiterId,
+            stapelBearbeitet: e.stapelBearbeitet,
+            istVorarbeit: true,
+            vorarbeitMinuten: nachtrag.minuten,
+            ...kennzeichen,
+          });
+        } else {
+          await loescheZusammentragenEinsatz(e.id);
+        }
+        await schreibeAuditLog({
+          ...basis,
+          aktion: nachtrag.art === 'vorarbeit-zeit' ? 'geaendert' : 'geloescht',
+          teilgebietId: e.teilgebietId,
+          teilgebietName: 'Vorarbeit',
+          mitarbeiterId: e.mitarbeiterId,
+          mitarbeiterName: maName(e.mitarbeiterId),
+          feld: 'Vorarbeit-Zeit',
+          altWert: alteZeit,
+          neuWert: nachtrag.art === 'vorarbeit-zeit' ? formatierDauer(nachtrag.minuten) : '',
+          beschreibung:
+            `Vorarbeit ${kwLabel(selectedAusgabe.kw, selectedAusgabe.jahr)} ${maName(e.mitarbeiterId)}: ` +
+            (nachtrag.art === 'vorarbeit-zeit'
+              ? `${alteZeit} → ${formatierDauer(nachtrag.minuten)}`
+              : `Eintrag (${alteZeit}) gelöscht`) +
+            zusatz,
+        });
+      }
+      await reload();
+      setNachtrag(null);
+    } finally {
+      setNachtragSpeichert(false);
+    }
   }
 
   // ---- Mehrfachauswahl ---
@@ -297,6 +442,14 @@ function ZusammentragenInhalt() {
   // ---- Normales Zusammentragen ---
   async function handleTgChange(teilgebietId: string, mitarbeiterId: string) {
     if (!selectedAusgabe) return;
+    if (istNachtragModus) {
+      const tg = teilgebiete.find((t) => t.id === teilgebietId);
+      oeffneNachtrag(
+        { art: 'zuweisung', tgId: teilgebietId, tgName: tg?.name ?? teilgebietId, neuerMaId: mitarbeiterId },
+        tgMap[teilgebietId]?.anmerkung
+      );
+      return;
+    }
     setTgSaving(teilgebietId);
     try {
       if (!mitarbeiterId) {
@@ -320,14 +473,6 @@ function ZusammentragenInhalt() {
     }
   }
 
-  const zugehoerigerPeriode = selectedAusgabe
-    ? abrechnungsperioden.find((p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen.includes(selectedAusgabe.kw))
-    : undefined;
-  // Sperre: Periode abgeschlossen ODER Monatswechsel durchgeführt
-  // (nach Monatswechsel würden Mengenänderungen die fixierten Werte verschieben).
-  const istAbgeschlossen = zugehoerigerPeriode?.status === 'abgeschlossen';
-  const istMonatswechsel = !!zugehoerigerPeriode?.monatswechselSnapshot;
-  const istGesperrt = istAbgeschlossen || istMonatswechsel;
   const zugewiesen = normalEinsaetze.length;
   const gesamt = aktiveTeilgebiete.length;
 
@@ -436,9 +581,18 @@ function ZusammentragenInhalt() {
           🔒 Diese Ausgabe gehört zu einer <strong>abgeschlossenen Abrechnungsperiode</strong> — keine Änderungen mehr möglich.
         </div>
       )}
-      {!istAbgeschlossen && istMonatswechsel && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-900 flex items-center gap-2">
-          📌 Für diese Periode wurde der <strong>Monatswechsel durchgeführt</strong> — Zusammentragen ist fixiert; Änderungen würden die fixierten Werte verschieben.
+      {istNachtragModus && zugehoerigerPeriode && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 text-sm text-emerald-900">
+          <div>
+            📌 Für <strong>{zugehoerigerPeriode.bezeichnung}</strong> wurde der <strong>Monatswechsel</strong> am{' '}
+            {new Date(monatswechselAm!).toLocaleDateString('de-DE')} durchgeführt.
+          </div>
+          <div className="text-xs mt-1 text-emerald-800">
+            Einzelne Einträge (Zusammenträger je Teilgebiet, Vorarbeit-Zeit) sind als <strong>Nachtrag</strong> änderbar:
+            In der Abrechnung ändern sich nur die betroffenen Mitarbeiter — gerechnet mit Stückzahlen und Parametern vom
+            Stand des Monatswechsels. Eine Anmerkung ist Pflicht. Sammel-Aktionen (Vorarbeit an/aus, Mehrfachauswahl,
+            gestempelte Vorarbeit) bleiben gesperrt.
+          </div>
         </div>
       )}
 
@@ -476,13 +630,16 @@ function ZusammentragenInhalt() {
                     <div key={e.id} className="flex items-center gap-3 bg-white rounded-lg border border-amber-200 px-4 py-2.5">
                       <span className="font-medium text-gray-900 w-40 shrink-0">{ma?.name ?? '?'}</span>
                       <VorarbeitZeitEingabe
+                        key={`${e.id}-${vorarbeitVersion}`}
                         stunden={h}
                         minuten={m}
+                        disabled={istAbgeschlossen}
                         onSave={(nh, nm) => handleVorarbeitZeitUpdate(e, nh, nm)}
                       />
+                      {istNachtrag(e) && <NachtragBadge anmerkung={e.anmerkung} />}
                       <button
-                        onClick={() => handleVorarbeitLoeschen(e.id)}
-                        disabled={istGesperrt}
+                        onClick={() => handleVorarbeitLoeschen(e)}
+                        disabled={istAbgeschlossen}
                         className="ml-auto text-red-400 hover:text-red-600 text-sm px-2 py-1 rounded hover:bg-red-50 transition-colors disabled:opacity-40"
                         title="Eintrag löschen"
                       >
@@ -645,12 +802,12 @@ function ZusammentragenInhalt() {
                   const intBeilTg = beilagen.filter(
                     (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id)
                   ).length;
-                  const sollZeitH = selectedAusgabe && parameter
+                  const sollZeitH = selectedAusgabe && effParameter
                     ? berechneZusammentragZeit(
-                        tg.stueckzahl,
+                        stueckzahlFuer(tg),
                         selectedAusgabe.stapelAnzahl,
                         intBeilTg,
-                        parameter
+                        effParameter
                       )
                     : 0;
 
@@ -667,7 +824,7 @@ function ZusammentragenInhalt() {
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-gray-900">{tg.name}</div>
-                        <div className="text-xs text-gray-400">{tg.plz} · {tg.stueckzahl} Stk</div>
+                        <div className="text-xs text-gray-400">{tg.plz} · {stueckzahlFuer(tg)} Stk</div>
                       </td>
                       <td className="px-4 py-2.5">
                         {tour ? (
@@ -690,7 +847,7 @@ function ZusammentragenInhalt() {
                           <select
                             value={e?.mitarbeiterId ?? ''}
                             onChange={(ev) => handleTgChange(tg.id, ev.target.value)}
-                            disabled={isSaving || istGesperrt}
+                            disabled={isSaving || istAbgeschlossen}
                             className={`border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                               e ? 'border-green-300 bg-green-50' : 'border-gray-300'
                             }`}
@@ -709,6 +866,7 @@ function ZusammentragenInhalt() {
                               selbst erfasst
                             </span>
                           )}
+                          {istNachtrag(e) && <NachtragBadge anmerkung={e?.anmerkung} />}
                         </div>
                       </td>
                     </tr>
@@ -716,21 +874,21 @@ function ZusammentragenInhalt() {
                 })}
                 {/* Summenzeile über die GEFILTERTEN Teilgebiete */}
                 {gefilterteTeilgebiete.length > 0 && (() => {
-                  const summeStueck = gefilterteTeilgebiete.reduce((s, tg) => s + tg.stueckzahl, 0);
+                  const summeStueck = gefilterteTeilgebiete.reduce((s, tg) => s + stueckzahlFuer(tg), 0);
                   const summeIntBeil = gefilterteTeilgebiete.reduce((s, tg) =>
                     s + beilagen.filter(
                       (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id)
                     ).length, 0);
                   const summeSollZeit = gefilterteTeilgebiete.reduce((s, tg) => {
-                    if (!selectedAusgabe || !parameter) return s;
+                    if (!selectedAusgabe || !effParameter) return s;
                     const intBeilTg = beilagen.filter(
                       (b) => b.kennzeichen === 'int' && b.teilgebietIds.includes(tg.id)
                     ).length;
                     return s + berechneZusammentragZeit(
-                      tg.stueckzahl,
+                      stueckzahlFuer(tg),
                       selectedAusgabe.stapelAnzahl,
                       intBeilTg,
-                      parameter
+                      effParameter
                     );
                   }, 0);
                   return (
@@ -763,7 +921,91 @@ function ZusammentragenInhalt() {
           </div>
         </>
       )}
+
+      {/* Nachtrag-Dialog (nach Monatswechsel) */}
+      <Modal
+        isOpen={nachtrag !== null}
+        onClose={nachtragAbbrechen}
+        title="Nachtrag Zusammentragen"
+        size="md"
+      >
+        {nachtrag && selectedAusgabe && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700">
+              {kwLabel(selectedAusgabe.kw, selectedAusgabe.jahr)}:{' '}
+              {nachtrag.art === 'zuweisung' ? (
+                <>
+                  Teilgebiet <strong>{nachtrag.tgName}</strong>:{' '}
+                  {maName(tgMap[nachtrag.tgId]?.mitarbeiterId) ?? '— (nicht zugewiesen)'} →{' '}
+                  <strong>{maName(nachtrag.neuerMaId) ?? '— (nicht zugewiesen)'}</strong>
+                </>
+              ) : nachtrag.art === 'vorarbeit-zeit' ? (
+                <>
+                  Vorarbeit <strong>{maName(nachtrag.einsatz.mitarbeiterId)}</strong>:{' '}
+                  {formatierDauer(nachtrag.einsatz.vorarbeitMinuten ?? 0)} →{' '}
+                  <strong>{formatierDauer(nachtrag.minuten)}</strong>
+                </>
+              ) : (
+                <>
+                  Vorarbeit-Eintrag <strong>{maName(nachtrag.einsatz.mitarbeiterId)}</strong> (
+                  {formatierDauer(nachtrag.einsatz.vorarbeitMinuten ?? 0)}) löschen
+                </>
+              )}
+            </p>
+            <p className="text-xs text-gray-500">
+              Wirkt in der Abrechnung nur auf die betroffenen Mitarbeiter (Stand des Monatswechsels).
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Anmerkung (Pflicht — Nachtrag nach Monatswechsel)
+              </label>
+              <textarea
+                value={nachtragAnmerkung}
+                onChange={(ev) => setNachtragAnmerkung(ev.target.value)}
+                rows={2}
+                autoFocus
+                placeholder='z. B. „hat nachträglich gemeldet, dass Teilgebiet X von Y zusammengetragen wurde"'
+                className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  nachtragAnmerkung.trim() ? 'border-gray-300' : 'border-amber-400'
+                }`}
+              />
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={handleNachtragSpeichern}
+                disabled={!nachtragAnmerkung.trim() || nachtragSpeichert}
+                className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {nachtragSpeichert ? 'Speichere…' : 'Nachtrag speichern'}
+              </button>
+              <button
+                onClick={nachtragAbbrechen}
+                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
+  );
+}
+
+/** Ausstehende Nachtrag-Aktion im Zusammentragen (nach Monatswechsel). */
+type ZtNachtrag =
+  | { art: 'zuweisung'; tgId: string; tgName: string; neuerMaId: string }
+  | { art: 'vorarbeit-zeit'; einsatz: ZusammentragenEinsatz; minuten: number }
+  | { art: 'vorarbeit-loeschen'; einsatz: ZusammentragenEinsatz };
+
+function NachtragBadge({ anmerkung }: { anmerkung?: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-800 text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0"
+      title={`Nachtrag nach dem Monatswechsel${anmerkung ? `: ${anmerkung}` : ''}`}
+    >
+      📌 Nachtrag
+    </span>
   );
 }
 
@@ -1123,10 +1365,12 @@ function ZusammentragenSelbsterfassung({ me }: { me: Mitarbeiter }) {
 function VorarbeitZeitEingabe({
   stunden,
   minuten,
+  disabled,
   onSave,
 }: {
   stunden: number;
   minuten: number;
+  disabled?: boolean;
   onSave: (h: number, m: number) => void;
 }) {
   const [h, setH] = useState(stunden.toString());
@@ -1153,6 +1397,7 @@ function VorarbeitZeitEingabe({
         value={h}
         onChange={(e) => setH(e.target.value)}
         onBlur={handleBlur}
+        disabled={disabled}
         className="w-12 border border-gray-300 rounded px-1.5 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-amber-500"
         title="Stunden"
       />
@@ -1164,6 +1409,7 @@ function VorarbeitZeitEingabe({
         value={m}
         onChange={(e) => setM(e.target.value)}
         onBlur={handleBlur}
+        disabled={disabled}
         className="w-12 border border-gray-300 rounded px-1.5 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-amber-500"
         title="Minuten"
       />

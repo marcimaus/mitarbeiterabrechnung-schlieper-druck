@@ -1174,6 +1174,14 @@ interface MonatswechselFixierung {
   zusammentragenGesamt: number;
 }
 
+function ohneNachtragKennzeichen(zeilen: unknown[]): unknown[] {
+  return zeilen.map((e) => {
+    const kopie = { ...(e as Record<string, unknown>) };
+    delete kopie.nachtrag;
+    return kopie;
+  });
+}
+
 export async function schreibeMonatswechselSnapshot(
   periodeId: string,
   teilgebiete: Teilgebiet[],
@@ -1207,15 +1215,11 @@ export async function schreibeMonatswechselSnapshot(
     mitarbeiterId: er.mitarbeiter.id,
     // Nachtrag-Kennzeichen eines früheren Monatswechsels gehören nicht in
     // den neuen Stand — ab jetzt ist alles „fixiert".
-    austraegerEinsaetze: er.austraegerEinsaetze.map((e) => {
-      const kopie = { ...(e as Record<string, unknown>) };
-      delete kopie.nachtrag;
-      return kopie;
-    }),
+    austraegerEinsaetze: ohneNachtragKennzeichen(er.austraegerEinsaetze),
     austraegerGesamt: er.austraegerGesamt,
     gewichtsbonusAnzeigenblatt: er.gewichtsbonusAnzeigenblatt,
     gewichtsbonusBeilagen: er.gewichtsbonusBeilagen,
-    zusammentragenEinsaetze: er.zusammentragenEinsaetze,
+    zusammentragenEinsaetze: ohneNachtragKennzeichen(er.zusammentragenEinsaetze),
     zusammentragenGesamt: er.zusammentragenGesamt,
   }));
 

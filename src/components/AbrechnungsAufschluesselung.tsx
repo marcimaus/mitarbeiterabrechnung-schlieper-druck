@@ -381,6 +381,8 @@ export default function AbrechnungsAufschluesselung({
     .filter((z) => z.istVorarbeit)
     .sort((a, b) => a.kw - b.kw);
   const summeVorarbeitZt = vorarbeitZt.reduce((s, z) => s + z.lohn, 0);
+  const ztEntfallen = er.zusammentragenEinsaetzeEntfallen ?? [];
+  const ztNachtraege = er.zusammentragenEinsaetze.filter((z) => z.nachtrag);
   const geschw1 = params.zusammentragGeschwErste2StapelStkProH || 1700;
   const geschw2 = params.zusammentragGeschwWeitereStapelStkProH || 3400;
 
@@ -555,17 +557,19 @@ export default function AbrechnungsAufschluesselung({
   if (istFixiert) {
     hinweise.push({
       stufe: 'info',
-      text: `Monatswechsel am ${new Date(periode.monatswechselSnapshot!.erstelltAm).toLocaleDateString('de-DE')} durchgeführt — Austragen und Zusammentragen sind auf dem damaligen Stand fixiert; spätere Änderungen an Teilgebieten/Parametern wirken nicht mehr. Nachträge im Einsätze-Screen (Springer/unbesetzt) wirken nur auf die betroffene Ausgabe und das betroffene Teilgebiet.`,
+      text: `Monatswechsel am ${new Date(periode.monatswechselSnapshot!.erstelltAm).toLocaleDateString('de-DE')} durchgeführt — Austragen und Zusammentragen sind auf dem damaligen Stand fixiert; spätere Änderungen an Teilgebieten/Parametern wirken nicht mehr. Nachträge im Einsätze-Screen (Springer/unbesetzt) und im Zusammentragen (Zusammenträger je Teilgebiet, Vorarbeit-Zeit) wirken nur auf die betroffenen Zeilen.`,
     });
   }
-  if (nachtragZeilen.length > 0 || entfallen.length > 0) {
+  if (nachtragZeilen.length > 0 || entfallen.length > 0 || ztNachtraege.length > 0 || ztEntfallen.length > 0) {
     const teile = [
       nachtragZeilen.length > 0 ? `${nachtragZeilen.length} Austragen-Zeile(n) nachgetragen (${eur(nachtragZeilen.reduce((s, z) => s + z.e.detail.gesamt, 0))})` : '',
-      entfallen.length > 0 ? `${entfallen.length} fixierte Zeile(n) entfallen (${eur(-entfallen.reduce((s, e) => s + e.detail.gesamt, 0))})` : '',
+      entfallen.length > 0 ? `${entfallen.length} fixierte Austragen-Zeile(n) entfallen (${eur(-entfallen.reduce((s, e) => s + e.detail.gesamt, 0))})` : '',
+      ztNachtraege.length > 0 ? `${ztNachtraege.length} Zusammentragen-Zeile(n) nachgetragen (${eur(ztNachtraege.reduce((s, z) => s + z.lohn, 0))})` : '',
+      ztEntfallen.length > 0 ? `${ztEntfallen.length} fixierte Zusammentragen-Zeile(n) entfallen (${eur(-ztEntfallen.reduce((s, z) => s + z.lohn, 0))})` : '',
     ].filter(Boolean);
     hinweise.push({
       stufe: 'info',
-      text: `📌 Nachtrag nach Monatswechsel: ${teile.join(', ')} — siehe Abschnitt Austragen.`,
+      text: `📌 Nachtrag nach Monatswechsel: ${teile.join(', ')} — siehe Abschnitte Austragen / Zusammentragen / Vorarbeit.`,
     });
   }
   if (abweichendeRechenwege.length > 0) {
@@ -1154,7 +1158,10 @@ export default function AbrechnungsAufschluesselung({
                         const stunden = z.stunden ?? 0;
                         return (
                           <tr key={`${kw}-${z.teilgebietId}-${i}`} className={stunden === 0 ? 'text-gray-400' : ''}>
-                            <td className={`${td} pl-5`}>{z.teilgebietName ?? '—'}</td>
+                            <td className={`${td} pl-5`}>
+                              {z.teilgebietName ?? '—'}
+                              {z.nachtrag && <NachtragMarke />}
+                            </td>
                             <td className={`${td} text-right font-mono`}>{zahl(st)}</td>
                             <td className={`${td} text-right font-mono`}>{z.stapelBearbeitet}</td>
                             <td className={`${td} text-right font-mono`}>{intB}</td>
@@ -1178,6 +1185,18 @@ export default function AbrechnungsAufschluesselung({
                   </tr>
                 </tbody>
               </table>
+            </div>
+          )}
+          {ztEntfallen.length > 0 && (
+            <div className="mt-3">
+              <div className="font-semibold text-red-700 mb-1">Entfallen durch Nachtrag nach Monatswechsel</div>
+              <ul className="list-disc list-inside text-red-700">
+                {ztEntfallen.map((z, i) => (
+                  <li key={`zte-${i}`}>
+                    KW {z.kw} · {z.istVorarbeit ? 'Vorarbeit' : z.teilgebietName ?? '—'} — fixiert waren {eur(z.lohn)}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
           {ztNichtVerguetet.some((x) => !x.z.istVorarbeit) && (
@@ -1228,7 +1247,10 @@ export default function AbrechnungsAufschluesselung({
                 {vorarbeitZt.map((z, i) => (
                   <tr key={`va-${i}`}>
                     <td className={`${td} font-mono`}>{z.kw}</td>
-                    <td className={td}>{z.teilgebietName ?? '—'}</td>
+                    <td className={td}>
+                      {z.teilgebietName ?? '—'}
+                      {z.nachtrag && <NachtragMarke />}
+                    </td>
                     <td className={`${td} text-right font-mono`}>{zahl((z.stunden ?? 0) * 60)}</td>
                     <td className={`${td} text-green-700`}>freigegeben</td>
                     <td className={`${td} text-right font-mono font-semibold`}>{eur(z.lohn)}</td>

@@ -399,6 +399,7 @@ const BEREICH_LABEL: Record<AuditLog['bereich'], string> = {
   'dauerhafter-wechsel': 'Dauerhafter Wechsel',
   'teilgebiets-anpassung': 'Teilgebietsanpassung (Stückzahl)',
   'teilgebiet-stammdaten': 'Teilgebietsdaten',
+  zusammentragen: 'Zusammentragen (Nachtrag)',
 };
 
 const quelle = (e: AuditLog) => (e.automatisch ? 'App (Monatswechsel)' : 'manuell');

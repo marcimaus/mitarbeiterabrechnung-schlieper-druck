@@ -81,6 +81,8 @@ export interface ZusammentragenErgebnis {
   intBeilagenAnzahl?: number;
   /** Anzahl externer Beilagen des Teilgebiets (nur zur Info — nicht Teil des Zusammentrag-Lohns). */
   extBeilagenAnzahl?: number;
+  /** true = Nachtrag nach dem Monatswechsel (neu gerechnet statt fixiert übernommen). */
+  nachtrag?: boolean;
 }
 
 export interface MitarbeiterAbrechnung {
@@ -99,6 +101,8 @@ export interface MitarbeiterAbrechnung {
   gewichtsbonusBeilagen: number;
   // Zusammentragen
   zusammentragenEinsaetze: ZusammentragenErgebnis[];
+  /** Beim Monatswechsel fixierte Zusammentragen-Zeilen, die durch einen Nachtrag entfallen sind (nur Anzeige). */
+  zusammentragenEinsaetzeEntfallen?: ZusammentragenErgebnis[];
   zusammentragenGesamt: number;
   // Zeiterfassung (tatsächliche Zeiten, nur die gelohnten)
   arbeitszeiten: Arbeitszeit[];
@@ -300,7 +304,7 @@ export function effektiveTeilgebiete(
   return teilgebiete;
 }
 
-// ---- Monatswechsel: Austragen je Ausgabe×Teilgebiet fixiert -----
+// ---- Monatswechsel: Austragen/Zusammentragen je Zelle fixiert -----
 
 /** Schlüssel einer Austragen-Zelle (eine Ausgabe × ein Teilgebiet). */
 export function austragenZelle(e: { jahr: number; kw: number; teilgebietId: string }): string {
@@ -308,48 +312,59 @@ export function austragenZelle(e: { jahr: number; kw: number; teilgebietId: stri
 }
 
 /**
- * Kombiniert die beim Monatswechsel fixierten Austragen-Zeilen eines MA mit
- * der Neuberechnung (Teilgebiets-/Parameter-Stand des Monatswechsels, aktuelle
- * Einsätze):
+ * Schlüssel einer Zusammentragen-Zelle: reguläres Zusammentragen je
+ * Ausgabe × Teilgebiet (ein MA pro TG), Vorarbeit je Ausgabe × Mitarbeiter
+ * (mehrere MA je Ausgabe möglich).
+ */
+export function zusammentragenZelle(
+  e: { ausgabeId: string; istVorarbeit: boolean; teilgebietId?: string },
+  mitarbeiterId: string
+): string {
+  return e.istVorarbeit
+    ? `${e.ausgabeId}|V|${mitarbeiterId}`
+    : `${e.ausgabeId}|Z|${e.teilgebietId ?? ''}`;
+}
+
+/**
+ * Kombiniert die beim Monatswechsel fixierten Zeilen eines MA mit der
+ * Neuberechnung (Teilgebiets-/Parameter-Stand des Monatswechsels, aktuelle
+ * Einsätze bzw. Zusammentragen-Einträge):
  *  - Zelle in beiden mit gleicher Art und kein Nachtrag markiert → fixierte
  *    Zeile unverändert übernehmen.
  *  - Zelle nur neu berechnet, Art geändert oder als Nachtrag markiert →
  *    neu berechnete Zeile (Nachtrag, z. B. MA ist nachträglich Springer).
  *  - Zelle nur fixiert → entfällt (z. B. Ausfall nachträglich gemeldet).
- * Pro Zelle gibt es höchstens einen Austräger, daher reicht der Vergleich je MA.
+ * Pro Zelle gibt es höchstens einen MA, daher reicht der Vergleich je MA.
  */
-function uebernimmAustragenFixierung(
-  fixiert: AustraegerEinsatzErgebnis[],
-  neu: AustraegerEinsatzErgebnis[],
+function uebernimmFixierteZeilen<T extends { nachtrag?: boolean }>(
+  fixiert: T[],
+  neu: T[],
+  zelle: (e: T) => string,
+  gleicheArt: (fixiert: T, neu: T) => boolean,
   nachtragZellen: Set<string>
-): { einsaetze: AustraegerEinsatzErgebnis[]; entfallen: AustraegerEinsatzErgebnis[]; geaendert: boolean } {
-  const neuJeZelle = new Map(neu.map((e) => [austragenZelle(e), e]));
-  const fixierteZellen = new Set(fixiert.map(austragenZelle));
-  const einsaetze: AustraegerEinsatzErgebnis[] = [];
-  const entfallen: AustraegerEinsatzErgebnis[] = [];
+): { zeilen: T[]; entfallen: T[]; geaendert: boolean } {
+  const neuJeZelle = new Map(neu.map((e) => [zelle(e), e]));
+  const fixierteZellen = new Set(fixiert.map(zelle));
+  const zeilen: T[] = [];
+  const entfallen: T[] = [];
   let geaendert = false;
   for (const f of fixiert) {
-    const zelle = austragenZelle(f);
-    const n = neuJeZelle.get(zelle);
-    if (n && n.typ === f.typ && !nachtragZellen.has(zelle)) {
-      einsaetze.push(f);
+    const z = zelle(f);
+    const n = neuJeZelle.get(z);
+    if (n && gleicheArt(f, n) && !nachtragZellen.has(z)) {
+      zeilen.push(f);
       continue;
     }
     geaendert = true;
-    if (n) einsaetze.push({ ...n, nachtrag: true });
+    if (n) zeilen.push({ ...n, nachtrag: true });
     else entfallen.push(f);
   }
   for (const n of neu) {
-    if (fixierteZellen.has(austragenZelle(n))) continue;
+    if (fixierteZellen.has(zelle(n))) continue;
     geaendert = true;
-    einsaetze.push({ ...n, nachtrag: true });
+    zeilen.push({ ...n, nachtrag: true });
   }
-  if (geaendert) {
-    einsaetze.sort((a, b) =>
-      a.jahr - b.jahr || a.kw - b.kw || a.teilgebietName.localeCompare(b.teilgebietName, 'de', { numeric: true })
-    );
-  }
-  return { einsaetze, entfallen, geaendert };
+  return { zeilen, entfallen, geaendert };
 }
 
 // ---- Abrechnung berechnen ----------------------------------
@@ -408,10 +423,16 @@ export function berechneAbrechnung(
   // Einsätze-Screen als Nachtrag geändert wurde — werden immer neu gerechnet,
   // auch wenn Austräger und Art gleich geblieben sind (z. B. Zuschlag geändert).
   const nachtragZellen = new Set<string>();
+  const zusammentragenNachtragZellen = new Set<string>();
   if (istMonatswechsel) {
     const seit = periode!.monatswechselSnapshot!.erstelltAm;
     for (const e of data.einsaetze) {
       if ((e.nachtragNachMonatswechselAm ?? 0) > seit) nachtragZellen.add(austragenZelle(e));
+    }
+    for (const z of data.zusammentragenEinsaetze) {
+      if ((z.nachtragNachMonatswechselAm ?? 0) > seit) {
+        zusammentragenNachtragZellen.add(zusammentragenZelle(z, z.mitarbeiterId));
+      }
     }
   }
 
@@ -769,21 +790,42 @@ export function berechneAbrechnung(
     );
 
     // --- Monatswechsel-Snapshot: Austragen + Zusammentragen fixieren ---
-    // Zusammentragen wird 1:1 übernommen. Austragen je Ausgabe×Teilgebiet:
-    // unveränderte Zellen kommen 1:1 aus dem Snapshot; Zellen, deren Einsatz
-    // sich nachträglich geändert hat (Springer/unbesetzt nachgetragen), sind
-    // oben bereits mit dem Teilgebiets-/Parameter-Stand des Monatswechsels
-    // neu gerechnet. Mitarbeiter ohne Nachtrag behalten ihre fixierten Summen
-    // exakt.
+    // Je Zelle (Austragen: Ausgabe×Teilgebiet; Zusammentragen: Ausgabe×
+    // Teilgebiet bzw. Vorarbeit Ausgabe×MA): unveränderte Zellen kommen 1:1
+    // aus dem Snapshot; nachträglich geänderte Zellen (Springer/unbesetzt,
+    // Zusammenträger umgehängt, Vorarbeit-Zeit korrigiert) sind oben bereits
+    // mit dem Teilgebiets-/Parameter-Stand des Monatswechsels neu gerechnet.
+    // Mitarbeiter ohne Nachtrag behalten ihre fixierten Summen exakt.
     let austraegerEinsaetzeEntfallen: AustraegerEinsatzErgebnis[] | undefined;
+    let zusammentragenEinsaetzeEntfallen: ZusammentragenErgebnis[] | undefined;
     const fixierung = monatswechselFixierungProMa.get(ma.id);
-    if (fixierung) {
-      zusammentragenEinsaetze = fixierung.zusammentragenEinsaetze;
-      zusammentragenGesamt = fixierung.zusammentragenGesamt;
-    }
     if (istMonatswechsel) {
-      const uebernahme = uebernimmAustragenFixierung(
-        fixierung?.austraegerEinsaetze ?? [], austraegerEinsaetze, nachtragZellen
+      const zt = uebernimmFixierteZeilen(
+        fixierung?.zusammentragenEinsaetze ?? [],
+        zusammentragenEinsaetze,
+        (z) => zusammentragenZelle(z, ma.id),
+        () => true,
+        zusammentragenNachtragZellen
+      );
+      if (fixierung && !zt.geaendert) {
+        zusammentragenEinsaetze = fixierung.zusammentragenEinsaetze;
+        zusammentragenGesamt = fixierung.zusammentragenGesamt;
+      } else {
+        zusammentragenEinsaetze = zt.zeilen.sort((a, b) =>
+          a.kw - b.kw ||
+          Number(a.istVorarbeit) - Number(b.istVorarbeit) ||
+          (a.teilgebietName ?? '').localeCompare(b.teilgebietName ?? '', 'de', { numeric: true })
+        );
+        if (zt.entfallen.length > 0) zusammentragenEinsaetzeEntfallen = zt.entfallen;
+        zusammentragenGesamt = zusammentragenEinsaetze.reduce((s, z) => s + z.lohn, 0);
+      }
+
+      const uebernahme = uebernimmFixierteZeilen(
+        fixierung?.austraegerEinsaetze ?? [],
+        austraegerEinsaetze,
+        austragenZelle,
+        (f, n) => f.typ === n.typ,
+        nachtragZellen
       );
       if (fixierung && !uebernahme.geaendert) {
         austraegerEinsaetze = fixierung.austraegerEinsaetze;
@@ -791,7 +833,9 @@ export function berechneAbrechnung(
         gewichtsbonusAnzeigenblatt = fixierung.gewichtsbonusAnzeigenblatt;
         gewichtsbonusBeilagen = fixierung.gewichtsbonusBeilagen;
       } else {
-        austraegerEinsaetze = uebernahme.einsaetze;
+        austraegerEinsaetze = uebernahme.zeilen.sort((a, b) =>
+          a.jahr - b.jahr || a.kw - b.kw || a.teilgebietName.localeCompare(b.teilgebietName, 'de', { numeric: true })
+        );
         if (uebernahme.entfallen.length > 0) austraegerEinsaetzeEntfallen = uebernahme.entfallen;
         austraegerGesamt = austraegerEinsaetze.reduce((s, e) => s + e.detail.gesamt, 0);
         gewichtsbonusAnzeigenblatt = austraegerEinsaetze.reduce(
@@ -946,6 +990,7 @@ export function berechneAbrechnung(
         gewichtsbonusAnzeigenblatt,
         gewichtsbonusBeilagen,
         zusammentragenEinsaetze,
+        ...(zusammentragenEinsaetzeEntfallen ? { zusammentragenEinsaetzeEntfallen } : {}),
         zusammentragenGesamt,
         arbeitszeiten: maArbeitszeiten,
         zeitStunden,
