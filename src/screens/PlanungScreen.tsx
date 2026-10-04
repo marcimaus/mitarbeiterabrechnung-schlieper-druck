@@ -320,6 +320,24 @@ function PlanungContent() {
     }
     return s;
   }, [abrechnungsperioden, jahr]);
+  // KWs des Jahres, deren (noch offene) Periode den Monatswechsel hinter sich
+  // hat. Austragen ist dort je Ausgabe×Teilgebiet fixiert; die Planung ändert
+  // dort keine Einsätze mehr (weder Einzel-KW noch Mehrwochen-Gruppen oder
+  // Wechselpläne) — Nachträge laufen ausschließlich über den Einsätze-Screen.
+  const monatswechselKws = useMemo(() => {
+    const s = new Set<number>();
+    for (const p of abrechnungsperioden) {
+      if (p.jahr !== jahr || p.status === 'abgeschlossen') continue;
+      if (!p.monatswechselSnapshot && !p.monatswechselDurchgefuehrtAm) continue;
+      for (const k of p.kalenderwochen) s.add(k);
+    }
+    return s;
+  }, [abrechnungsperioden, jahr]);
+  /** Abgeschlossen ODER Monatswechsel durchgeführt — Planung schreibt dort keine Einsätze. */
+  const fixierteKws = useMemo(
+    () => new Set([...gesperrteKws, ...monatswechselKws]),
+    [gesperrteKws, monatswechselKws],
+  );
   const [urlaube, setUrlaube] = useState<UrlaubsEintrag[]>([]);
   const [ausgaben, setAusgaben] = useState<Ausgabe[]>([]);
   const [wechselplan, setWechselplan] = useState<StandardAustraegerWechselPlan[]>([]);
@@ -1561,14 +1579,18 @@ function PlanungContent() {
                 label={<span className="text-[11px] text-gray-500 italic">+ Ausfall erfassen</span>}
                 kws={kws}
                 renderCell={(kw) => {
-                  const istGesperrt = gesperrteKws.has(kw);
-                  if (istGesperrt) {
+                  if (fixierteKws.has(kw)) {
+                    const nachMonatswechsel = monatswechselKws.has(kw);
                     return (
                       <div
                         className="w-full text-[10px] text-gray-200 text-center py-1"
-                        title="Abgeschlossene Periode — keine Änderungen mehr möglich"
+                        title={
+                          nachMonatswechsel
+                            ? 'Monatswechsel durchgeführt — nachträgliche Ausfälle bitte im Einsätze-Screen als Nachtrag erfassen'
+                            : 'Abgeschlossene Periode — keine Änderungen mehr möglich'
+                        }
                       >
-                        🔒
+                        {nachMonatswechsel ? '📌' : '🔒'}
                       </div>
                     );
                   }
@@ -1742,17 +1764,20 @@ function PlanungContent() {
                                 // manuelle Springer-Einsätze bleiben in
                                 // jedem Fall erhalten; ungeklärte Lücken
                                 // sowie automatisch vom Wechselplan
-                                // erzeugte Springer (L) werden mit gelöscht.
+                                // erzeugte Springer (L) werden mit gelöscht —
+                                // außer in fixierten KWs (Monatswechsel/Abschluss).
                                 const luecken = einsaetze.filter(
                                   (e) =>
                                     e.teilgebietId === plan.teilgebietId &&
                                     e.typ === 'ungeklärt' &&
-                                    !e.mitarbeiterId,
+                                    !e.mitarbeiterId &&
+                                    !fixierteKws.has(e.kw),
                                 );
                                 const autoSpringer = einsaetze.filter(
                                   (e) =>
                                     e.teilgebietId === plan.teilgebietId &&
-                                    e.autoVomWechselplan === true,
+                                    e.autoVomWechselplan === true &&
+                                    !fixierteKws.has(e.kw),
                                 );
                                 const hinweisTeile: string[] = [];
                                 if (luecken.length > 0) {
@@ -1865,6 +1890,7 @@ function PlanungContent() {
           maxKwImJahr={kws[kws.length - 1]}
           jahr={jahr}
           abrechnungsperioden={abrechnungsperioden}
+          fixierteKws={fixierteKws}
           istAdmin={istAdmin}
           adminName={adminName || 'Unbekannt'}
           onClose={() => setWechselModal(null)}
@@ -1904,7 +1930,9 @@ function PlanungContent() {
           mitarbeiterById={mitarbeiterById}
           maxKwImJahr={kws[kws.length - 1]}
           parameter={parameter}
-          istGesperrt={gesperrteKws.has(ausfallModal.kw)}
+          istGesperrt={fixierteKws.has(ausfallModal.kw)}
+          gesperrtWegenMonatswechsel={monatswechselKws.has(ausfallModal.kw)}
+          fixierteKws={fixierteKws}
           /* Wenn die KW zu einem TG der Wechsel-Sektion gehört, blenden
              wir das Modal als „Springer-Übernahme" an — die Texte
              sprechen dann nicht von Ausfall, sondern von Springer-Vertretung. */
@@ -3323,6 +3351,8 @@ function AusfallModal({
   maxKwImJahr,
   parameter,
   istGesperrt,
+  gesperrtWegenMonatswechsel,
+  fixierteKws,
   istWechselKontext,
   adminName,
   onClose,
@@ -3343,8 +3373,15 @@ function AusfallModal({
   mitarbeiterById: Map<string, Mitarbeiter>;
   maxKwImJahr: number;
   parameter: Parameter | null;
-  /** KW gehört zu einer abgeschlossenen Periode → Modal ist read-only. */
+  /** KW gehört zu einer abgeschlossenen bzw. per Monatswechsel fixierten Periode → Modal ist read-only. */
   istGesperrt: boolean;
+  /** Sperre, weil der Monatswechsel durchgeführt wurde (Nachtrag nur im Einsätze-Screen). */
+  gesperrtWegenMonatswechsel: boolean;
+  /**
+   * Fixierte KWs des Jahres (Abschluss oder Monatswechsel). Mehrwochen-
+   * Gruppen werden dort weder neu geschrieben noch gelöscht.
+   */
+  fixierteKws: Set<number>;
   /**
    * Modal wurde aus der Wechsel-/Dauerausfall-Sektion geöffnet
    * (Lücken-KW oder dauerhaft unbesetztes TG). Beeinflusst nur die
@@ -3448,6 +3485,10 @@ function AusfallModal({
         e.teilgebietId === existing.teilgebietId &&
         (e.ausfallBisJahr ?? null) === (existing.ausfallBisJahr ?? null) &&
         (e.ausfallBisKw ?? null) === (existing.ausfallBisKw ?? null) &&
+        // Geschwister in fixierten KWs (Monatswechsel/Abschluss) bleiben
+        // unangetastet — dort gilt der fixierte Stand bzw. ein Nachtrag
+        // aus dem Einsätze-Screen.
+        !fixierteKws.has(e.kw) &&
         // Auto-Springer-Einsätze (L) niemals als Geschwister
         // einsammeln — sie werden vom WechselModal separat verwaltet.
         e.autoVomWechselplan !== true &&
@@ -3457,6 +3498,29 @@ function AusfallModal({
         // ohnehin auf undefined gesetzt).
         e.vonGruppeAbgekoppelt !== true,
     );
+  }
+
+  /**
+   * KWs der Gruppe bzw. des neuen Bereichs, die in fixierten Perioden
+   * liegen (Monatswechsel/Abschluss) — sie werden beim Speichern/Löschen
+   * übersprungen. Für den Hinweis an den User.
+   */
+  function fixierteKwsBetroffen(von: number, bis: number): number[] {
+    const s = new Set<number>();
+    for (let k = von; k <= bis; k++) if (fixierteKws.has(k)) s.add(k);
+    if (existing && existing.ausfallBisKw != null && !existing.autoVomWechselplan && !existing.vonGruppeAbgekoppelt) {
+      for (const e of einsaetzeImJahr) {
+        if (
+          e.teilgebietId === existing.teilgebietId &&
+          (e.ausfallBisJahr ?? null) === (existing.ausfallBisJahr ?? null) &&
+          (e.ausfallBisKw ?? null) === (existing.ausfallBisKw ?? null) &&
+          fixierteKws.has(e.kw)
+        ) {
+          s.add(e.kw);
+        }
+      }
+    }
+    return [...s].sort((a, b) => a - b);
   }
 
   async function speichern() {
@@ -3486,8 +3550,21 @@ function AusfallModal({
         if (istVergangeneKw(e.jahr, e.kw)) vergangeneKws.push(e.kw);
       }
     }
-    if (vergangeneKws.length > 0) {
-      const liste = Array.from(new Set(vergangeneKws)).sort((a, b) => a - b).join(', ');
+    const fixiertBetroffen = fixierteKwsBetroffen(vonKw, bisKwFinal);
+    if (fixiertBetroffen.length > 0) {
+      if (
+        !confirm(
+          `ℹ KW ${fixiertBetroffen.join(', ')}/${jahr} gehört/gehören zu einem Monat, für den der Monatswechsel ` +
+            `durchgeführt bzw. die Periode abgeschlossen wurde — dort wird nichts geändert.\n\n` +
+            `Nachträge für diese KWs bitte im Einsätze-Screen je Ausgabe erfassen.\n\nÜbrige KWs speichern?`,
+        )
+      ) {
+        return;
+      }
+    }
+    const vergangeneUngesperrt = vergangeneKws.filter((k) => !fixierteKws.has(k));
+    if (vergangeneUngesperrt.length > 0) {
+      const liste = Array.from(new Set(vergangeneUngesperrt)).sort((a, b) => a - b).join(', ');
       if (
         !confirm(
           `⚠ Vergangene Kalenderwoche(n) betroffen: ${liste}/${jahr}.\n\n` +
@@ -3557,7 +3634,7 @@ function AusfallModal({
       const ausfallBisKw = bisKw == null ? undefined : bis;
 
       for (let k = von; k <= bis; k++) {
-        if (abgekoppelteKws.has(k)) continue;
+        if (abgekoppelteKws.has(k) || fixierteKws.has(k)) continue;
         const ausgabeId = await getOrCreateAusgabe(jahr, k, parameter);
         await setzeEinsatz({
           ausgabeId,
@@ -3717,10 +3794,14 @@ function AusfallModal({
     if (!existing) return;
     const gruppe = findeGruppe();
     const vergangene = gruppe.filter((e) => istVergangeneKw(e.jahr, e.kw));
+    const fixiertBetroffen = fixierteKwsBetroffen(kw, kw);
     const vergangenHinweis =
-      vergangene.length > 0
+      (vergangene.length > 0
         ? `\n\n⚠ Davon liegen ${vergangene.length} Eintrag/Einträge in vergangenen Kalenderwochen — die Abrechnung dieser Wochen wird unmittelbar angepasst.`
-        : '';
+        : '') +
+      (fixiertBetroffen.length > 0
+        ? `\n\nℹ KW ${fixiertBetroffen.join(', ')} (Monatswechsel/Abschluss bereits durchgeführt) bleibt/bleiben erhalten.`
+        : '');
     const frage =
       gruppe.length > 1
         ? `Ausfall-Gruppe (${gruppe.length} Wochen) wirklich löschen? Die Einträge werden in der Abrechnung gelöscht.${vergangenHinweis}`
@@ -3773,11 +3854,17 @@ function AusfallModal({
       title={`Ausfall — ${tg ? tg.name : '(Teilgebiet wählen)'} · KW ${kw}/${jahr}`}
       size="md"
     >
-      {istGesperrt && (
+      {istGesperrt && (gesperrtWegenMonatswechsel ? (
+        <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
+          📌 Für den Monat dieser KW wurde der <strong>Monatswechsel durchgeführt</strong> — in der Planung keine
+          Änderungen mehr. Nachträglich gemeldete Ausfälle bitte im <strong>Einsätze-Screen</strong> (Ausgabe
+          KW {kw}/{jahr}) als Nachtrag erfassen; sie wirken dann nur auf den ausfallenden Austräger und den Springer.
+        </div>
+      ) : (
         <div className="mb-3 rounded-lg border border-gray-300 bg-gray-100 p-3 text-sm text-gray-700">
           🔒 Diese KW gehört zu einer <strong>abgeschlossenen Abrechnungsperiode</strong> — keine Änderungen mehr möglich.
         </div>
-      )}
+      ))}
       <div className="space-y-3">
         {/* Teilgebiet — Auswahl bei Neu, sonst nur Anzeige */}
         <div>
@@ -4337,6 +4424,7 @@ function WechselModal({
   maxKwImJahr,
   jahr,
   abrechnungsperioden,
+  fixierteKws,
   istAdmin,
   adminName,
   onClose,
@@ -4355,6 +4443,12 @@ function WechselModal({
    *  der `letzteAusgabe` liegt — bis dorthin wird der neue Austräger als
    *  Springer vorausgefüllt. */
   abrechnungsperioden: import('../types').Abrechnungsperiode[];
+  /**
+   * KWs des Jahres mit Monatswechsel/Abschluss: der Wechselplan legt dort
+   * keine Lücken-/Auto-Springer-Einsätze an und löscht keine — er wirkt
+   * nicht mehr auf bereits fixierte Monate (Nachträge nur im Einsätze-Screen).
+   */
+  fixierteKws: Set<number>;
   /** Nur der Admin darf einen Wechselplan löschen. */
   istAdmin: boolean;
   /** Angemeldeter Benutzer — für das Änderungsprotokoll. */
@@ -4542,7 +4636,7 @@ function WechselModal({
       const zurueckgesetztVorschau: number[] = [];
       const namenVorschau = new Set<string>();
       for (let k = abKw; k <= maxKwImJahr; k++) {
-        if (istVergangeneKw(jahr, k)) continue;
+        if (istVergangeneKw(jahr, k) || fixierteKws.has(k)) continue;
         const e = tgEinsaetzeVorschau.find((x) => x.kw === k);
         if (!e || !e.mitarbeiterId || e.mitarbeiterId === neuerMa || e.autoVomWechselplan === true) continue;
         namenVorschau.add(mitarbeiterById.get(e.mitarbeiterId)?.name ?? e.mitarbeiterId);
@@ -4643,7 +4737,9 @@ function WechselModal({
       // ungeklärte Lücken-Einsätze angelegt; KWs außerhalb des Bereichs,
       // die noch unbearbeitet sind (typ='ungeklärt' + kein MA), werden
       // gelöscht. Bereits geklärte Springer (typ='springer' + MA) bleiben
-      // unangetastet, egal wo.
+      // unangetastet, egal wo. KWs fixierter Monate (Monatswechsel bzw.
+      // Abschluss) werden in ALLEN Schritten übersprungen — der Wechselplan
+      // wirkt nicht rückwirkend auf einen bereits fixierten Monat.
       if (parameter) {
         const luecke = new Set<number>();
         for (const k of (
@@ -4671,7 +4767,7 @@ function WechselModal({
                 : abJahr === jahr
                 ? abKw - 1
                 : 0;
-            for (let k = startKw; k <= endKw; k++) list.push(k);
+            for (let k = startKw; k <= endKw; k++) if (!fixierteKws.has(k)) list.push(k);
             return list;
           }
         )()) {
@@ -4680,7 +4776,10 @@ function WechselModal({
 
         // 1) Verwaiste, unbearbeitete Lücken-Einsätze außerhalb des neuen
         //    Bereichs löschen — Springer-Einsätze bleiben in jedem Fall.
-        const tgEinsaetze = einsaetzeImJahr.filter((e) => e.teilgebietId === teilgebietId);
+        // Einsätze fixierter KWs sind für alle folgenden Schritte tabu.
+        const tgEinsaetze = einsaetzeImJahr.filter(
+          (e) => e.teilgebietId === teilgebietId && !fixierteKws.has(e.kw),
+        );
         for (const e of tgEinsaetze) {
           if (luecke.has(e.kw)) continue;
           if (e.typ === 'ungeklärt' && !e.mitarbeiterId) {
@@ -4746,6 +4845,7 @@ function WechselModal({
           const ueberschriebeneSpringer: { kw: number; altName: string }[] = [];
           if (periodeGefunden) {
             for (let k = abKw; k <= autoSpringerEndKw; k++) {
+              if (fixierteKws.has(k)) continue;
               const vorhandenerEinsatz = tgEinsaetze.find((e) => e.kw === k);
               if (vorhandenerEinsatz && !aktuelleAutoIds.has(vorhandenerEinsatz.id)) {
                 if (istVergangeneKw(jahr, k)) continue;
@@ -4868,8 +4968,13 @@ function WechselModal({
   async function loeschen() {
     if (!existing) return;
     // Welche unbearbeiteten Lücken-Einsätze dieses TG werden mit gelöscht?
+    // Fixierte KWs (Monatswechsel/Abschluss) bleiben unangetastet.
     const luecken = einsaetzeImJahr.filter(
-      (e) => e.teilgebietId === teilgebietId && e.typ === 'ungeklärt' && !e.mitarbeiterId,
+      (e) =>
+        e.teilgebietId === teilgebietId &&
+        e.typ === 'ungeklärt' &&
+        !e.mitarbeiterId &&
+        !fixierteKws.has(e.kw),
     );
     const vergangeneLuecken = luecken.filter((e) => istVergangeneKw(e.jahr, e.kw));
     const vergangenHinweis =
@@ -4895,7 +5000,7 @@ function WechselModal({
       // L: Auto-Springer-Einsätze, die durch den Wechselplan entstanden
       // sind, ebenfalls entfernen — sie haben sonst keine Grundlage mehr.
       const autoEinsaetze = einsaetzeImJahr.filter(
-        (e) => e.teilgebietId === teilgebietId && e.autoVomWechselplan === true,
+        (e) => e.teilgebietId === teilgebietId && e.autoVomWechselplan === true && !fixierteKws.has(e.kw),
       );
       for (const e of autoEinsaetze) {
         await loescheEinsatz(e.id);

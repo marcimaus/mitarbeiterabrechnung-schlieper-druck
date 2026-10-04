@@ -10,6 +10,7 @@
 
 import { Fragment, useState, type ReactNode } from 'react';
 import {
+  austragenZelle,
   eur,
   stdMin,
   zeitLohnAufteilung,
@@ -109,6 +110,18 @@ function lohnHerkunft(ma: Mitarbeiter, geburtsdatumAbgeleitet: boolean): string 
       : `minderjährig (${alter} J.${quelle})`;
   }
   return `erwachsen (${alter} J.${quelle})`;
+}
+
+/** Kennzeichnet eine Austragen-Zeile, die nach dem Monatswechsel nachgetragen wurde. */
+function NachtragMarke() {
+  return (
+    <span
+      className="ml-1 inline-block rounded bg-emerald-100 text-emerald-800 px-1.5 py-0.5"
+      title="Nachtrag nach dem Monatswechsel — mit Teilgebiets-/Parameter-Stand des Monatswechsels neu gerechnet"
+    >
+      📌 Nachtrag
+    </span>
+  );
 }
 
 type HinweisStufe = 'fehler' | 'warnung' | 'info';
@@ -315,12 +328,23 @@ export default function AbrechnungsAufschluesselung({
     a.e.jahr - b.e.jahr || a.e.kw - b.e.kw || a.e.teilgebietName.localeCompare(b.e.teilgebietName, 'de', { numeric: true })
   );
   const austragenKey = (e: AustraegerEinsatzErgebnis) => `${e.teilgebietId}|${e.jahr}|${e.kw}|${e.typ}`;
+  // Beim Monatswechsel fixierte Zeilen, die durch einen Nachtrag entfallen
+  // sind. Liegt für die Zelle schon eine Vertretungszeile vor, wird diese
+  // nur markiert; sonst (z. B. Springer-Einsatz umgehängt) eigene Zeile.
+  const entfallen = er.austraegerEinsaetzeEntfallen ?? [];
+  const entfallenZellen = new Set(entfallen.map(austragenZelle));
+  const vertretungsZellen = new Set(vertretungen.map(austragenZelle));
+  const nachtragZeilen = austragenZeilen.filter((z) => z.e.nachtrag);
   type TabellenZeile =
     | { art: 'einsatz'; kw: number; jahr: number; tgName: string; z: AustragenZeile }
-    | { art: 'vertretung'; kw: number; jahr: number; tgName: string; v: Vertretung };
+    | { art: 'vertretung'; kw: number; jahr: number; tgName: string; v: Vertretung }
+    | { art: 'entfallen'; kw: number; jahr: number; tgName: string; e: AustraegerEinsatzErgebnis };
   const austragenTabelle: TabellenZeile[] = [
     ...austragenZeilen.map((z) => ({ art: 'einsatz' as const, kw: z.e.kw, jahr: z.e.jahr, tgName: z.e.teilgebietName, z })),
     ...vertretungen.map((v) => ({ art: 'vertretung' as const, kw: v.kw, jahr: v.jahr, tgName: v.teilgebietName, v })),
+    ...entfallen
+      .filter((e) => !vertretungsZellen.has(austragenZelle(e)))
+      .map((e) => ({ art: 'entfallen' as const, kw: e.kw, jahr: e.jahr, tgName: e.teilgebietName, e })),
   ].sort((a, b) => a.jahr - b.jahr || a.kw - b.kw || a.tgName.localeCompare(b.tgName, 'de', { numeric: true }));
   const summeAustragen = {
     zeit: austragenZeilen.reduce((s, z) => s + z.e.detail.zeitStunden, 0),
@@ -531,7 +555,17 @@ export default function AbrechnungsAufschluesselung({
   if (istFixiert) {
     hinweise.push({
       stufe: 'info',
-      text: `Monatswechsel am ${new Date(periode.monatswechselSnapshot!.erstelltAm).toLocaleDateString('de-DE')} durchgeführt — Austragen und Zusammentragen sind auf dem damaligen Stand fixiert; spätere Änderungen an Einsätzen/Teilgebieten wirken nicht mehr.`,
+      text: `Monatswechsel am ${new Date(periode.monatswechselSnapshot!.erstelltAm).toLocaleDateString('de-DE')} durchgeführt — Austragen und Zusammentragen sind auf dem damaligen Stand fixiert; spätere Änderungen an Teilgebieten/Parametern wirken nicht mehr. Nachträge im Einsätze-Screen (Springer/unbesetzt) wirken nur auf die betroffene Ausgabe und das betroffene Teilgebiet.`,
+    });
+  }
+  if (nachtragZeilen.length > 0 || entfallen.length > 0) {
+    const teile = [
+      nachtragZeilen.length > 0 ? `${nachtragZeilen.length} Austragen-Zeile(n) nachgetragen (${eur(nachtragZeilen.reduce((s, z) => s + z.e.detail.gesamt, 0))})` : '',
+      entfallen.length > 0 ? `${entfallen.length} fixierte Zeile(n) entfallen (${eur(-entfallen.reduce((s, e) => s + e.detail.gesamt, 0))})` : '',
+    ].filter(Boolean);
+    hinweise.push({
+      stufe: 'info',
+      text: `📌 Nachtrag nach Monatswechsel: ${teile.join(', ')} — siehe Abschnitt Austragen.`,
     });
   }
   if (abweichendeRechenwege.length > 0) {
@@ -857,6 +891,23 @@ export default function AbrechnungsAufschluesselung({
                             {v.typ === 'springer'
                               ? <span className="text-amber-700">vertreten durch {v.vertreterName ?? 'Springer'} — nicht vergütet</span>
                               : <span className="text-red-600">{v.typ === 'ungeklärt' ? 'unbesetzt' : 'Ausfall'} — nicht vergütet</span>}
+                            {entfallenZellen.has(austragenZelle(v)) && <NachtragMarke />}
+                          </td>
+                          <td className={`${td} text-right font-mono`}>—</td>
+                        </tr>
+                      );
+                    }
+                    if (zeile.art === 'entfallen') {
+                      const e = zeile.e;
+                      return (
+                        <tr key={`x-${e.teilgebietId}-${e.jahr}-${e.kw}`} className="bg-gray-50/60 text-gray-400">
+                          <td className={`${td} font-mono`}>{e.kw}</td>
+                          <td className={`${td} line-through`}>{e.teilgebietName}</td>
+                          <td className={td} colSpan={9}>
+                            <span className="text-red-600">
+                              {e.typ === 'springer' ? 'Springer-Einsatz' : 'Einsatz'} entfällt (fixiert waren {eur(e.detail.gesamt)}) — nicht vergütet
+                            </span>
+                            <NachtragMarke />
                           </td>
                           <td className={`${td} text-right font-mono`}>—</td>
                         </tr>
@@ -884,6 +935,7 @@ export default function AbrechnungsAufschluesselung({
                             {z.e.typ === 'springer'
                               ? <span className="inline-block rounded bg-amber-100 text-amber-800 px-1.5 py-0.5">Springer</span>
                               : <span className="text-gray-500">Standard</span>}
+                            {z.e.nachtrag && <NachtragMarke />}
                           </td>
                           <td className={`${td} text-right font-mono`}>{z.tg ? zahl(z.tg.stueckzahl) : '—'}</td>
                           <td className={`${td} text-right font-mono`}>{z.tg ? `${zahl(z.tg.wegstreckeM)} m` : '—'}</td>

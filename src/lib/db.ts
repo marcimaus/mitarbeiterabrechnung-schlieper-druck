@@ -1205,7 +1205,13 @@ export async function schreibeMonatswechselSnapshot(
     zusammentragenGesamt: number;
   }>).map((er) => ({
     mitarbeiterId: er.mitarbeiter.id,
-    austraegerEinsaetze: er.austraegerEinsaetze,
+    // Nachtrag-Kennzeichen eines früheren Monatswechsels gehören nicht in
+    // den neuen Stand — ab jetzt ist alles „fixiert".
+    austraegerEinsaetze: er.austraegerEinsaetze.map((e) => {
+      const kopie = { ...(e as Record<string, unknown>) };
+      delete kopie.nachtrag;
+      return kopie;
+    }),
     austraegerGesamt: er.austraegerGesamt,
     gewichtsbonusAnzeigenblatt: er.gewichtsbonusAnzeigenblatt,
     gewichtsbonusBeilagen: er.gewichtsbonusBeilagen,

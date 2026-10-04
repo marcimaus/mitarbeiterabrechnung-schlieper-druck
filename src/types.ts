@@ -761,6 +761,8 @@ export interface Abrechnungsperiode {
   /**
    * Zwischen-Snapshot vor Monatswechsel — fixiert nur Austragen/Zusammentragen
    * (inkl. Vorarbeit) sowie Stammdaten-Snapshots (Teilgebiete, Parameter).
+   * Austragen ist je Ausgabe×Teilgebiet fixiert: Nachträge im Einsätze-Screen
+   * (Springer/unbesetzt) rechnen nur die betroffene Zelle neu.
    * Andere Werte (Zeiterfassung, Fahrtkosten, Vorschüsse, Boni, Lohnkonto)
    * werden weiterhin live berechnet, bis die Periode endgültig abgeschlossen
    * wird. Aufbau spiegelt Teile von `MitarbeiterAbrechnung` (siehe
@@ -936,6 +938,15 @@ export interface Einsatz {
    * Wird nur in Verbindung mit `typ='ungeklärt'` (unbesetzt) genutzt.
    */
   vonGruppeAbgekoppelt?: boolean;
+  /**
+   * Zeitpunkt (ms), zu dem der Einsatz NACH dem Monatswechsel seiner Periode
+   * im Einsätze-Screen geändert wurde (Nachtrag, z. B. nachträglich gemeldeter
+   * Ausfall). Die Abrechnung rechnet diese Ausgabe×Teilgebiet-Zelle dann neu
+   * (mit Teilgebiets-/Parameter-Stand des Monatswechsels), statt den beim
+   * Monatswechsel fixierten Wert zu übernehmen. Die Anmerkung steht in
+   * `kommentar`.
+   */
+  nachtragNachMonatswechselAm?: number;
   // Selbstmeldung durch den Austräger (ohne Login, via QR-Code)
   arbeitszeit?: AustraegerArbeitszeit;
   restmenge?: number;           // nicht ausgetragene Stücke (Überschuss)

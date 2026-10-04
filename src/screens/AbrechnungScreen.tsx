@@ -1320,7 +1320,19 @@ function AbrechnungInhalt() {
                 {new Date(selectedPeriode.monatswechselSnapshot.erstelltAm).toLocaleString('de-DE')}
                 ). Stammdaten-Änderungen (Standardausträger, Stückzahlen) wirken sich
                 nicht mehr auf diese Periode aus. Vorschüsse, Boni, Lohnkonto,
-                Zeiten und Fahrtkosten sind weiter erfassbar.
+                Zeiten und Fahrtkosten sind weiter erfassbar. Nachträglich gemeldete
+                Ausfälle/Springer werden im Einsätze-Screen je Ausgabe nachgetragen
+                und wirken nur auf die betroffenen Austräger.
+                {(() => {
+                  const betroffen = (ergebnisse ?? []).filter(
+                    (er) => er.austraegerEinsaetze.some((e) => e.nachtrag) || (er.austraegerEinsaetzeEntfallen?.length ?? 0) > 0
+                  );
+                  return betroffen.length > 0 ? (
+                    <span className="block mt-1 font-medium">
+                      Nachträge berücksichtigt bei: {betroffen.map((er) => er.mitarbeiter.name).join(', ')}
+                    </span>
+                  ) : null;
+                })()}
               </span>
             </div>
           )}
@@ -2715,7 +2727,7 @@ function DetailAnsicht({
       )}
 
       {/* Austräger-Einsätze */}
-      {er.austraegerEinsaetze.length > 0 && (
+      {(er.austraegerEinsaetze.length > 0 || (er.austraegerEinsaetzeEntfallen?.length ?? 0) > 0) && (
         <div className="md:col-span-2">
           <h4 className="font-semibold text-gray-700 mb-2 text-sm">Austräger ({er.austraegerEinsaetze.length} Einsätze)</h4>
           <div className="overflow-hidden rounded border border-gray-200 bg-white">
@@ -2746,6 +2758,14 @@ function DetailAnsicht({
                         {e.typ === 'springer' && (
                           <span className="ml-2 bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Springer</span>
                         )}
+                        {e.nachtrag && (
+                          <span
+                            className="ml-2 bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded"
+                            title="Nachtrag nach dem Monatswechsel — mit Teilgebiets-/Parameter-Stand des Monatswechsels neu gerechnet"
+                          >
+                            📌 Nachtrag
+                          </span>
+                        )}
                       </td>
                       <td className="px-2 py-1.5 text-right text-gray-500">{stdMin(e.detail.zeitStunden)}</td>
                       <td className="px-2 py-1.5 text-right text-purple-700" title={`${e.detail.anzahlExtBeilagen ?? 0} externe Beilage(n)`}>
@@ -2761,6 +2781,18 @@ function DetailAnsicht({
                     </tr>
                   );
                 })}
+                {(er.austraegerEinsaetzeEntfallen ?? []).map((e) => (
+                  <tr key={`entfallen-${e.teilgebietId}-${e.jahr}-${e.kw}`} className="bg-gray-50/60 text-gray-400">
+                    <td className="px-2 py-1.5">{e.kw}/{e.jahr}</td>
+                    <td className="px-2 py-1.5" colSpan={7}>
+                      <span className="line-through">{e.teilgebietName}</span>
+                      <span className="ml-2 text-red-600">
+                        entfällt — Nachtrag nach Monatswechsel (fixiert waren {eur(e.detail.gesamt)})
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5 text-right">—</td>
+                  </tr>
+                ))}
                 <tr className="bg-gray-50 border-t border-gray-200 font-semibold">
                   <td className="px-2 py-1.5 text-gray-700" colSpan={2}>∑</td>
                   <td className="px-2 py-1.5 text-right text-gray-600">

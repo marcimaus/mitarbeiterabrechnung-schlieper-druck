@@ -73,6 +73,11 @@ function EinsaetzeInhalt() {
   const [springerZuschlag, setSpringerZuschlag] = useState('');
   const [springerIndividuell, setSpringerIndividuell] = useState(false);
   const [springerFilter, setSpringerFilter] = useState('');
+  // Anmerkung je Teilgebiet/KW (= Einsatz.kommentar, auch in der Planung
+  // sichtbar). Nach dem Monatswechsel Pflicht — dort sind Änderungen Nachträge.
+  const [springerAnmerkung, setSpringerAnmerkung] = useState('');
+  const [nachtragDialog, setNachtragDialog] = useState<{ tg: Teilgebiet; aktion: 'ungeklaert' | 'standard' } | null>(null);
+  const [nachtragAnmerkung, setNachtragAnmerkung] = useState('');
   const [lieferscheinPeriode, setLieferscheinPeriode] = useState<{ periode: Abrechnungsperiode; kw: number } | null>(null);
   const [zettelchenOffen, setZettelchenOffen] = useState(false);
   const [kontrolleOffen, setKontrolleOffen] = useState(false);
@@ -159,6 +164,21 @@ function EinsaetzeInhalt() {
 
   const selectedAusgabe = ausgaben.find((a) => a.id === selectedAusgabeId);
 
+  const zugehoerigerPeriode = selectedAusgabe
+    ? abrechnungsperioden.find((p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen.includes(selectedAusgabe.kw))
+    : undefined;
+  const istGesperrt = zugehoerigerPeriode?.status === 'abgeschlossen';
+  // Monatswechsel durchgeführt, Periode noch offen: Änderungen sind Nachträge.
+  // Sie wirken in der Abrechnung nur auf diese Ausgabe×Teilgebiet-Zelle
+  // (ausfallender Austräger / Springer), gerechnet mit dem Teilgebiets- und
+  // Parameter-Stand des Monatswechsels. Anmerkung ist dann Pflicht.
+  const monatswechselAm = !istGesperrt ? zugehoerigerPeriode?.monatswechselSnapshot?.erstelltAm : undefined;
+  const istNachtragModus = monatswechselAm != null;
+
+  /** Einsatz wurde nach dem Monatswechsel seiner Periode nachgetragen. */
+  const istNachtrag = (e: Einsatz | undefined) =>
+    monatswechselAm != null && (e?.nachtragNachMonatswechselAm ?? 0) > monatswechselAm;
+
   // Perioden-effektiver Springer-Standardzuschlag — exakt wie effParams in
   // berechneAbrechnungen: abgeschlossene Periode → paramSnapshot, aktiver
   // Monatswechsel-Snapshot → dessen paramSnapshot, sonst der Live-Parameter.
@@ -213,8 +233,44 @@ function EinsaetzeInhalt() {
     [touren]
   );
 
-  async function handleSetzeUngeklaert(tg: Teilgebiet) {
+  /** Felder, die einen Einsatz als Nachtrag nach dem Monatswechsel kennzeichnen. */
+  function nachtragFelder(anmerkung: string): Pick<Einsatz, 'kommentar' | 'nachtragNachMonatswechselAm'> {
+    return { kommentar: anmerkung.trim(), nachtragNachMonatswechselAm: Date.now() };
+  }
+
+  /** Zusatz für das Änderungsprotokoll bei Nachträgen. */
+  function nachtragProtokoll(anmerkung: string): string {
+    return istNachtragModus ? ` — Nachtrag nach Monatswechsel; Anmerkung: "${anmerkung.trim()}"` : '';
+  }
+
+  async function ladeEinsaetzeNeu() {
     if (!selectedAusgabe) return;
+    const updated = await ladeEinsaetze(selectedAusgabe.id);
+    const map: EinsatzMap = {};
+    for (const e of updated) map[e.teilgebietId] = e;
+    setEinsaetze(map);
+  }
+
+  /** Nach dem Monatswechsel: erst Anmerkung erfassen, dann ausführen. */
+  function oeffneNachtragDialog(tg: Teilgebiet, aktion: 'ungeklaert' | 'standard') {
+    setNachtragAnmerkung(einsaetze[tg.id]?.kommentar ?? '');
+    setNachtragDialog({ tg, aktion });
+  }
+
+  async function handleNachtragSpeichern() {
+    if (!nachtragDialog || !nachtragAnmerkung.trim()) return;
+    const { tg, aktion } = nachtragDialog;
+    if (aktion === 'ungeklaert') await handleSetzeUngeklaert(tg, nachtragAnmerkung);
+    else await handleResetStandard(tg, nachtragAnmerkung);
+    setNachtragDialog(null);
+  }
+
+  async function handleSetzeUngeklaert(tg: Teilgebiet, anmerkung?: string) {
+    if (!selectedAusgabe) return;
+    if (istNachtragModus && anmerkung === undefined) {
+      oeffneNachtragDialog(tg, 'ungeklaert');
+      return;
+    }
     const vorher = einsaetze[tg.id];
     await setzeEinsatz({
       ausgabeId: selectedAusgabe.id,
@@ -223,6 +279,7 @@ function EinsaetzeInhalt() {
       teilgebietId: tg.id,
       mitarbeiterId: null,
       typ: 'ungeklärt',
+      ...(istNachtragModus ? nachtragFelder(anmerkung ?? '') : {}),
     });
     await schreibeAuditLog({
       adminName: adminName || 'Unbekannt',
@@ -235,17 +292,54 @@ function EinsaetzeInhalt() {
       jahr: selectedAusgabe.jahr,
       kwVon: selectedAusgabe.kw,
       kwBis: selectedAusgabe.kw,
-      beschreibung: `Als „ungeklärt" markiert (zuvor: ${beschreibeEinsatz(vorher)}) — Einsätze-Screen`,
+      beschreibung: `Als „ungeklärt" markiert (zuvor: ${beschreibeEinsatz(vorher)}) — Einsätze-Screen${nachtragProtokoll(anmerkung ?? '')}`,
     });
-    const updated = await ladeEinsaetze(selectedAusgabe.id);
-    const map: EinsatzMap = {};
-    for (const e of updated) map[e.teilgebietId] = e;
-    setEinsaetze(map);
+    await ladeEinsaetzeNeu();
   }
 
-  async function handleResetStandard(tg: Teilgebiet) {
+  async function handleResetStandard(tg: Teilgebiet, anmerkung?: string) {
     const e = einsaetze[tg.id];
-    if (!e) return;
+    if (!e || !selectedAusgabe) return;
+    if (istNachtragModus) {
+      if (anmerkung === undefined) {
+        oeffneNachtragDialog(tg, 'standard');
+        return;
+      }
+      // Nach dem Monatswechsel den Einsatz nicht löschen, sondern als
+      // Standard-Einsatz mit Anmerkung + Nachtrag-Kennzeichen behalten —
+      // so bleibt der Grund an der Zelle sichtbar.
+      const standardId = standardFuerAusgabe(tg);
+      await setzeEinsatz({
+        ausgabeId: selectedAusgabe.id,
+        kw: selectedAusgabe.kw,
+        jahr: selectedAusgabe.jahr,
+        teilgebietId: tg.id,
+        mitarbeiterId: standardId,
+        typ: 'standard',
+        springerZuschlagProzent: undefined,
+        ausfallBisJahr: undefined,
+        ausfallBisKw: undefined,
+        vonGruppeAbgekoppelt: undefined,
+        ...nachtragFelder(anmerkung),
+      });
+      await schreibeAuditLog({
+        adminName: adminName || 'Unbekannt',
+        bereich: 'austraeger-ausfall',
+        aktion: 'geaendert',
+        teilgebietId: tg.id,
+        teilgebietName: tg.name,
+        mitarbeiterId: standardId,
+        mitarbeiterName: getMitarbeiter(standardId)?.name ?? null,
+        jahr: e.jahr,
+        kwVon: e.kw,
+        kwBis: e.kw,
+        beschreibung:
+          `Auf Standardausträger zurückgesetzt (war: ${beschreibeEinsatz(e)}) — Einsätze-Screen` +
+          nachtragProtokoll(anmerkung),
+      });
+      await ladeEinsaetzeNeu();
+      return;
+    }
     // Warnung, wenn Daten verloren gehen — Kommentar, externer Link,
     // gesetzter Springer/Ausfall etc.
     const verlust: string[] = [];
@@ -298,11 +392,13 @@ function EinsaetzeInhalt() {
     const istListenwert = vorhanden != null && optionen.includes(vorhanden);
     setSpringerIndividuell(!istListenwert);
     setSpringerFilter('');
+    setSpringerAnmerkung(e?.kommentar ?? '');
     setSpringerDialog(tg);
   }
 
   async function handleSpringerSpeichern() {
     if (!springerDialog || !selectedAusgabe || !springerMitarbeiterId) return;
+    if (istNachtragModus && !springerAnmerkung.trim()) return;
     const vorher = einsaetze[springerDialog.id];
     await setzeEinsatz({
       ausgabeId: selectedAusgabe.id,
@@ -312,6 +408,8 @@ function EinsaetzeInhalt() {
       mitarbeiterId: springerMitarbeiterId,
       typ: 'springer',
       springerZuschlagProzent: springerZuschlag ? parseFloat(springerZuschlag) : undefined,
+      kommentar: springerAnmerkung.trim() || undefined,
+      ...(istNachtragModus ? nachtragFelder(springerAnmerkung) : {}),
     });
     const neuerName = getMitarbeiter(springerMitarbeiterId)?.name ?? springerMitarbeiterId;
     await schreibeAuditLog({
@@ -327,7 +425,7 @@ function EinsaetzeInhalt() {
       kwBis: selectedAusgabe.kw,
       beschreibung: `Springer gesetzt: ${neuerName}${
         springerZuschlag ? ` (+${springerZuschlag}%)` : ''
-      } (zuvor: ${beschreibeEinsatz(vorher)}) — Einsätze-Screen`,
+      } (zuvor: ${beschreibeEinsatz(vorher)}) — Einsätze-Screen${nachtragProtokoll(springerAnmerkung)}`,
     });
     const updated = await ladeEinsaetze(selectedAusgabe.id);
     const map: EinsatzMap = {};
@@ -335,11 +433,6 @@ function EinsaetzeInhalt() {
     setEinsaetze(map);
     setSpringerDialog(null);
   }
-
-  const zugehoerigerPeriode = selectedAusgabe
-    ? abrechnungsperioden.find((p) => p.jahr === selectedAusgabe.jahr && p.kalenderwochen.includes(selectedAusgabe.kw))
-    : undefined;
-  const istGesperrt = zugehoerigerPeriode?.status === 'abgeschlossen';
 
   // Saisonteilgebiete, deren Saisonpause in diese Ausgabe fällt — auch
   // Auslagestellen. Ad hoc lässt sich je Ausgabe „trotzdem beliefern"
@@ -737,6 +830,20 @@ function EinsaetzeInhalt() {
           🔒 Diese Ausgabe gehört zu einer <strong>abgeschlossenen Abrechnungsperiode</strong> — keine Änderungen mehr möglich.
         </div>
       )}
+      {istNachtragModus && zugehoerigerPeriode && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-4 text-sm text-emerald-900">
+          <div>
+            📌 Für <strong>{zugehoerigerPeriode.bezeichnung}</strong> wurde der <strong>Monatswechsel</strong> am{' '}
+            {new Date(monatswechselAm!).toLocaleDateString('de-DE')} durchgeführt.
+          </div>
+          <div className="text-xs mt-1 text-emerald-800">
+            Änderungen an Springer / unbesetzt sind hier <strong>Nachträge</strong> (z. B. nachträglich gemeldeter
+            Ausfall): Sie wirken in der Abrechnung nur auf den ausfallenden Austräger und den Springer dieses
+            Teilgebiets in dieser Ausgabe — gerechnet mit Stückzahl, Wegstrecke und Parametern vom Stand des
+            Monatswechsels. Alle anderen Mitarbeiter bleiben unverändert. Eine Anmerkung ist Pflicht.
+          </div>
+        </div>
+      )}
 
       {/* Saisonteilgebiete in Saisonpause — ad hoc doch beliefern */}
       {!loading && selectedAusgabe && saisonTgsDieserWoche.length > 0 && (
@@ -868,6 +975,14 @@ function EinsaetzeInhalt() {
                     {/* Status-Badge */}
                     <td className="px-4 py-3">
                       <EinsatzBadge einsatz={einsatz} teilgebiet={{ standardAustraegerId: standardFuerAusgabe(tg) }} />
+                      {istNachtrag(einsatz) && (
+                        <span
+                          className="ml-1 text-[10px] bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap"
+                          title={`Nachtrag nach dem Monatswechsel (${new Date(einsatz!.nachtragNachMonatswechselAm!).toLocaleString('de-DE')})`}
+                        >
+                          📌 Nachtrag
+                        </span>
+                      )}
                     </td>
 
                     {/* Aktueller Austräger */}
@@ -1149,7 +1264,7 @@ function EinsaetzeInhalt() {
                   }`}
                   title="Standard-Wert aus Systemparametern"
                 >
-                  Standard ({parameter?.springerZuschlagProzent ?? 25} %)
+                  Standard ({effSpringerStandard} %)
                 </button>
                 {[...(parameter?.springerZuschlagOptionen ?? [])]
                   .sort((a, b) => a - b)
@@ -1195,20 +1310,66 @@ function EinsaetzeInhalt() {
                 </div>
               )}
               <p className="text-xs text-gray-400 mt-1">
-                „Standard" übernimmt den in den Parametern hinterlegten Wert ({parameter?.springerZuschlagProzent ?? 25} %).
+                „Standard" übernimmt den in den Parametern hinterlegten Wert ({effSpringerStandard} %
+                {istNachtragModus ? ', Stand Monatswechsel' : ''}).
               </p>
             </div>
+
+            <AnmerkungFeld
+              wert={springerAnmerkung}
+              onChange={setSpringerAnmerkung}
+              pflicht={istNachtragModus}
+            />
 
             <div className="flex gap-2 pt-2">
               <button
                 onClick={handleSpringerSpeichern}
-                disabled={!springerMitarbeiterId}
+                disabled={!springerMitarbeiterId || (istNachtragModus && !springerAnmerkung.trim())}
                 className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Springer speichern
               </button>
               <button
                 onClick={() => setSpringerDialog(null)}
+                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm"
+              >
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Nachtrag-Dialog (nach Monatswechsel): unbesetzt / zurück auf Standard */}
+      <Modal
+        isOpen={nachtragDialog !== null}
+        onClose={() => setNachtragDialog(null)}
+        title={
+          nachtragDialog
+            ? `${nachtragDialog.aktion === 'ungeklaert' ? 'Als unbesetzt markieren' : 'Auf Standardausträger zurücksetzen'} — ${nachtragDialog.tg.name}`
+            : ''
+        }
+        size="md"
+      >
+        {nachtragDialog && selectedAusgabe && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700">
+              Nachtrag für {kwLabel(selectedAusgabe.kw, selectedAusgabe.jahr)}:{' '}
+              {nachtragDialog.aktion === 'ungeklaert'
+                ? 'Das Teilgebiet gilt in dieser Ausgabe als unbesetzt — der bisherige Austräger erhält dafür keine Vergütung.'
+                : `Der Standardausträger (${getMitarbeiter(standardFuerAusgabe(nachtragDialog.tg))?.name ?? '—'}) erhält die Vergütung für diese Ausgabe; ein eingetragener Springer entfällt.`}
+            </p>
+            <AnmerkungFeld wert={nachtragAnmerkung} onChange={setNachtragAnmerkung} pflicht autoFocus />
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={handleNachtragSpeichern}
+                disabled={!nachtragAnmerkung.trim()}
+                className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Nachtrag speichern
+              </button>
+              <button
+                onClick={() => setNachtragDialog(null)}
                 className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm"
               >
                 Abbrechen
@@ -1397,6 +1558,40 @@ function BeilagenDetailModal({
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Anmerkung je Teilgebiet/KW (Einsatz.kommentar) — nach Monatswechsel Pflicht. */
+function AnmerkungFeld({
+  wert,
+  onChange,
+  pflicht,
+  autoFocus,
+}: {
+  wert: string;
+  onChange: (v: string) => void;
+  pflicht: boolean;
+  autoFocus?: boolean;
+}) {
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">
+        Anmerkung{pflicht ? ' (Pflicht — Nachtrag nach Monatswechsel)' : ' (optional)'}
+      </label>
+      <textarea
+        value={wert}
+        onChange={(e) => onChange(e.target.value)}
+        rows={2}
+        placeholder={pflicht ? 'z. B. „hat sich nachträglich krank gemeldet, Springer hat übernommen"' : 'Hinweis zu diesem Teilgebiet in dieser Ausgabe'}
+        className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+          pflicht && !wert.trim() ? 'border-amber-400' : 'border-gray-300'
+        }`}
+        autoFocus={autoFocus}
+      />
+      <p className="text-xs text-gray-400 mt-1">
+        Wird als Kommentar zu diesem Teilgebiet in dieser Ausgabe gespeichert (auch in der Personalplanung sichtbar).
+      </p>
+    </div>
   );
 }
 
