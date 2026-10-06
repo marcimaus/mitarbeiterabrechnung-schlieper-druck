@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import Navigation from './components/Navigation';
 import OfflineBanner from './components/OfflineBanner';
@@ -40,13 +40,21 @@ export default function App() {
 
 // ---- Haupt-Layout (braucht useApp → innerhalb AppProvider) ----
 
+/** Ziele der gedruckten QR-Codes / NFC-Chips (Lieferschein, Ausweis). */
+const SCAN_ROUTEN = ['/nfc', '/meldung', '/strassenliste'];
+
 function AppLayout() {
   const { isAdminAuthenticated, userRole } = useApp();
   const istMitarbeiter = userRole === 'mitarbeiter';
+  const { pathname } = useLocation();
+
+  // Seiten, die per QR-Code/NFC-Chip ohne Login geöffnet werden: ohne
+  // Anmeldung kein Menü — der Scan soll nicht in den Rest der App führen.
+  const ohneNavigation = !isAdminAuthenticated && SCAN_ROUTEN.includes(pathname);
 
   // Mobile: Rollenbalken (h-7 = 28px) + Hamburger-Header (h-14 = 56px) = 84px
   // Ohne Login: nur Hamburger-Header (h-14 = 56px)
-  const mobilePt = isAdminAuthenticated ? 'pt-[84px]' : 'pt-14';
+  const mobilePt = ohneNavigation ? 'pt-0' : isAdminAuthenticated ? 'pt-[84px]' : 'pt-14';
 
   // Mitarbeiter-Login: Startseite ist nicht sichtbar — Default ist die
   // Stempeluhr. Nicht angemeldete sehen ebenfalls keine Startseite — sie
@@ -61,7 +69,7 @@ function AppLayout() {
     <div className="flex flex-col h-screen">
       <OfflineBanner />
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        <Navigation />
+        {!ohneNavigation && <Navigation />}
         <main className={`flex-1 overflow-y-auto bg-gray-50 ${mobilePt} md:pt-0`}>
           <Routes>
             <Route path="/" element={startElement} />

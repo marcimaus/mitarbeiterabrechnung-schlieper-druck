@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import {
   ladeAktiveSessionFuerMitarbeiter,
@@ -25,7 +25,6 @@ function tätigkeitenFuerRollen(rollen: Rolle[]): ArbeitszeitsTyp[] {
 
 export default function NfcLandingScreen() {
   const [params] = useSearchParams();
-  const navigate = useNavigate();
   const { mitarbeiter } = useApp();
   const mitarbeiterId = params.get('ma') ?? '';
 
@@ -75,9 +74,6 @@ export default function NfcLandingScreen() {
           <div className="text-4xl mb-4">❌</div>
           <p className="text-gray-700 font-medium">Mitarbeiter nicht gefunden.</p>
           <p className="text-xs text-gray-400 mt-1">Bitte NFC-Chip neu beschreiben.</p>
-          <button onClick={() => navigate('/')} className="mt-6 text-sm text-blue-600 underline">
-            Zur Startseite
-          </button>
         </div>
       </div>
     );
@@ -405,13 +401,6 @@ export default function NfcLandingScreen() {
             )}
           </div>
           )}
-
-          <button
-            onClick={() => navigate('/')}
-            className="w-full text-xs text-gray-400 hover:text-gray-600 py-2 transition-colors"
-          >
-            Zur Startseite
-          </button>
         </div>
       </div>
     </div>
