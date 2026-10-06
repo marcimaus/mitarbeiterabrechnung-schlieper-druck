@@ -305,7 +305,9 @@ export default function NfcLandingScreen() {
             </>
           )}
 
-          {/* Fahrtkosten-Button / Inline-Formular */}
+          {/* Fahrtkosten-Button / Inline-Formular — nur wenn am MA
+              „Fahrtkosten-Erstattung" gesetzt ist */}
+          {ma.fahrtkostenerstattung === true && (
           <div className="pt-2 border-t border-gray-100">
             {!showFahrt ? (
               <button
@@ -402,6 +404,7 @@ export default function NfcLandingScreen() {
               </div>
             )}
           </div>
+          )}
 
           <button
             onClick={() => navigate('/')}

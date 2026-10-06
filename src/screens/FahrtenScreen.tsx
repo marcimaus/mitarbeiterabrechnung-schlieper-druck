@@ -28,8 +28,31 @@ export default function FahrtenScreen() {
 
   return (
     <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>
-      <FahrtenInhalt />
+      <FahrtenMitFreigabe />
     </AdminPinGate>
+  );
+}
+
+/** Fahrtkostenerfassung nur für Mitarbeiter mit „Fahrtkosten-Erstattung" —
+ *  das Menü-Item ist dann schon ausgeblendet, hier wird zusätzlich der
+ *  Direktaufruf der URL abgefangen. Admin/Abrechnung sehen die Maske immer. */
+function FahrtenMitFreigabe() {
+  const { userRole, mitarbeiter, mitarbeiterId } = useApp();
+  if (userRole === 'mitarbeiter') {
+    const ma = mitarbeiter.find((m) => m.id === mitarbeiterId);
+    if (ma && ma.fahrtkostenerstattung !== true) return <FahrtkostenNichtFreigeschaltet />;
+  }
+  return <FahrtenInhalt />;
+}
+
+function FahrtkostenNichtFreigeschaltet() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
+      <div className="bg-white rounded-xl shadow p-8 text-center max-w-sm w-full">
+        <div className="text-4xl mb-4">🚗</div>
+        <p className="text-gray-700 font-medium">Fahrtkostenerfassung ist nicht freigeschaltet.</p>
+      </div>
+    </div>
   );
 }
 
@@ -497,6 +520,8 @@ function FahrtNfcModus({
       </div>
     );
   }
+
+  if (ma.fahrtkostenerstattung !== true) return <FahrtkostenNichtFreigeschaltet />;
 
   async function handleSpeichern(e: FormEvent) {
     e.preventDefault();

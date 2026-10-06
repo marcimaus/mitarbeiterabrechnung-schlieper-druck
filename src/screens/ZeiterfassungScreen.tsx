@@ -362,6 +362,13 @@ export default function ZeiterfassungScreen() {
 
   const maNameById = (id: string) => mitarbeiter.find((m) => m.id === id)?.name ?? '?';
 
+  // Nicht angemeldet → Namen werden nicht angezeigt, nur anonymisierte
+  // Einträge (laufende Nummer in Reihenfolge der Anzeige).
+  const anonymNr = new Map(
+    [...aktiv, ...inPause].map((s, i) => [s.id, i + 1] as const)
+  );
+  const anonymLabel = (s: Arbeitszeit) => `Mitarbeiter ${anonymNr.get(s.id) ?? ''}`.trim();
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Zeiterfassung</h1>
@@ -386,8 +393,11 @@ export default function ZeiterfassungScreen() {
               <ul className="mt-2 text-xs text-amber-900 space-y-0.5">
                 {autoCloseSweep.map((s) => (
                   <li key={s.id}>
-                    • <strong>{maNameById(s.mitarbeiterId)}</strong>{' '}
-                    — eingestempelt am {formatierDatum(s.startTime)} um{' '}
+                    •{' '}
+                    {istAngemeldet && (
+                      <><strong>{maNameById(s.mitarbeiterId)}</strong>{' '}— </>
+                    )}
+                    eingestempelt am {formatierDatum(s.startTime)} um{' '}
                     {formatierZeit(s.startTime)} Uhr
                   </li>
                 ))}
@@ -415,7 +425,7 @@ export default function ZeiterfassungScreen() {
               </div>
               <div className="text-center max-w-sm">
                 <p className="text-sm text-gray-700 mb-3">
-                  Nur lesender Zugriff — zum Ein-/Ausstempeln bitte zuerst anmelden.
+                  Nur lesender Zugriff, Namen sind ausgeblendet — zum Ein-/Ausstempeln bitte zuerst anmelden.
                 </p>
                 <Link
                   to="/admin"
@@ -590,6 +600,7 @@ export default function ZeiterfassungScreen() {
                 key={s.id}
                 session={s}
                 mitarbeiter={getMitarbeiter(s.mitarbeiterId)}
+                anonymName={istAngemeldet ? undefined : anonymLabel(s)}
                 tick={tick}
                 readOnly={!darfAgieren(s)}
                 onAktion={() => {
@@ -618,6 +629,7 @@ export default function ZeiterfassungScreen() {
                 key={s.id}
                 session={s}
                 mitarbeiter={getMitarbeiter(s.mitarbeiterId)}
+                anonymName={istAngemeldet ? undefined : anonymLabel(s)}
                 tick={tick}
                 readOnly={!darfAgieren(s)}
                 onAktion={() => {
@@ -816,6 +828,7 @@ function SessionKarte({
   tick: _tick,
   onAktion,
   readOnly = false,
+  anonymName,
 }: {
   session: Arbeitszeit;
   mitarbeiter: Mitarbeiter | undefined;
@@ -823,6 +836,8 @@ function SessionKarte({
   onAktion: () => void;
   /** Wenn true: Karte ist nicht antippbar (fremder MA für Mitarbeiter-Rolle). */
   readOnly?: boolean;
+  /** Gesetzt (nicht angemeldet): wird statt des echten Namens angezeigt. */
+  anonymName?: string;
 }) {
   const nettoMin = berechneNettoMinuten(session);
   const typ = session.typ as ArbeitszeitsTyp;
@@ -838,12 +853,18 @@ function SessionKarte({
         session.status === 'pause' ? 'border-amber-300 bg-amber-50' : 'border-gray-200'
       }`}
       onClick={readOnly ? undefined : onAktion}
-      title={readOnly ? 'Nur lesender Zugriff — andere Mitarbeiter darf nur Admin/Abrechnung stempeln' : undefined}
+      title={
+        anonymName
+          ? 'Nur lesender Zugriff — Namen sind erst nach der Anmeldung sichtbar'
+          : readOnly
+          ? 'Nur lesender Zugriff — andere Mitarbeiter darf nur Admin/Abrechnung stempeln'
+          : undefined
+      }
     >
       <div className="flex items-center justify-between">
         <div>
           <div className="font-medium text-gray-900 text-sm">
-            {ma ? nameMitFestgehaltSymbol(ma) : '?'}
+            {anonymName ?? (ma ? nameMitFestgehaltSymbol(ma) : '?')}
             {istVorarbeit && <span className="ml-1 text-xs text-pink-600">(Vorarbeit)</span>}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">

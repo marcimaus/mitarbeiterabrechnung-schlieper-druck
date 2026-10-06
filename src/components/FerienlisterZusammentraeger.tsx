@@ -1,6 +1,8 @@
 // Ferienliste Zusammenträger — Druckauswertung (A4 Querformat).
 // Zeigt für jeden Ferienzeitraum des Jahres die relevanten Kalenderwochen
 // (Ferienwochen ± 1 Pufferwoche) als Spalten, Zusammenträger als Zeilen.
+// Nur kommende (oder gerade laufende) Ferien — vergangene sind für die
+// An-/Abmeldung uninteressant.
 
 import { useMemo } from 'react';
 import type { Mitarbeiter } from '../types';
@@ -50,7 +52,10 @@ export default function FerienlisterZusammentraeger({
     [zusammenAbruf],
   );
 
-  const ferien = ferienDesjahres(jahr);
+  // Heute als lokales ISO-Datum — direkt vergleichbar mit `bis` (YYYY-MM-DD).
+  const heute = new Date();
+  const heuteIso = `${heute.getFullYear()}-${String(heute.getMonth() + 1).padStart(2, '0')}-${String(heute.getDate()).padStart(2, '0')}`;
+  const ferien = ferienDesjahres(jahr).filter((f) => f.bis >= heuteIso);
   const maxKw = maxKWinJahr(jahr);
 
   const abschnitte = useMemo(() => {
@@ -213,7 +218,7 @@ export default function FerienlisterZusammentraeger({
 
           {abschnitte.length === 0 && (
             <div style={{ color: '#9ca3af', textAlign: 'center', padding: '20mm 0' }}>
-              Keine Feriendaten für {jahr} hinterlegt.
+              Keine kommenden Ferien für {jahr} hinterlegt.
             </div>
           )}
 
