@@ -76,10 +76,6 @@ function formatDatum(iso: string): string {
   });
 }
 
-function formatKm(m: number): string {
-  return (m / 1000).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' km';
-}
-
 function qrBildUrl(daten: string): string {
   return `https://api.qrserver.com/v1/create-qr-code/?size=130x130&margin=4&data=${encodeURIComponent(daten)}`;
 }
@@ -798,7 +794,7 @@ function LieferscheinSeite({
             {tg.plz && <span style={{ fontWeight: 400, color: '#6b7280', marginLeft: '6px' }}>{tg.plz}</span>}
           </div>
           <div style={{ color: '#374151' }}>
-            {tg.stueckzahl} Stück &nbsp;·&nbsp; {formatKm(tg.wegstreckeM)}
+            {tg.stueckzahl} Stück
           </div>
           {mitMeldung > 0 && (
             <div style={{ color: '#374151', fontSize: '10px', marginTop: '4px' }}>
@@ -853,7 +849,6 @@ function LieferscheinSeite({
             <th style={{ width: '30px', textAlign: 'center' }}>KW</th>
             <th style={{ width: '65px' }}>Datum</th>
             <th style={{ width: '45px', textAlign: 'center' }}>Stück</th>
-            <th style={{ width: '40px', textAlign: 'center' }}>km</th>
             <th style={{ width: '50px', textAlign: 'center' }}>Gewicht<br />(kg)</th>
             <th style={{ minWidth: '80px' }}>Beilagen</th>
             <th style={{ width: '55px', textAlign: 'center' }}>Von</th>
@@ -870,7 +865,7 @@ function LieferscheinSeite({
                 <tr key={z.kw} className="ausfall-row">
                   <td style={{ textAlign: 'center' }}>{z.kw}</td>
                   <td>{formatDatum(z.mittwoch)}</td>
-                  <td colSpan={8} style={{ textAlign: 'center', color: '#9ca3af' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', color: '#9ca3af' }}>
                     {z.einsatz.typ === 'ausfall' ? '— Ausfall —' : '? Ungeklärt ?'}
                   </td>
                 </tr>
@@ -883,7 +878,7 @@ function LieferscheinSeite({
                 <tr key={z.kw}>
                   <td style={{ textAlign: 'center', color: '#9ca3af' }}>{z.kw}</td>
                   <td style={{ color: '#9ca3af' }}>{formatDatum(z.mittwoch)}</td>
-                  <td colSpan={8} style={{ textAlign: 'center', color: '#d1d5db', fontSize: '10px' }}>
+                  <td colSpan={7} style={{ textAlign: 'center', color: '#d1d5db', fontSize: '10px' }}>
                     (noch nicht angelegt)
                   </td>
                 </tr>
@@ -906,9 +901,6 @@ function LieferscheinSeite({
                 <td style={{ textAlign: 'center', fontWeight: 600 }}>{z.kw}</td>
                 <td>{formatDatum(z.mittwoch)}</td>
                 <td style={{ textAlign: 'center' }}>{z.ausgabe.seitenzahl ? `${tg.stueckzahl}` : '—'}</td>
-                <td style={{ textAlign: 'center' }}>
-                  {(tg.wegstreckeM / 1000).toFixed(1)}
-                </td>
                 <td style={{ textAlign: 'center', fontWeight: 600 }}>
                   {gewichtKg.toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
                 </td>
