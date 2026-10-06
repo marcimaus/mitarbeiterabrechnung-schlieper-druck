@@ -735,9 +735,9 @@ export async function exportiereAbrechnung(
 //
 // Inhalt (laut Vorgabe):
 //   - Periode (Header)
-//   - je MA: Name, Nummer, Vorschuss, Bruttolohn (= bruttoLohnbuero, also nach
-//     Verrechnung Lohnkonto, ohne Lohnkonto explizit zu erwähnen), Fahrtkosten,
-//     Auszahlung (nur bei SV-befreiten MAs; sonst ermittelt das Lohnbüro
+//   - je MA: Name, Nummer, Vorschuss, Fahrtkosten, Bruttolohn (= bruttoLohnbuero,
+//     also nach Verrechnung Lohnkonto, ohne Lohnkonto explizit zu erwähnen;
+//     Fahrtkosten stehen links davon, weil sie Teil des Brutto sind), Auszahlung (nur bei SV-befreiten MAs; sonst ermittelt das Lohnbüro
 //     den Zahlbetrag nach Abzügen)
 //   - Schluss: Liste abzumeldender Mitarbeiter
 //
@@ -768,8 +768,8 @@ export async function exportiereLohnuebermittlung(
     'Mitarbeiter-Nr.',
     'Name',
     'Vorschuss (€)',
-    'Bruttolohn (€)',
     'Fahrtkosten (€)',
+    'Bruttolohn (€)',
     'Auszahlung (€) — nur SV-befreit',
   ];
   ws.getRow(headerRow).font = { bold: true };
@@ -806,8 +806,8 @@ export async function exportiereLohnuebermittlung(
       e.mitarbeiter.nummer,
       e.mitarbeiter.name,
       Number((e.vorschussSumme ?? 0).toFixed(2)),
-      Number((e.bruttoLohnbuero ?? 0).toFixed(2)),
       Number((e.fahrtkostenGesamt ?? 0).toFixed(2)),
+      Number((e.bruttoLohnbuero ?? 0).toFixed(2)),
       auszahlung === null ? null : Number(auszahlung.toFixed(2)),
     ];
     for (let c = 3; c <= 6; c++) {
@@ -827,8 +827,8 @@ export async function exportiereLohnuebermittlung(
     '',
     'Σ Gesamt',
     Number(sumVorschuss.toFixed(2)),
-    Number(sumBrutto.toFixed(2)),
     Number(sumFaKo.toFixed(2)),
+    Number(sumBrutto.toFixed(2)),
     Number(sumAuszahlung.toFixed(2)),
   ];
   ws.getRow(sumRow).font = { bold: true };

@@ -52,6 +52,7 @@ import {
   istAktuellInSaisonpause,
   saisonPauseText,
 } from '../lib/saison';
+import { getCurrentKW } from '../lib/kalender';
 
 // ---- Hilfsfunktionen -------------------------------------------------------
 
@@ -123,7 +124,7 @@ function TeilgebieteInhalt() {
   const [hauptview, setHauptview] = useState<'liste' | 'anpassung' | 'historie' | 'umgesetzt'>('liste');
 
   // Geplante dauerhafte Wechsel + zukünftige Springer — werden gebraucht, um
-  // im TG-Form das Standardausträger-Select zu sperren, solange in der
+  // im TG-Form am Standardausträger-Select zu warnen, solange in der
   // Personalplanung noch ein Vorgang läuft.
   const [wechselplaene, setWechselplaene] = useState<StandardAustraegerWechselPlan[]>([]);
   const [einsaetzeAktJahr, setEinsaetzeAktJahr] = useState<Einsatz[]>([]);
@@ -1215,34 +1216,28 @@ function TeilgebietForm({
   // Nicht beliefern und Freigaben pflegen — alles andere bleibt Admin.
   const darfListenPflegen = isAdmin || (userRole === 'abrechnung' && !!initial);
 
-  // F:Standardausträger-Select sperren, wenn in der Personalplanung noch
-  // ein Wechsel/Springer für dieses TG läuft. Sonst überschriebe der Admin
-  // den Standard, während Lücken-Einsätze noch an einem Snapshot hängen,
-  // der zur alten Besetzung passt.
-  const standardLockReason = useMemo(() => {
+  // Warnung am Standardausträger-Select, wenn in der Personalplanung noch
+  // ein Wechsel/Springer für dieses TG läuft: Lücken-Einsätze hängen ggf.
+  // an einem Snapshot der alten Besetzung. Nur Hinweis — der Admin darf
+  // den Standardausträger trotzdem ändern.
+  const standardWarnung = useMemo(() => {
     if (!initial) return null;
     if (wechselplaene.some((p) => p.teilgebietId === initial.id)) {
-      return 'wechsel' as const;
+      return { grund: 'wechsel' as const, springer: [] as Einsatz[] };
     }
-    // Heutige KW im aktuell laufenden Jahr — Listener ist auf das Jahr
-    // initialisiert; reicht für die übliche Planung.
-    const heute = new Date();
-    const jahr = heute.getFullYear();
-    const startMs = Date.UTC(jahr, 0, 1);
-    const dayMs = 24 * 60 * 60 * 1000;
-    // ISO-KW grob: nicht perfekt, aber Bedingung lautet „zukünftiger
-    // Springer" — wir verwenden hier daher das Tagesdatum als Untergrenze.
-    const heutigerTagOfYear = Math.floor((heute.getTime() - startMs) / dayMs);
-    const aktuelleKw = Math.max(1, Math.floor(heutigerTagOfYear / 7) + 1);
-    const offenerSpringer = einsaetzeAktJahr.some(
-      (e) =>
-        e.teilgebietId === initial.id &&
-        e.typ === 'springer' &&
-        e.mitarbeiterId &&
-        e.jahr >= jahr &&
-        (e.jahr > jahr || e.kw >= aktuelleKw),
-    );
-    return offenerSpringer ? ('springer' as const) : null;
+    // Echte ISO-KW (die frühere Näherung über Tag-im-Jahr/7 lag bis zu
+    // eine Woche zurück und meldete so Springer der Vorwoche als „zukünftig").
+    const { kw: aktuelleKw, jahr } = getCurrentKW();
+    const springer = einsaetzeAktJahr
+      .filter(
+        (e) =>
+          e.teilgebietId === initial.id &&
+          e.typ === 'springer' &&
+          e.mitarbeiterId &&
+          (e.jahr > jahr || (e.jahr === jahr && e.kw >= aktuelleKw)),
+      )
+      .sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
+    return springer.length > 0 ? { grund: 'springer' as const, springer } : null;
   }, [initial, wechselplaene, einsaetzeAktJahr]);
   const [tab, setTab] = useState<TabId>('grunddaten');
   const [nurAktiveAustraeger, setNurAktiveAustraeger] = useState(true);
@@ -1705,13 +1700,16 @@ function TeilgebietForm({
                   nur aktive
                 </label>
               </div>
-              {standardLockReason && (
+              {standardWarnung && (
                 <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                  {standardLockReason === 'wechsel'
+                  ⚠{' '}
+                  {standardWarnung.grund === 'wechsel'
                     ? 'Für dieses Teilgebiet ist in der Personalplanung ein dauerhafter Wechsel geplant.'
-                    : 'Für dieses Teilgebiet ist in der Personalplanung ein zukünftiger Springer eingetragen.'}
-                  {' '}Bitte den Vorgang dort abschließen oder die Einträge entfernen, bevor der
-                  Standardausträger geändert werden kann.
+                    : `Für dieses Teilgebiet ${standardWarnung.springer.length === 1 ? 'ist' : 'sind'} in der Personalplanung Springer eingetragen: ${standardWarnung.springer
+                        .map((e) => `KW ${e.kw}/${e.jahr} ${mitarbeiter.find((m) => m.id === e.mitarbeiterId)?.name ?? '?'}`)
+                        .join(', ')}.`}
+                  {' '}Der Standardausträger kann trotzdem geändert werden — bitte die
+                  Einträge dort anschließend prüfen bzw. entfernen.
                   <Link
                     to="/planung"
                     className="ml-1 text-blue-700 underline hover:text-blue-900"
@@ -1725,8 +1723,7 @@ function TeilgebietForm({
                 onChange={(e) =>
                   setForm((f) => ({ ...f, standardAustraegerId: e.target.value || null }))
                 }
-                disabled={!!standardLockReason}
-                className={`${inputClass} ${standardLockReason ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className={inputClass}
               >
                 <option value="">Kein Standardausträger</option>
                 {austraeger.length === 0 && (
