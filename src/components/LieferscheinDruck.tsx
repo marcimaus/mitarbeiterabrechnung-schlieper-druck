@@ -8,7 +8,7 @@
 // optional auch die Scheine einblenden, deren TG in dieser Ausgabe nicht
 // beliefert wird (für Nachdrucke bei verlorenen Zetteln).
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { istInSaisonpauseFuer } from '../lib/saison';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -55,6 +55,8 @@ interface LieferscheinInfo {
   memos: MemoEintrag[];          // pro KW gesammelte Memos (alle/tour/teilgebiet)
   /** Eindeutige Lieferschein-ID = teilgebietId + '__' + empfaengerId */
   schluessel: string;
+  /** Tour des Teilgebiets (für Farbpunkt + Gruppierung im Druck) */
+  tour: Tour | null;
 }
 
 // ---- Hilfsfunktionen ----------------------------------------
@@ -78,6 +80,25 @@ function formatKm(m: number): string {
   return (m / 1000).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' km';
 }
 
+function qrBildUrl(daten: string): string {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=130x130&margin=4&data=${encodeURIComponent(daten)}`;
+}
+
+/** QR-Code-Bilder eines Scheins: Online-Erfassung (nur bei Freischaltung)
+ *  + Straßenliste des Teilgebiets (öffentlich, ohne Login). */
+function qrBilderFuer(info: LieferscheinInfo): { meldung: string | null; strassen: string } {
+  const strassenLink = `${window.location.origin}/strassenliste?tg=${encodeURIComponent(info.teilgebiet.id)}`;
+  return {
+    meldung: info.empfaenger.onlineErfassungAktiv === true ? qrBildUrl(info.meldungsLink) : null,
+    strassen: qrBildUrl(strassenLink),
+  };
+}
+
+/** Natürliche Sortierung: Tour 2 < Tour 10, Uslar2 < Uslar10. */
+function natSort(a: string, b: string): number {
+  return a.localeCompare(b, 'de', { numeric: true });
+}
+
 // ---- Haupt-Komponente ---------------------------------------
 
 interface Props {
@@ -99,6 +120,7 @@ export default function LieferscheinDruck({
   selectedKw,
   mitarbeiter,
   teilgebiete,
+  touren = [],
   onClose,
 }: Props) {
   const [loading, setLoading] = useState(true);
@@ -113,6 +135,7 @@ export default function LieferscheinDruck({
   const [zeigeNichtBeliefert, setZeigeNichtBeliefert] = useState(false);
 
   const mitarbeiterMap = new Map(mitarbeiter.map((m) => [m.id, m]));
+  const tourMap = new Map(touren.map((t) => [t.id, t]));
 
   useEffect(() => {
     loadData();
@@ -268,6 +291,7 @@ export default function LieferscheinDruck({
             meldungsLink,
             memos: memosListe,
             schluessel: `${tg.id}__${empfId}`,
+            tour: tg.tourId ? (tourMap.get(tg.tourId) ?? null) : null,
           });
         }
       }
@@ -295,8 +319,15 @@ export default function LieferscheinDruck({
       }
 
       alle.sort((a, b) => {
-        // Natural sort: Uslar1 < Uslar2 < … < Uslar10 (nicht lexikographisch).
-        const byName = a.teilgebiet.name.localeCompare(b.teilgebiet.name, 'de', { numeric: true });
+        // Gruppiert nach Tour (Tour 1, Tour 2, …; ohne Tour ans Ende),
+        // innerhalb der Tour nach TG-Name in natürlicher Sortierung
+        // (Uslar1 < Uslar2 < … < Uslar10, nicht lexikographisch).
+        if (a.tour?.id !== b.tour?.id) {
+          if (!a.tour) return 1;
+          if (!b.tour) return -1;
+          return natSort(a.tour.name, b.tour.name);
+        }
+        const byName = natSort(a.teilgebiet.name, b.teilgebiet.name);
         if (byName !== 0) return byName;
         // Standardausträger zuerst, dann Springer
         if (a.istSpringer !== b.istSpringer) return a.istSpringer ? 1 : -1;
@@ -331,6 +362,48 @@ export default function LieferscheinDruck({
   const anzahlNichtBeliefert = scheine.filter(
     (s) => !aktuelleSchluessel.has(s.schluessel)
   ).length;
+
+  // ---- QR-Codes vorladen ------------------------------------
+  // Die QR-Bilder kommen von einem externen Dienst. Wird gedruckt, bevor
+  // alle geladen sind, fehlen sie auf den hinteren Seiten. Deshalb werden
+  // alle Bilder vorab geladen und der Drucken-Button erst danach freigegeben.
+  const qrUrls = useMemo(() => {
+    const urls = new Set<string>();
+    for (const s of sichtbareScheine) {
+      const qr = qrBilderFuer(s);
+      if (qr.meldung) urls.add(qr.meldung);
+      urls.add(qr.strassen);
+    }
+    return [...urls];
+  }, [sichtbareScheine]);
+  const [qrStatus, setQrStatus] = useState<Map<string, 'ok' | 'fehler'>>(new Map());
+  const [qrVersuch, setQrVersuch] = useState(0);
+  const qrGestartet = useRef(new Set<string>());
+
+  useEffect(() => {
+    for (const url of qrUrls) {
+      if (qrGestartet.current.has(url)) continue;
+      qrGestartet.current.add(url);
+      const img = new Image();
+      img.onload = () => setQrStatus((prev) => new Map(prev).set(url, 'ok'));
+      img.onerror = () => setQrStatus((prev) => new Map(prev).set(url, 'fehler'));
+      img.src = url;
+    }
+  }, [qrUrls, qrVersuch]);
+
+  const qrFertig = qrUrls.filter((u) => qrStatus.has(u)).length;
+  const qrFehler = qrUrls.filter((u) => qrStatus.get(u) === 'fehler');
+  const qrLaedt = qrFertig < qrUrls.length;
+
+  function qrNeuLaden() {
+    for (const u of qrFehler) qrGestartet.current.delete(u);
+    setQrStatus((prev) => {
+      const next = new Map(prev);
+      for (const u of qrFehler) next.delete(u);
+      return next;
+    });
+    setQrVersuch((v) => v + 1);
+  }
 
   // ---- Render -----------------------------------------------
   return (
@@ -419,13 +492,27 @@ export default function LieferscheinDruck({
               auch nicht beliefert ({anzahlNichtBeliefert})
             </button>
           )}
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex items-center gap-2">
+            {!loading && !qrLaedt && qrFehler.length > 0 && (
+              <span className="text-xs text-amber-700 flex items-center gap-2">
+                ⚠ {qrFehler.length} QR-Code{qrFehler.length === 1 ? '' : 's'} nicht geladen
+                <button
+                  type="button"
+                  onClick={qrNeuLaden}
+                  className="px-2 py-0.5 border border-amber-300 rounded hover:bg-amber-50"
+                >
+                  Erneut laden
+                </button>
+              </span>
+            )}
             <button
               onClick={() => window.print()}
-              disabled={sichtbareScheine.length === 0}
+              disabled={loading || sichtbareScheine.length === 0 || qrLaedt}
               className="bg-blue-700 hover:bg-blue-800 disabled:bg-gray-300 text-white px-4 py-1.5 rounded-lg text-sm font-medium"
             >
-              🖨️ Drucken ({sichtbareScheine.length})
+              {!loading && qrLaedt
+                ? `⏳ QR-Codes laden … (${qrFertig}/${qrUrls.length})`
+                : `🖨️ Drucken (${sichtbareScheine.length})`}
             </button>
           </div>
         </div>
@@ -440,9 +527,23 @@ export default function LieferscheinDruck({
             <div className="text-center text-gray-400 py-12">Keine Lieferscheine ausgewählt.</div>
           ) : (
             <div className="max-w-3xl mx-auto">
-              {sichtbareScheine.map((s) => (
-                <LieferscheinSeite key={s.schluessel} info={s} periode={periode} />
-              ))}
+              {sichtbareScheine.map((s, i) => {
+                const neueTour = i === 0 || sichtbareScheine[i - 1].tour?.id !== s.tour?.id;
+                return (
+                  <div key={s.schluessel}>
+                    {neueTour && (
+                      <div className="flex items-center gap-2 text-white font-semibold text-sm mb-2 mt-2">
+                        <span
+                          className="inline-block w-3 h-3 rounded-full border border-white/70"
+                          style={{ background: s.tour?.farbe ?? 'transparent' }}
+                        />
+                        {s.tour?.name ?? 'Ohne Tour'}
+                      </div>
+                    )}
+                    <LieferscheinSeite info={s} periode={periode} />
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -467,15 +568,12 @@ function LieferscheinSeite({
   info: LieferscheinInfo;
   periode: Abrechnungsperiode;
 }) {
-  const { teilgebiet: tg, empfaenger: ma, istSpringer, zeilen, meldungsLink, memos } = info;
+  const { teilgebiet: tg, empfaenger: ma, istSpringer, zeilen, memos, tour } = info;
 
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=130x130&margin=4&data=${encodeURIComponent(meldungsLink)}`;
-
-  // Zweiter QR-Code: Straßenliste dieses Teilgebiets (öffentlich, ohne Login).
-  // Der Austräger sieht die Straßen seines Gebiets und kann die hinterlegten
-  // PlusCode-/Karten-Links direkt antippen.
-  const strassenLink = `${window.location.origin}/strassenliste?tg=${encodeURIComponent(tg.id)}`;
-  const strassenQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=130x130&margin=4&data=${encodeURIComponent(strassenLink)}`;
+  // QR-Codes: Online-Erfassung + Straßenliste dieses Teilgebiets (öffentlich,
+  // ohne Login). Der Austräger sieht die Straßen seines Gebiets und kann die
+  // hinterlegten PlusCode-/Karten-Links direkt antippen.
+  const { meldung: qrUrl, strassen: strassenQrUrl } = qrBilderFuer(info);
 
   // Maßgebliche Lieferadresse für dieses TG: TG-spezifisch > allgemein
   // abweichend > Wohnadresse. Bei abweichender Adresse wird sie auf dem
@@ -512,10 +610,69 @@ function LieferscheinSeite({
 
   return (
     <div
-      className="lieferschein-seite p-6 text-gray-900"
+      className="lieferschein-seite px-6 pb-6 pt-2 text-gray-900"
       style={{ fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px' }}
     >
-      {/* ---- Abholer-Banner (groß, oben) ---- */}
+      {/* ---- Kennzeile ganz oben: Austräger · Teilgebiet · Tour ----
+          Die Scheine werden leicht versetzt übereinandergelegt — diese Zeile
+          und die Adresse darunter müssen daher ganz oben sichtbar sein. */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        columnGap: '14px',
+        rowGap: '2px',
+        fontSize: '20px',
+        fontWeight: 800,
+        lineHeight: 1.15,
+      }}>
+        <span style={{ color: istSpringer ? '#b91c1c' : '#111827' }}>
+          {ma.name}
+          {istSpringer && <span style={{ fontSize: '12px', marginLeft: '6px' }}>(SPRINGER)</span>}
+        </span>
+        <span style={{ color: '#9ca3af', fontWeight: 400 }}>|</span>
+        <span>{tg.name}</span>
+        {tour && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '15px', fontWeight: 700 }}>
+            <span style={{
+              display: 'inline-block',
+              width: '16px',
+              height: '16px',
+              borderRadius: '50%',
+              background: tour.farbe,
+              border: '1px solid #374151',
+            }} />
+            {tour.name}
+          </span>
+        )}
+        {istAbholer && (
+          <span style={{
+            marginLeft: 'auto',
+            fontSize: '12px',
+            fontWeight: 800,
+            color: '#9a3412',
+            border: '2px solid #c2410c',
+            background: '#fff7ed',
+            borderRadius: '4px',
+            padding: '1px 6px',
+          }}>
+            ABHOLUNG
+          </span>
+        )}
+      </div>
+
+      {/* ---- Adresse direkt darunter ---- */}
+      {istAbweichendeLieferadresse ? (
+        <div style={{ fontSize: '13px', fontWeight: 700, color: '#9a3412', marginTop: '2px', marginBottom: '10px' }}>
+          📍 Abweichende Lieferadresse: {adresse || '—'}
+        </div>
+      ) : (
+        <div style={{ fontSize: '13px', color: '#374151', marginTop: '2px', marginBottom: '10px' }}>
+          {adresse || '—'}
+        </div>
+      )}
+
+      {/* ---- Abholer-Banner ---- */}
       {istAbholer && (
         <div
           style={{
@@ -550,7 +707,7 @@ function LieferscheinSeite({
         </div>
         {/* QR-Codes rechts oben: Online-Erfassung (nur bei Freischaltung) + Straßenliste */}
         <div style={{ display: 'flex', gap: '8px' }}>
-          {onlineErfassung && (
+          {qrUrl && (
             <div style={{ textAlign: 'center' }}>
               <img
                 src={qrUrl}
@@ -558,7 +715,6 @@ function LieferscheinSeite({
                 width={90}
                 height={90}
                 style={{ display: 'block', border: '1px solid #e5e7eb', borderRadius: '4px' }}
-                loading="lazy"
               />
               <div style={{ fontSize: '8px', color: '#6b7280', marginTop: '2px', maxWidth: '90px' }}>
                 Online-Erfassung
@@ -572,7 +728,6 @@ function LieferscheinSeite({
               width={90}
               height={90}
               style={{ display: 'block', border: '1px solid #e5e7eb', borderRadius: '4px' }}
-              loading="lazy"
             />
             <div style={{ fontSize: '8px', color: '#6b7280', marginTop: '2px', maxWidth: '90px' }}>
               Straßenliste
@@ -611,19 +766,10 @@ function LieferscheinSeite({
           }}>
             {ma.name}
           </div>
-          {/* Wohnadresse nur anzeigen, wenn KEINE abweichende Lieferadresse
-              greift — sonst besteht die Gefahr, dass der Fahrer die hier
-              gedruckte (nicht beliefer-relevante) Adresse abliest und
-              fälschlich dorthin liefert. Telefon bleibt als Kontaktangabe
-              in jedem Fall stehen. */}
-          {!istAbweichendeLieferadresse && ma.adresse.strasse && (
-            <div style={{ color: istSpringer ? '#b91c1c' : '#374151' }}>{ma.adresse.strasse}</div>
-          )}
-          {!istAbweichendeLieferadresse && (ma.adresse.plz || ma.adresse.ort) && (
-            <div style={{ color: istSpringer ? '#b91c1c' : '#374151' }}>
-              {ma.adresse.plz} {ma.adresse.ort}
-            </div>
-          )}
+          {/* Die Lieferadresse steht ganz oben unter der Kennzeile. Die
+              Wohnadresse wird hier nicht wiederholt — bei abweichender
+              Lieferadresse könnte der Fahrer sonst fälschlich dorthin
+              liefern. Telefon bleibt als Kontaktangabe stehen. */}
           {ma.telefon && (
             <div style={{ color: istSpringer ? '#b91c1c' : '#374151', marginTop: '2px', fontWeight: istSpringer ? 700 : 400 }}>
               <span className="ls-icon">📞</span> {ma.telefon}

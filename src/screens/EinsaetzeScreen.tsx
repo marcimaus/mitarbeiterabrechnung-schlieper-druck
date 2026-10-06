@@ -1387,6 +1387,7 @@ function EinsaetzeInhalt() {
           selectedKw={lieferscheinPeriode.kw}
           mitarbeiter={mitarbeiter}
           teilgebiete={teilgebiete}
+          touren={touren}
           onClose={() => setLieferscheinPeriode(null)}
         />
       )}

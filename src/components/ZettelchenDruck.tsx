@@ -7,9 +7,16 @@
 //
 // Gedruckt wird zwischen den Teilgebieten horizontal getrennt (Trennlinie).
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { istTgAktivFuer } from '../lib/saison';
 import type { Ausgabe, Beilage, Teilgebiet, Tour } from '../types';
+
+// Seitenraster A4 quer mit 6 mm Rand: 196 mm nutzbare Höhe (mit Reserve),
+// 2 mm Abstand zwischen den Zeilen, Mindesthöhe je Zeile 47 mm.
+const SEITE_MM = 196;
+const ABSTAND_MM = 2;
+const MIN_ZEILE_MM = 47;
+const PX_PRO_MM = 96 / 25.4;
 
 interface Props {
   ausgabe: Ausgabe;
@@ -47,6 +54,30 @@ export default function ZettelchenDruck({
     });
   }, [teilgebiete, beilagen, tourMap, ausgabe.kw, ausgabe.jahr]);
 
+  // Einheitliche Zeilenhöhe: Alle Zeilen werden unsichtbar in natürlicher
+  // Höhe gerendert, die höchste bestimmt die Höhe ALLER Zeilen. So steht
+  // alles drauf und das Schnittraster ist auf jeder Seite identisch.
+  const messRef = useRef<HTMLDivElement>(null);
+  const [zeilenHoeheMm, setZeilenHoeheMm] = useState<number | null>(null);
+  useEffect(() => {
+    const root = messRef.current;
+    if (!root) return;
+    // Der Observer meldet sich direkt nach dem Layout einmal — dann messen.
+    const observer = new ResizeObserver(() => {
+      let maxPx = 0;
+      root.querySelectorAll<HTMLElement>('.zettel-row').forEach((row) => {
+        maxPx = Math.max(maxPx, row.offsetHeight);
+      });
+      // +1 mm Reserve für Rundungs-/Schriftunterschiede im Druck
+      const mm = Math.ceil(maxPx / PX_PRO_MM) + 1;
+      setZeilenHoeheMm(Math.min(SEITE_MM, Math.max(MIN_ZEILE_MM, mm)));
+    });
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, [zeilen]);
+  const hoeheMm = zeilenHoeheMm ?? MIN_ZEILE_MM;
+  const proSeite = Math.max(1, Math.floor((SEITE_MM + ABSTAND_MM) / (hoeheMm + ABSTAND_MM)));
+
   return (
     <>
       <style>{`
@@ -57,9 +88,14 @@ export default function ZettelchenDruck({
             box-shadow: 0 2px 8px rgba(0,0,0,0.15);
             margin: 0 auto 16px;
             width: 285mm;
-            min-height: 198mm;
-            padding: 2mm;
           }
+        }
+        /* Alle Seiten haben exakt dasselbe Raster, weil der ganze Stapel in
+           einem Schnitt geschnitten wird: alle Zeilen sind so hoch wie die
+           höchste Zeile (per Inline-Style gesetzt), 2 mm Abstand. */
+        .zettel-sheet {
+          height: 196mm;
+          overflow: hidden;
         }
         @media print {
           .zettel-screen-only { display: none !important; }
@@ -79,8 +115,18 @@ export default function ZettelchenDruck({
           display: grid;
           grid-template-columns: 1fr 1fr 1fr;
           margin-bottom: 2mm;
-          min-height: 42mm;
+          overflow: hidden;
         }
+        /* Messbereich: Zeilen in natürlicher Höhe, unsichtbar */
+        .zettel-mess {
+          position: absolute;
+          left: -10000px;
+          top: 0;
+          width: 285mm;
+          visibility: hidden;
+          pointer-events: none;
+        }
+        .zettel-mess .zettel-row { height: auto !important; }
         .zettel-third {
           border-right: 1.5px dashed #6b7280;
           padding: 3mm 4mm;
@@ -122,10 +168,16 @@ export default function ZettelchenDruck({
           line-height: 1.1;
         }
         .zettel-stk {
-          font-size: 14px;
+          font-size: 22px;
           color: #111827;
-          font-weight: 700;
+          font-weight: 800;
+          line-height: 1.1;
           white-space: nowrap;
+        }
+        .zettel-stk-einheit {
+          font-size: 0.6em;
+          font-weight: 700;
+          margin-left: 0.25em;
         }
         .zettel-beil-box.zettel-einlegen-list {
           font-size: 10pt;
@@ -169,10 +221,15 @@ export default function ZettelchenDruck({
           <span className="text-gray-500 text-sm">
             ({zeilen.length} Teilgebiete)
           </span>
+          {zeilenHoeheMm != null && (
+            <span className="text-gray-500 text-xs">
+              Zeilenhöhe {zeilenHoeheMm} mm · {proSeite} je Seite
+            </span>
+          )}
           <div className="ml-auto">
             <button
               onClick={() => window.print()}
-              disabled={zeilen.length === 0}
+              disabled={zeilen.length === 0 || zeilenHoeheMm == null}
               className="bg-blue-700 hover:bg-blue-800 disabled:bg-gray-300 text-white px-4 py-1.5 rounded-lg text-sm font-medium"
             >
               🖨️ Drucken ({zeilen.length})
@@ -181,13 +238,20 @@ export default function ZettelchenDruck({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 bg-gray-200">
-          <ZettelchenInhalt zeilen={zeilen} ausgabe={ausgabe} />
+          <ZettelchenInhalt zeilen={zeilen} ausgabe={ausgabe} hoeheMm={hoeheMm} proSeite={proSeite} />
+        </div>
+
+        {/* Messbereich für die einheitliche Zeilenhöhe (unsichtbar) */}
+        <div ref={messRef} className="zettel-mess" aria-hidden>
+          {zeilen.map((z) => (
+            <ZettelRow key={z.tg.id} zeile={z} ausgabe={ausgabe} />
+          ))}
         </div>
       </div>
 
       {/* Druck-Inhalt (nur beim Drucken sichtbar) */}
       <div className="zettel-print-only zettel-print-root">
-        <ZettelchenInhalt zeilen={zeilen} ausgabe={ausgabe} printOnly />
+        <ZettelchenInhalt zeilen={zeilen} ausgabe={ausgabe} hoeheMm={hoeheMm} proSeite={proSeite} printOnly />
       </div>
     </>
   );
@@ -205,15 +269,18 @@ interface Zeile {
 function ZettelchenInhalt({
   zeilen,
   ausgabe,
+  hoeheMm,
+  proSeite,
   printOnly = false,
 }: {
   zeilen: Zeile[];
   ausgabe: Ausgabe;
+  hoeheMm: number;
+  proSeite: number;
   printOnly?: boolean;
 }) {
-  // Ca. 4 Zeilen je A4-Querseite (je Zeile ca. 42mm Höhe) — größere
-  // Beilagen-Schrift (≥8pt) braucht mehr Platz pro Teilgebiet.
-  const proSeite = 4;
+  // Gleich viele, gleich hohe Zeilen je A4-Querseite, damit das
+  // Schnittraster auf allen Seiten identisch ist.
   const seiten: Zeile[][] = [];
   for (let i = 0; i < zeilen.length; i += proSeite) {
     seiten.push(zeilen.slice(i, i + proSeite));
@@ -228,7 +295,7 @@ function ZettelchenInhalt({
           style={printOnly ? { breakAfter: idx < seiten.length - 1 ? 'page' : 'auto' } : {}}
         >
           {seite.map((z) => (
-            <ZettelRow key={z.tg.id} zeile={z} ausgabe={ausgabe} />
+            <ZettelRow key={z.tg.id} zeile={z} ausgabe={ausgabe} hoeheMm={hoeheMm} />
           ))}
         </div>
       ))}
@@ -236,12 +303,12 @@ function ZettelchenInhalt({
   );
 }
 
-function ZettelRow({ zeile, ausgabe }: { zeile: Zeile; ausgabe: Ausgabe }) {
+function ZettelRow({ zeile, ausgabe, hoeheMm }: { zeile: Zeile; ausgabe: Ausgabe; hoeheMm?: number }) {
   const { tg, ext, int, tour } = zeile;
   const stripeFarbe = tour?.farbe ?? '#e5e7eb';
 
   return (
-    <div className="zettel-row">
+    <div className="zettel-row" style={hoeheMm ? { height: `${hoeheMm}mm` } : undefined}>
       {/* Drittel 1: Info-Zettelchen */}
       <div className="zettel-third">
         <div className="zettel-tour-stripe" style={{ background: stripeFarbe }} />
@@ -320,8 +387,12 @@ function ZettelHeader({
         >
           {tg.name}
         </span>
-        <span className="zettel-stk">
-          {tg.stueckzahl.toLocaleString('de-DE')} Stück
+        <span
+          className="zettel-stk"
+          style={compact ? { fontSize: '16px' } : undefined}
+        >
+          {tg.stueckzahl.toLocaleString('de-DE')}
+          <span className="zettel-stk-einheit">Stück</span>
         </span>
       </div>
     </>
