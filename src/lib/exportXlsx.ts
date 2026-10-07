@@ -12,9 +12,12 @@ import type {
   StueckzahlAnpassung,
 } from '../types';
 import { memoKategorieLabel, ROLLEN_LABELS } from '../types';
+import { effektiveParameter, effektiveTeilgebiete } from './abrechnungslogik';
 import type { MitarbeiterAbrechnung, PeriodeData } from './abrechnungslogik';
 import { formatierDatum, berechneNettoMinuten } from './zeiterfassung';
 import { zeitfensterText } from './vorarbeit';
+import { abmeldungenDerPeriode } from './abmeldungen';
+import { fuegeBerechnungJeMaHinzu } from './exportBerechnungJeMa';
 
 // Einheitliche Kopfzeilen-Formatierung für die Archiv-Blätter.
 const HEADER_BLAU = 'FF1D4ED8';
@@ -170,6 +173,22 @@ export async function exportiereAbrechnung(
   });
 
   wsUe.views = [{ state: 'frozen', ySplit: 4 }];
+
+  // ====================================================
+  // Blatt 2: Berechnung je MA — vollständiger Rechenweg je Mitarbeiter
+  // (analog Abrechnungsvorschau), damit die Abrechnung ohne App
+  // nachvollziehbar ist. Braucht die Periodendaten + Stammdaten.
+  // ====================================================
+  if (kontext.periodeData && kontext.parameter && kontext.teilgebiete) {
+    fuegeBerechnungJeMaHinzu(wb, {
+      periode,
+      ergebnisse,
+      data: kontext.periodeData,
+      params: effektiveParameter(kontext.parameter, periode),
+      teilgebiete: effektiveTeilgebiete(kontext.teilgebiete, periode),
+      alleMitarbeiter: kontext.alleMitarbeiter ?? [],
+    });
+  }
 
   // ====================================================
   // Blatt 2: Austräger-Details
@@ -735,11 +754,18 @@ export async function exportiereAbrechnung(
 //
 // Inhalt (laut Vorgabe):
 //   - Periode (Header)
-//   - je MA: Name, Nummer, Vorschuss, Fahrtkosten, Bruttolohn (= bruttoLohnbuero,
-//     also nach Verrechnung Lohnkonto, ohne Lohnkonto explizit zu erwähnen;
-//     Fahrtkosten stehen links davon, weil sie Teil des Brutto sind), Auszahlung (nur bei SV-befreiten MAs; sonst ermittelt das Lohnbüro
-//     den Zahlbetrag nach Abzügen)
-//   - Schluss: Liste abzumeldender Mitarbeiter
+//   - je MA: Nummer, Name, Brutto (exkl. FaKo), Fahrtkosten, Bruttolohn
+//     (= bruttoLohnbuero, also nach Verrechnung Lohnkonto, ohne Lohnkonto
+//     explizit zu erwähnen; Brutto exkl. FaKo + Fahrtkosten = Bruttolohn),
+//     Vorschuss, Auszahlung (nur bei SV-befreiten MAs; sonst ermittelt das
+//     Lohnbüro den Zahlbetrag nach Abzügen)
+//   - danach: „Vorläufig nicht abmelden", Memos
+//   - ganz unten: abzumeldende Mitarbeiter (wie im Feld „Abmeldungen ans
+//     Lohnbüro" ausgewählt)
+//
+// Spaltenbreiten: Die Zahlenspalten bleiben schmal; alle längeren Texte der
+// Blöcke unterhalb der Tabelle stehen in verbundenen Zellen über mehrere
+// Spalten (mit Zeilenumbruch), damit sie die Spalten nicht aufweiten.
 //
 export async function exportiereLohnuebermittlung(
   periode: Abrechnungsperiode,
@@ -753,70 +779,106 @@ export async function exportiereLohnuebermittlung(
   wb.created = new Date();
 
   const ws = wb.addWorksheet('Lohnübermittlung');
+  const LETZTE = 'G';
+  const ANZ_SPALTEN = 7;
+  ws.columns = [
+    { width: 14 }, // A Mitarbeiter-Nr.
+    { width: 30 }, // B Name
+    { width: 13 }, // C Brutto (exkl. FaKo)
+    { width: 13 }, // D Fahrtkosten
+    { width: 13 }, // E Bruttolohn
+    { width: 13 }, // F Vorschuss
+    { width: 13 }, // G Auszahlung
+  ];
+  // Breite der Spalten C..G zusammen (Zeichen) — für die Zeilenhöhe von
+  // umbrochenen Texten in verbundenen Zellen.
+  const BREITE_C_BIS_G = 65;
+
+  /** Text über A..G verbinden, umbrechen und Zeilenhöhe schätzen. */
+  function textZeile(rowNr: number, text: string, font: Partial<ExcelJS.Font>) {
+    ws.getCell(`A${rowNr}`).value = text;
+    ws.getCell(`A${rowNr}`).font = font;
+    ws.mergeCells(`A${rowNr}:${LETZTE}${rowNr}`);
+    ws.getRow(rowNr).alignment = { wrapText: true, vertical: 'middle' };
+    const zeilen = Math.max(1, Math.ceil(text.length / 105));
+    if (zeilen > 1) ws.getRow(rowNr).height = 15 * zeilen;
+  }
+  function kopfzeile(rowNr: number, werte: string[], farbe: string) {
+    const row = ws.getRow(rowNr);
+    row.values = werte;
+    for (let c = 1; c <= ANZ_SPALTEN; c++) {
+      const cell = row.getCell(c);
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: farbe } };
+    }
+  }
 
   // Header-Block
   ws.getCell('A1').value = `Lohnübermittlung — ${periode.bezeichnung}`;
   ws.getCell('A1').font = { bold: true, size: 14 };
-  ws.mergeCells('A1:F1');
+  ws.mergeCells(`A1:${LETZTE}1`);
   ws.getCell('A2').value = `Erstellt: ${new Date().toLocaleDateString('de-DE')}`;
   ws.getCell('A2').font = { italic: true, size: 9, color: { argb: 'FF888888' } };
-  ws.mergeCells('A2:F2');
+  ws.mergeCells(`A2:${LETZTE}2`);
 
-  // Spaltenüberschriften — ab Zeile 4
+  // Spaltenüberschriften — ab Zeile 4, umbrochen statt breiter Spalten
   const headerRow = 4;
-  ws.getRow(headerRow).values = [
+  kopfzeile(headerRow, [
     'Mitarbeiter-Nr.',
     'Name',
-    'Vorschuss (€)',
+    'Brutto (exkl. FaKo) (€)',
     'Fahrtkosten (€)',
     'Bruttolohn (€)',
-    'Auszahlung (€) — nur SV-befreit',
-  ];
-  ws.getRow(headerRow).font = { bold: true };
-  ws.getRow(headerRow).fill = {
-    type: 'pattern',
-    pattern: 'solid',
-    fgColor: { argb: 'FFE8EEF7' },
-  };
-  ws.columns = [
-    { width: 14 },
-    { width: 32 },
-    { width: 14 },
-    { width: 16 },
-    { width: 16 },
-    { width: 30 },
-  ];
+    'Vorschuss (€)',
+    'Auszahlung (€) ¹',
+  ], 'FFE8EEF7');
+  ws.getRow(headerRow).alignment = { wrapText: true, vertical: 'middle' };
+  for (let c = 3; c <= ANZ_SPALTEN; c++) {
+    ws.getRow(headerRow).getCell(c).alignment = { wrapText: true, vertical: 'middle', horizontal: 'right' };
+  }
+  ws.getRow(headerRow).height = 32;
 
   // Reihenfolge wie in der Ansicht „Abrechnung": `ergebnisse` ist bereits von
   // `berechneAbrechnung` sortiert (Festgehalt → Stunden → Saldo → Brutto desc).
   // Diese Reihenfolge wird 1:1 übernommen.
   const sortiert = ergebnisse;
+  const rund = (x: number) => Number(x.toFixed(2));
 
   let r = headerRow + 1;
-  let sumVorschuss = 0;
-  let sumBrutto = 0;
+  let sumOhneFaKo = 0;
   let sumFaKo = 0;
+  let sumBrutto = 0;
+  let sumVorschuss = 0;
   let sumAuszahlung = 0;
   for (const e of sortiert) {
     // Auszahlung nur bei SV-befreiten MAs (Brutto = Netto, keine Abzüge).
     // Bei allen anderen ermittelt das Lohnbüro den Zahlbetrag → Zelle leer.
     const istSvBefreit = !!e.mitarbeiter.sozialversicherungsBefreit;
-    const auszahlung = istSvBefreit ? e.bruttoLohnbuero - e.vorschussSumme : null;
+    const brutto = e.bruttoLohnbuero ?? 0;
+    const faKo = e.fahrtkostenGesamt ?? 0;
+    // Alle Lohnbestandteile ohne Fahrtkosten (Fix, Austragen, Zusammentragen,
+    // Vorarbeit, Sonstiges, Boni …) — ergänzt sich mit den Fahrtkosten zum
+    // Bruttolohn.
+    const ohneFaKo = brutto - faKo;
+    const vorschuss = e.vorschussSumme ?? 0;
+    const auszahlung = istSvBefreit ? brutto - vorschuss : null;
     ws.getRow(r).values = [
       e.mitarbeiter.nummer,
       e.mitarbeiter.name,
-      Number((e.vorschussSumme ?? 0).toFixed(2)),
-      Number((e.fahrtkostenGesamt ?? 0).toFixed(2)),
-      Number((e.bruttoLohnbuero ?? 0).toFixed(2)),
-      auszahlung === null ? null : Number(auszahlung.toFixed(2)),
+      rund(ohneFaKo),
+      rund(faKo),
+      rund(brutto),
+      rund(vorschuss),
+      auszahlung === null ? null : rund(auszahlung),
     ];
-    for (let c = 3; c <= 6; c++) {
-      ws.getRow(r).getCell(c).numFmt = '#,##0.00 "€"';
+    for (let c = 3; c <= ANZ_SPALTEN; c++) {
+      ws.getRow(r).getCell(c).numFmt = EUR_FMT;
       ws.getRow(r).getCell(c).alignment = { horizontal: 'right' };
     }
-    sumVorschuss += e.vorschussSumme ?? 0;
-    sumBrutto += e.bruttoLohnbuero ?? 0;
-    sumFaKo += e.fahrtkostenGesamt ?? 0;
+    sumOhneFaKo += ohneFaKo;
+    sumFaKo += faKo;
+    sumBrutto += brutto;
+    sumVorschuss += vorschuss;
     sumAuszahlung += auszahlung ?? 0;
     r++;
   }
@@ -826,51 +888,35 @@ export async function exportiereLohnuebermittlung(
   ws.getRow(sumRow).values = [
     '',
     'Σ Gesamt',
-    Number(sumVorschuss.toFixed(2)),
-    Number(sumFaKo.toFixed(2)),
-    Number(sumBrutto.toFixed(2)),
-    Number(sumAuszahlung.toFixed(2)),
+    rund(sumOhneFaKo),
+    rund(sumFaKo),
+    rund(sumBrutto),
+    rund(sumVorschuss),
+    rund(sumAuszahlung),
   ];
   ws.getRow(sumRow).font = { bold: true };
   ws.getRow(sumRow).border = {
     top: { style: 'thin' },
     bottom: { style: 'double' },
   };
-  for (let c = 3; c <= 6; c++) {
-    ws.getRow(sumRow).getCell(c).numFmt = '#,##0.00 "€"';
+  for (let c = 3; c <= ANZ_SPALTEN; c++) {
+    ws.getRow(sumRow).getCell(c).numFmt = EUR_FMT;
     ws.getRow(sumRow).getCell(c).alignment = { horizontal: 'right' };
   }
+  textZeile(
+    sumRow + 1,
+    '¹ Auszahlung nur bei sozialversicherungsbefreiten Mitarbeitern (Bruttolohn − Vorschuss); bei allen anderen ermittelt das Lohnbüro den Zahlbetrag.',
+    { italic: true, size: 9, color: { argb: 'FF777777' } },
+  );
 
   ws.views = [{ state: 'frozen', ySplit: headerRow }];
 
   // ====================================================
-  // Abmeldungen
+  // Vorläufig nicht abmelden
   // ====================================================
   // (Eine Liste „Anzumeldende Mitarbeiter" wird bewusst NICHT mehr
   // ausgegeben.)
   //
-  // Implizite Trigger (ersetzteMitarbeiterId an einem anderen MA, oder
-  // `letzteAbrechnungsperiodeId === periode.id` ohne Snapshot) werden
-  // NICHT automatisch in den Export aufgenommen — reine UI-Vorschläge.
-  //
-  // „Abzumeldende Mitarbeiter" — STRENG eingeschränkt auf den fixierten
-  // Abmeldungs-Snapshot einer **abgeschlossenen** Periode. Damit ist
-  // ausgeschlossen, dass alte `abgemeldet=true`-Datenleichen (z. B. aus
-  // einem früheren, später wieder geöffneten Abschluss) erneut in den
-  // Export einfließen. Vor dem Abschluss erscheint die Sektion gar nicht.
-  type AbmeldeEintrag = { ma: Mitarbeiter; datumIso: string };
-  const periodeIstAbgeschlossen = periode.status === 'abgeschlossen';
-  let abzumelden: AbmeldeEintrag[] = [];
-  if (periodeIstAbgeschlossen && periode.abmeldungenSnapshot?.eintraege?.length) {
-    for (const eintrag of periode.abmeldungenSnapshot.eintraege) {
-      const ma = alleMitarbeiter.find((m) => m.id === eintrag.mitarbeiterId);
-      if (!ma) continue;
-      if (ma.vorlaeufigNichtAbmelden) continue;
-      abzumelden.push({ ma, datumIso: eintrag.abmeldedatum });
-    }
-  }
-  abzumelden.sort((a, b) => a.ma.name.localeCompare(b.ma.name, 'de'));
-
   // „Vorläufig nicht abmelden" — Bedarfs-Springer, die das Lohnbüro
   // NICHT automatisch abmelden soll. Werden in jeder Übermittlung als
   // Erinnerungsblock aufgeführt — unabhängig davon, ob sie in dieser
@@ -880,70 +926,30 @@ export async function exportiereLohnuebermittlung(
     .filter((m) => m.vorlaeufigNichtAbmelden && m.isActive && !m.abgemeldet)
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
 
-  let blockRow = sumRow + 3;
-  if (abzumelden.length > 0) {
-    ws.getCell(`A${blockRow}`).value = 'Abzumeldende Mitarbeiter';
-    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+  let blockRow = sumRow + 4;
+  if (nichtAbmeldenHinweis.length > 0) {
+    textZeile(blockRow, 'Vorläufig NICHT abmelden — bitte angemeldet lassen', { bold: true, size: 12 });
     blockRow++;
-    ws.getCell(`A${blockRow}`).value =
-      'Aus dem fixierten Abmeldungs-Snapshot der Periode (beim Periodenabschluss bestätigt).';
-    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF777777' } };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    textZeile(
+      blockRow,
+      'Diese Mitarbeiter sollen beim Lohnbüro angemeldet bleiben (Bedarfs-Springer). Auch wenn mehrere Monate ohne Auszahlung folgen, bitte nicht automatisch abmelden.',
+      { italic: true, size: 10, color: { argb: 'FF7A4F00' } },
+    );
     blockRow++;
-    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Datum der Abmeldung'];
-    ws.getRow(blockRow).font = { bold: true };
-    ws.getRow(blockRow).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFFFE9E0' },
-    };
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Hinweis'], 'FFFFF4CC');
+    ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
     blockRow++;
-    for (const { ma, datumIso } of abzumelden) {
-      ws.getRow(blockRow).values = [
-        ma.nummer,
-        ma.name,
-        formatierDatum(new Date(datumIso).getTime()),
-      ];
+    for (const m of nichtAbmeldenHinweis) {
+      ws.getRow(blockRow).values = [m.nummer, m.name, 'vorläufig nicht abmelden'];
+      ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
       blockRow++;
     }
     blockRow += 2;
   }
 
-  if (nichtAbmeldenHinweis.length > 0) {
-    ws.getCell(`A${blockRow}`).value = 'Vorläufig NICHT abmelden — bitte angemeldet lassen';
-    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
-    blockRow++;
-    ws.getCell(`A${blockRow}`).value =
-      'Diese Mitarbeiter sollen beim Lohnbüro angemeldet bleiben (Bedarfs-Springer). Auch wenn mehrere Monate ohne Auszahlung folgen, bitte nicht automatisch abmelden.';
-    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF7A4F00' } };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
-    ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'middle' };
-    ws.getRow(blockRow).height = 30;
-    blockRow++;
-    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Hinweis'];
-    ws.getRow(blockRow).font = { bold: true };
-    ws.getRow(blockRow).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFFFF4CC' },
-    };
-    blockRow++;
-    for (const m of nichtAbmeldenHinweis) {
-      ws.getRow(blockRow).values = [
-        m.nummer,
-        m.name,
-        'vorläufig nicht abmelden',
-      ];
-      blockRow++;
-    }
-  }
-
   // ====================================================
   // Memos zur Lohnübermittlung (Abrechnungsvorbereitung)
   // ====================================================
-  // Werden NACH allen anderen Blöcken als separate Sektion angefügt.
   // Admin-only-Memos (nurAdmin=true) sind enthalten — das Lohnbüro
   // bekommt alle Memos, die zur Periode gehören.
   const periodenMemos = memos
@@ -956,44 +962,76 @@ export async function exportiereLohnuebermittlung(
       return na.localeCompare(nb, 'de');
     });
   if (periodenMemos.length > 0) {
-    blockRow += 2;
-    ws.getCell(`A${blockRow}`).value = `Memos zur Lohnübermittlung (${periodenMemos.length})`;
-    ws.getCell(`A${blockRow}`).font = { bold: true, size: 12 };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
+    textZeile(blockRow, `Memos zur Lohnübermittlung (${periodenMemos.length})`, { bold: true, size: 12 });
     blockRow++;
-    ws.getCell(`A${blockRow}`).value =
-      'Hinweise / Mitteilungen zu einzelnen Mitarbeitern — z. B. IBAN-/Adress-Änderungen, Krankmeldungen, Auswertungsanfragen.';
-    ws.getCell(`A${blockRow}`).font = { italic: true, size: 10, color: { argb: 'FF6B7280' } };
-    ws.mergeCells(`A${blockRow}:F${blockRow}`);
-    ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'middle' };
-    ws.getRow(blockRow).height = 24;
+    textZeile(
+      blockRow,
+      'Hinweise / Mitteilungen zu einzelnen Mitarbeitern — z. B. IBAN-/Adress-Änderungen, Krankmeldungen, Auswertungsanfragen.',
+      { italic: true, size: 10, color: { argb: 'FF6B7280' } },
+    );
     blockRow++;
-    ws.getRow(blockRow).values = ['Mitarbeiter-Nr.', 'Name', 'Kategorie', 'Memo'];
-    ws.getRow(blockRow).font = { bold: true };
-    ws.getRow(blockRow).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFDBEAFE' },
-    };
-    // Memo-Spalte breiter, damit längere Texte lesbar bleiben.
-    ws.getColumn(4).width = 70;
+    // Kategorie + Memo-Text gemeinsam in C..G (verbunden), damit die
+    // Zahlenspalten oben schmal bleiben.
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Kategorie / Memo'], 'FFDBEAFE');
+    ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
     blockRow++;
     for (const memo of periodenMemos) {
       const ma = alleMitarbeiter.find((m) => m.id === memo.mitarbeiterId);
-      ws.getRow(blockRow).values = [
-        ma?.nummer ?? '',
-        ma?.name ?? '— gelöscht —',
-        memoKategorieLabel(memo.kategorie, memoKategorienEigene),
-        memo.text,
-      ];
+      const kategorie = memoKategorieLabel(memo.kategorie, memoKategorienEigene);
+      ws.getRow(blockRow).values = [ma?.nummer ?? '', ma?.name ?? '— gelöscht —'];
+      ws.getCell(`C${blockRow}`).value = {
+        richText: [
+          { text: `${kategorie}: `, font: { bold: true } },
+          { text: memo.text },
+        ],
+      };
+      ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
       ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'top' };
-      // Höhe grob proportional zur Textlänge — ExcelJS macht keine
-      // Auto-Höhe für wrappedText, daher pragmatisch geschätzt.
-      const zeilen = Math.max(1, Math.ceil(memo.text.length / 80));
-      ws.getRow(blockRow).height = Math.min(120, 16 * zeilen);
+      // Höhe grob proportional zur Textlänge — Excel passt die Höhe bei
+      // verbundenen Zellen nicht automatisch an, daher pragmatisch geschätzt.
+      const laenge = kategorie.length + 2 + memo.text.length;
+      const zeilen = Math.max(1, Math.ceil(laenge / BREITE_C_BIS_G))
+        + (memo.text.match(/\n/g)?.length ?? 0);
+      ws.getRow(blockRow).height = Math.min(240, 15 * zeilen);
+      blockRow++;
+    }
+    blockRow += 2;
+  }
+
+  // ====================================================
+  // Abzumeldende Mitarbeiter — ganz unten
+  // ====================================================
+  // Genau die Mitarbeiter aus dem Feld „🚪 Abmeldungen ans Lohnbüro" der
+  // Periode: nach dem Abschluss der fixierte Snapshot, davor die vom Admin
+  // ausgewählten (bzw. als ersetzt markierten) MAs. Die reinen Vorschläge
+  // der App (aktive MA ohne Betrag) erscheinen nicht.
+  const abzumelden = [...abmeldungenDerPeriode(periode, alleMitarbeiter)]
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  if (abzumelden.length > 0) {
+    textZeile(blockRow, `Abzumeldende Mitarbeiter (${abzumelden.length})`, { bold: true, size: 12 });
+    blockRow++;
+    textZeile(
+      blockRow,
+      'Bitte zum angegebenen Datum beim Lohnbüro abmelden (Auswahl unter „Abmeldungen ans Lohnbüro" in der Abrechnung).',
+      { italic: true, size: 10, color: { argb: 'FF777777' } },
+    );
+    blockRow++;
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Abmeldung zum'], 'FFFFE9E0');
+    ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
+    blockRow++;
+    for (const eintrag of abzumelden) {
+      ws.getRow(blockRow).values = [
+        eintrag.nummer,
+        eintrag.name,
+        eintrag.abmeldedatum.split('-').reverse().join('.'),
+      ];
+      ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
       blockRow++;
     }
   }
+
+  // Druck: eine Seite breit, Querformat nicht nötig (7 schmale Spalten).
+  ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0, orientation: 'portrait' };
 
   // Download
   const buffer = await wb.xlsx.writeBuffer();

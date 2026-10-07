@@ -19,13 +19,12 @@ import {
   type PeriodeData,
 } from '../lib/abrechnungslogik';
 import {
-  berechneAlter,
   berechneAustraegerLohn,
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
   ermittleStundenlohn,
   ermittleStundenlohnZusammen,
-  istMinderjährig,
+  stundenlohnHerkunft,
 } from '../lib/berechnung';
 import { berechneNettoMinuten } from '../lib/zeiterfassung';
 import { zeitfensterText } from '../lib/vorarbeit';
@@ -98,19 +97,6 @@ const cent = (x: number) => Math.round(x * 100);
 const gleich = (a: number, b: number) => Math.abs(cent(a) - cent(b)) <= 1;
 
 // ---- Hilfsfunktionen ---------------------------------------------------
-
-function lohnHerkunft(ma: Mitarbeiter, geburtsdatumAbgeleitet: boolean): string {
-  if (ma.stundenlohnIndividuell !== undefined) return 'individueller Stundenlohn laut Stammdaten';
-  if (!ma.geburtsdatum?.trim()) return 'kein Geburtsdatum hinterlegt → Erwachsenen-Satz';
-  const alter = berechneAlter(ma.geburtsdatum);
-  const quelle = geburtsdatumAbgeleitet ? ', Alter aus Interessenten-Angabe' : '';
-  if (istMinderjährig(ma.geburtsdatum)) {
-    return ma.abrechnungAlsErwachseneMiLoG
-      ? `minderjährig (${alter} J.${quelle}), Abrechnung als Erwachsener (MiLoG)`
-      : `minderjährig (${alter} J.${quelle})`;
-  }
-  return `erwachsen (${alter} J.${quelle})`;
-}
 
 /** Kennzeichnet eine Austragen-Zeile, die nach dem Monatswechsel nachgetragen wurde. */
 function NachtragMarke() {
@@ -819,7 +805,7 @@ export default function AbrechnungsAufschluesselung({
               : istFixiert ? 'offen, Monatswechsel durchgeführt — Parameter/Teilgebiete aus Monatswechsel-Snapshot' : 'offen — aktuelle Parameter/Teilgebiete'],
             ['Zeiterfassung', `Kalendermonat ${String(periode.monat).padStart(2, '0')}/${periode.jahr}`],
             ['Rollen', (maStamm.rollen ?? []).map((r) => ROLLEN_LABELS[r] ?? r).join(', ') || '—'],
-            ['Stundenlohn Austragen / Sonstige', `${zahl(satzAustr, 2)} €/h — ${lohnHerkunft(ma, geburtsdatumAbgeleitet)}`],
+            ['Stundenlohn Austragen / Sonstige', `${zahl(satzAustr, 2)} €/h — ${stundenlohnHerkunft(ma, geburtsdatumAbgeleitet)}`],
             ['Stundenlohn Zusammentragen / Vorarbeit', `${zahl(satzZus, 2)} €/h`],
             ['Austragen abgerechnet nach', params.austragenNachIstZeit ? 'Ist-Zeit (Stempeluhr)' : 'Soll-Zeit (Teilgebiet)'],
             ['Zusammentragen abgerechnet nach', params.zusammentragenNachIstZeit ? 'Ist-Zeit (Stempeluhr)' : 'Soll-Zeit (Stapel/Stückzahl)'],

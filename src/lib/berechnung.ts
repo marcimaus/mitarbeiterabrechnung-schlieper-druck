@@ -175,6 +175,20 @@ export function ermittleStundenlohnZusammen(
     : params.stundenlohnErwachseneZusammen;
 }
 
+/** Woher der Stundenlohn des MA kommt — Klartext für Aufschlüsselungen. */
+export function stundenlohnHerkunft(ma: Mitarbeiter, geburtsdatumAbgeleitet = false): string {
+  if (ma.stundenlohnIndividuell !== undefined) return 'individueller Stundenlohn laut Stammdaten';
+  if (!ma.geburtsdatum?.trim()) return 'kein Geburtsdatum hinterlegt → Erwachsenen-Satz';
+  const alter = berechneAlter(ma.geburtsdatum);
+  const quelle = geburtsdatumAbgeleitet ? ', Alter aus Interessenten-Angabe' : '';
+  if (istMinderjährig(ma.geburtsdatum)) {
+    return ma.abrechnungAlsErwachseneMiLoG
+      ? `minderjährig (${alter} J.${quelle}), Abrechnung als Erwachsener (MiLoG)`
+      : `minderjährig (${alter} J.${quelle})`;
+  }
+  return `erwachsen (${alter} J.${quelle})`;
+}
+
 // ---- Austräger-Lohn je Einsatz ----------------------------
 
 export interface AustraegerLohnDetail {

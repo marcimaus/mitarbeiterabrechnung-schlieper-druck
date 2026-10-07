@@ -7,6 +7,7 @@ import { ladePeriodeData, berechneAbrechnung, eur, stdMin, zeitLohnAufteilung } 
 import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
 import { berechneNettoMinuten } from '../lib/zeiterfassung';
 import { exportiereAbrechnung, exportiereLohnuebermittlung } from '../lib/exportXlsx';
+import { offeneAbmeldungen, periodenEndeIso as periodenEndeIsoVon } from '../lib/abmeldungen';
 import {
   schliessePeriodeAb,
   oeffnePeriodeWieder,
@@ -618,17 +619,8 @@ function AbrechnungInhalt() {
       // 1) Alle MA in der Abmelde-Liste dieser Periode auf abgemeldet=true
       //    + isActive=false (deaktiviert) setzen. Vor dem Snapshot, damit
       //    der MA-Status im Snapshot stimmt.
-      const ersetzteIds = new Set<string>();
-      for (const m of mitarbeiter) {
-        if (m.ersetztMitarbeiterId) ersetzteIds.add(m.ersetztMitarbeiterId);
-      }
       const heuteIso = new Date().toISOString().slice(0, 10);
-      const abzumelden = mitarbeiter.filter(
-        (m) =>
-          !m.abgemeldet &&
-          !m.vorlaeufigNichtAbmelden &&
-          (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === selectedPeriode.id)
-      );
+      const abzumelden = offeneAbmeldungen(selectedPeriode, mitarbeiter);
 
       // Hinweis: MAs, die noch Standardausträger eines Teilgebiets sind
       const tgsMitOffenemAustraeger = abzumelden
@@ -4056,13 +4048,7 @@ function AnAbmeldungenListe({
   }
 
   // Periodenende: letzter Tag des Monats (ISO-Date YYYY-MM-DD).
-  const periodenEndeIso = (() => {
-    const last = new Date(periode.jahr, periode.monat, 0); // monat ist 1..12, day=0 → letzter Tag des Vormonats = letzter Tag von periode.monat
-    const yyyy = last.getFullYear();
-    const mm = (last.getMonth() + 1).toString().padStart(2, '0');
-    const dd = last.getDate().toString().padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  })();
+  const periodenEndeIso = periodenEndeIsoVon(periode);
   function effektivesAbmeldedatum(m: Mitarbeiter): string {
     return m.abmeldungUebermittlungDatum ?? periodenEndeIso;
   }
@@ -4074,14 +4060,7 @@ function AnAbmeldungenListe({
   for (const m of mitarbeiter) {
     if (m.ersetztMitarbeiterId) ersetzteIds.add(m.ersetztMitarbeiterId);
   }
-  const abmeldungen = mitarbeiter
-    .filter(
-      (m) =>
-        !m.abgemeldet &&
-        !m.vorlaeufigNichtAbmelden &&
-        (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === periode.id)
-    )
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const abmeldungen = offeneAbmeldungen(periode, mitarbeiter);
 
   // Vorschläge: aktive MA ohne Betrag in dieser Abrechnung — Kandidaten für
   // Abmeldung. Ausschluss: Festgehalt, Geschäftsführer, bereits abgemeldet,
