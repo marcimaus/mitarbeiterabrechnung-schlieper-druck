@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import {
   ladeAktiveSessionFuerMitarbeiter,
@@ -25,7 +25,7 @@ function tätigkeitenFuerRollen(rollen: Rolle[]): ArbeitszeitsTyp[] {
 
 export default function NfcLandingScreen() {
   const [params] = useSearchParams();
-  const { mitarbeiter } = useApp();
+  const { mitarbeiter, userRole } = useApp();
   const mitarbeiterId = params.get('ma') ?? '';
 
   const ma = mitarbeiter.find((m) => m.id === mitarbeiterId);
@@ -400,6 +400,17 @@ export default function NfcLandingScreen() {
               </div>
             )}
           </div>
+          )}
+
+          {/* Einziger Weg in die App: über die PIN-Anmeldung. Ohne Login
+              führt von der Scan-Seite nichts weiter (kein Menü). */}
+          {!userRole && (
+            <Link
+              to="/admin"
+              className="block w-full text-center py-3 bg-white border border-gray-300 text-gray-700 rounded-xl font-medium text-sm hover:bg-gray-50 active:bg-gray-100 transition-colors"
+            >
+              🔒 Anmelden
+            </Link>
           )}
         </div>
       </div>
