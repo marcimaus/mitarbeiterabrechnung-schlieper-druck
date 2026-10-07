@@ -10,9 +10,10 @@ import type {
   Parameter,
   VariablerPeriodenZusatz,
   StueckzahlAnpassung,
+  LohnkontoBuchung,
 } from '../types';
 import { memoKategorieLabel, ROLLEN_LABELS } from '../types';
-import { effektiveParameter, effektiveTeilgebiete } from './abrechnungslogik';
+import { effektiveParameter, effektiveTeilgebiete, eur } from './abrechnungslogik';
 import type { MitarbeiterAbrechnung, PeriodeData } from './abrechnungslogik';
 import { formatierDatum, berechneNettoMinuten } from './zeiterfassung';
 import { zeitfensterText } from './vorarbeit';
@@ -50,6 +51,10 @@ export interface AbrechnungExportKontext {
   parameter?: Parameter;
   variablePeriodenZusaetze?: VariablerPeriodenZusatz[];
   stueckzahlAnpassungen?: StueckzahlAnpassung[];
+  /** Alle Lohnkonto-Buchungen (alle Perioden) — für das Blatt „Lohnkonten". */
+  lohnkontoBuchungen?: LohnkontoBuchung[];
+  /** Alle Perioden — zur zeitlichen Einordnung der Lohnkonto-Buchungen. */
+  abrechnungsperioden?: Abrechnungsperiode[];
 }
 
 export async function exportiereAbrechnung(
@@ -434,6 +439,20 @@ export async function exportiereAbrechnung(
   wsVo.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 5 } };
 
   // ====================================================
+  // Blatt 7: Lohnkonten — Salden je MA + Buchungsverlauf
+  // ====================================================
+  if (kontext.lohnkontoBuchungen && kontext.lohnkontoBuchungen.length > 0) {
+    fuegeLohnkontenHinzu(
+      wb,
+      periode,
+      ergebnisse,
+      kontext.lohnkontoBuchungen,
+      kontext.abrechnungsperioden ?? [periode],
+      kontext.alleMitarbeiter ?? ergebnisse.map((e) => e.mitarbeiter),
+    );
+  }
+
+  // ====================================================
   // Kontext-basierte Archiv-Blätter (Stammdaten der Periode)
   // ====================================================
   const { periodeData, alleMitarbeiter, teilgebiete, parameter, stueckzahlAnpassungen } = kontext;
@@ -746,6 +765,185 @@ export async function exportiereAbrechnung(
   a.download = `Abrechnung_${periode.bezeichnung.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ============================================================
+// Lohnkonten — Blätter „Lohnkonten" (Salden je MA) und
+// „Lohnkonto-Buchungen" (Verlauf mit laufendem Saldo)
+// ============================================================
+//
+// Saldo-Logik wie in `berechneAbrechnung`: Verschiebung erhöht das Guthaben
+// des MA, Verrechnung baut es ab; „vor der Periode" zählen alle Buchungen
+// zeitlich früherer Perioden. Gerechnet in Cent, sonst Float-Drift.
+// Es werden ALLE MA mit Buchungen aufgeführt — auch inaktive oder in dieser
+// Periode nicht abgerechnete, damit kein offenes Guthaben untergeht.
+function fuegeLohnkontenHinzu(
+  wb: ExcelJS.Workbook,
+  periode: Abrechnungsperiode,
+  ergebnisse: MitarbeiterAbrechnung[],
+  buchungen: LohnkontoBuchung[],
+  perioden: Abrechnungsperiode[],
+  alleMitarbeiter: Mitarbeiter[],
+): void {
+  const periodeById = new Map(perioden.map((p) => [p.id, p]));
+  periodeById.set(periode.id, periode);
+  const schluessel = (p: Abrechnungsperiode) => p.jahr * 12 + p.monat;
+  const aktuell = schluessel(periode);
+  const cent = (betrag: number) => Math.round(betrag * 100);
+  const wirkung = (b: LohnkontoBuchung) => (b.art === 'verschiebung' ? cent(b.betragEur) : -cent(b.betragEur));
+  /** −1 = frühere Periode, 0 = diese, 1 = spätere, null = Periode unbekannt. */
+  const lage = (b: LohnkontoBuchung): -1 | 0 | 1 | null => {
+    const p = periodeById.get(b.abrechnungsperiodeId);
+    if (!p) return null;
+    return p.id === periode.id ? 0 : schluessel(p) < aktuell ? -1 : 1;
+  };
+  const ergebnisById = new Map(ergebnisse.map((e) => [e.mitarbeiter.id, e]));
+  const maById = new Map(alleMitarbeiter.map((m) => [m.id, m]));
+  for (const e of ergebnisse) if (!maById.has(e.mitarbeiter.id)) maById.set(e.mitarbeiter.id, e.mitarbeiter);
+
+  const jeMa = new Map<string, LohnkontoBuchung[]>();
+  for (const b of buchungen) jeMa.set(b.mitarbeiterId, [...(jeMa.get(b.mitarbeiterId) ?? []), b]);
+  const maIds = [...jeMa.keys()].sort((a, b) =>
+    (maById.get(a)?.nummer ?? a).localeCompare(maById.get(b)?.nummer ?? b, 'de', { numeric: true }),
+  );
+  const chronologisch = (a: LohnkontoBuchung, b: LohnkontoBuchung) => {
+    const pa = periodeById.get(a.abrechnungsperiodeId);
+    const pb = periodeById.get(b.abrechnungsperiodeId);
+    if (pa && pb && schluessel(pa) !== schluessel(pb)) return schluessel(pa) - schluessel(pb);
+    if (pa && !pb) return -1;
+    if (!pa && pb) return 1;
+    return a.erstelltAm - b.erstelltAm;
+  };
+
+  // ---- Blatt „Lohnkonten": Salden je MA ----
+  const ws = wb.addWorksheet('Lohnkonten');
+  ws.columns = [
+    { width: 10 }, { width: 28 }, { width: 14 }, { width: 14 }, { width: 14 },
+    { width: 14 }, { width: 14 }, { width: 14 }, { width: 48 },
+  ];
+  ws.getCell('A1').value = `Lohnkonten — ${periode.bezeichnung}`;
+  ws.getCell('A1').font = { bold: true, size: 14 };
+  ws.getCell('A2').value =
+    'Verschiebung: Betrag wird in dieser Periode nicht ausgezahlt, sondern dem Lohnkonto gutgeschrieben (Bruttolohn an Lohnbüro sinkt). ' +
+    'Verrechnung: Guthaben wird ausgezahlt (Bruttolohn an Lohnbüro steigt). Saldo > 0 = Guthaben des Mitarbeiters. ' +
+    'Lohnkonto-Buchungen selbst werden nicht an das Lohnbüro übermittelt. Einzelbuchungen: Blatt „Lohnkonto-Buchungen".';
+  ws.getCell('A2').font = { italic: true, size: 9, color: { argb: 'FF6B7280' } };
+  ws.mergeCells('A2:I2');
+  ws.getRow(2).alignment = { wrapText: true, vertical: 'top' };
+  ws.getRow(2).height = 40;
+  const kopf = 4;
+  ws.getRow(kopf).values = [
+    'Nr.', 'Name', 'Saldo vor Periode (€)', 'Verschiebung Periode (€)', 'Verrechnung Periode (€)',
+    'Saldo nach Periode (€)', 'Buchungen spätere Perioden (€)', 'Saldo aktuell (€)', 'Hinweis',
+  ];
+  styleHeaderRow(ws, kopf, 9);
+  ws.getRow(kopf).alignment = { wrapText: true, vertical: 'middle' };
+  ws.getRow(kopf).height = 32;
+
+  const summe = { vor: 0, versch: 0, verr: 0, nach: 0, spaeter: 0, aktuell: 0 };
+  let r = kopf + 1;
+  for (const maId of maIds) {
+    const liste = jeMa.get(maId)!;
+    const ma = maById.get(maId);
+    let vor = 0, versch = 0, verr = 0, spaeter = 0, unbekannt = 0;
+    for (const b of liste) {
+      const l = lage(b);
+      if (l === -1) vor += wirkung(b);
+      else if (l === 0) {
+        if (b.art === 'verschiebung') versch += cent(b.betragEur);
+        else verr += cent(b.betragEur);
+      } else if (l === 1) spaeter += wirkung(b);
+      else unbekannt += wirkung(b);
+    }
+    const nach = vor + versch - verr;
+    const aktuellSaldo = nach + spaeter + unbekannt;
+    const hinweise: string[] = [];
+    if (!ma) hinweise.push('Mitarbeiter nicht mehr vorhanden');
+    else if (!ma.isActive || ma.abgemeldet) hinweise.push('inaktiv/abgemeldet');
+    const er = ergebnisById.get(maId);
+    if (!er && nach !== 0) hinweise.push('nicht in dieser Abrechnung enthalten');
+    if (er && cent(er.lohnkontoSaldoNachPeriode) !== nach) {
+      hinweise.push(`Abrechnung rechnete mit Saldo ${eur(er.lohnkontoSaldoNachPeriode)} — Buchungen seitdem geändert`);
+    }
+    if (unbekannt !== 0) hinweise.push(`${eur(unbekannt / 100)} aus Buchungen ohne bekannte Periode (nur im aktuellen Saldo)`);
+    if (aktuellSaldo < 0) hinweise.push('negativer Saldo — mehr verrechnet als zurückgelegt');
+
+    const row = ws.getRow(r);
+    row.values = [
+      ma?.nummer ?? '', ma?.name ?? maId,
+      vor / 100, versch / 100, verr / 100, nach / 100, spaeter / 100, aktuellSaldo / 100,
+      hinweise.join('; '),
+    ];
+    for (let c = 3; c <= 8; c++) {
+      row.getCell(c).numFmt = EUR_FMT;
+      row.getCell(c).alignment = { horizontal: 'right' };
+    }
+    row.getCell(6).font = { bold: true };
+    row.getCell(9).alignment = { wrapText: true, vertical: 'top' };
+    if (hinweise.length) row.getCell(9).font = { color: { argb: 'FFB45309' } };
+    summe.vor += vor; summe.versch += versch; summe.verr += verr;
+    summe.nach += nach; summe.spaeter += spaeter; summe.aktuell += aktuellSaldo;
+    r++;
+  }
+  const sr = ws.getRow(r);
+  sr.values = ['', 'Σ Gesamt', summe.vor / 100, summe.versch / 100, summe.verr / 100, summe.nach / 100, summe.spaeter / 100, summe.aktuell / 100];
+  for (let c = 1; c <= 9; c++) {
+    sr.getCell(c).font = { bold: true };
+    sr.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
+    sr.getCell(c).border = { top: { style: 'medium', color: { argb: 'FF1D4ED8' } } };
+  }
+  for (let c = 3; c <= 8; c++) {
+    sr.getCell(c).numFmt = EUR_FMT;
+    sr.getCell(c).alignment = { horizontal: 'right' };
+  }
+  ws.views = [{ state: 'frozen', ySplit: kopf, xSplit: 2 }];
+  ws.autoFilter = { from: { row: kopf, column: 1 }, to: { row: kopf, column: 9 } };
+
+  // ---- Blatt „Lohnkonto-Buchungen": Verlauf je MA mit laufendem Saldo ----
+  const wsB = wb.addWorksheet('Lohnkonto-Buchungen');
+  wsB.columns = [
+    { header: 'Nr.', width: 10 },
+    { header: 'Name', width: 28 },
+    { header: 'Periode', width: 16 },
+    { header: 'Bezug', width: 16 },
+    { header: 'Verschiebung (€)', width: 15 },
+    { header: 'Verrechnung (€)', width: 15 },
+    { header: 'Saldo nach Buchung (€)', width: 15 },
+    { header: 'Gebucht am', width: 12 },
+    { header: 'Kommentar', width: 48 },
+  ];
+  styleHeaderRow(wsB, 1, 9);
+  wsB.getRow(1).alignment = { wrapText: true, vertical: 'middle' };
+  wsB.getRow(1).height = 32;
+  const bezugText = { [-1]: 'frühere Periode', 0: 'diese Periode', 1: 'spätere Periode' } as const;
+  for (const maId of maIds) {
+    const ma = maById.get(maId);
+    let saldo = 0;
+    for (const b of [...jeMa.get(maId)!].sort(chronologisch)) {
+      saldo += wirkung(b);
+      const l = lage(b);
+      const row = wsB.addRow([
+        ma?.nummer ?? '',
+        ma?.name ?? maId,
+        periodeById.get(b.abrechnungsperiodeId)?.bezeichnung ?? '— unbekannt —',
+        l === null ? 'unbekannt' : bezugText[l],
+        b.art === 'verschiebung' ? b.betragEur : null,
+        b.art === 'verrechnung' ? b.betragEur : null,
+        saldo / 100,
+        new Date(b.erstelltAm).toLocaleDateString('de-DE'),
+        b.kommentar ?? '',
+      ]);
+      for (const c of [5, 6, 7]) {
+        row.getCell(c).numFmt = EUR_FMT;
+        row.getCell(c).alignment = { horizontal: 'right' };
+      }
+      row.getCell(9).alignment = { wrapText: true, vertical: 'top' };
+      if (l === 0) row.eachCell((cell) => (cell.font = { bold: true }));
+      if (l === 1) row.eachCell((cell) => (cell.font = { italic: true, color: { argb: 'FF9CA3AF' } }));
+    }
+  }
+  wsB.views = [{ state: 'frozen', ySplit: 1, xSplit: 2 }];
+  wsB.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
 }
 
 // ============================================================

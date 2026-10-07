@@ -454,10 +454,16 @@ function AbrechnungInhalt() {
     try {
       // Vollständiges Perioden-Archiv: alle Bewegungs- und Stammdaten laden,
       // damit der Export ohne erneutes Öffnen der Periode auskunftsfähig ist.
-      const periodeData = await ladePeriodeData(selectedPeriode).catch((err) => {
-        console.error('Periodendaten für Archiv-Export nicht ladbar:', err);
-        return undefined;
-      });
+      const [periodeData, lohnkontoBuchungen] = await Promise.all([
+        ladePeriodeData(selectedPeriode).catch((err) => {
+          console.error('Periodendaten für Archiv-Export nicht ladbar:', err);
+          return undefined;
+        }),
+        ladeLohnkontoBuchungen().catch((err) => {
+          console.error('Lohnkonto-Buchungen für Archiv-Export nicht ladbar:', err);
+          return undefined;
+        }),
+      ]);
       await exportiereAbrechnung(selectedPeriode, ergebnisse, {
         periodeData,
         alleMitarbeiter: mitarbeiter,
@@ -465,6 +471,8 @@ function AbrechnungInhalt() {
         parameter: params ?? undefined,
         variablePeriodenZusaetze,
         stueckzahlAnpassungen,
+        lohnkontoBuchungen,
+        abrechnungsperioden,
       });
     } catch (e: any) {
       alert('Export fehlgeschlagen: ' + (e.message ?? e));
