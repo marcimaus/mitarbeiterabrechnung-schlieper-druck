@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, type FormEvent, type ReactElement } from '
 import ExcelJS from 'exceljs';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
+import Modal from '../components/Modal';
 import LohnkontoVerlauf from '../components/LohnkontoVerlauf';
 import { ladePeriodeData, berechneAbrechnung, eur, stdMin, zeitLohnAufteilung } from '../lib/abrechnungslogik';
 import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
@@ -23,6 +24,11 @@ import {
   ladeLohnkontoBuchungen,
   ladeExterneAbrechnungswerte,
   setzeExterneAbrechnungswert,
+  ladeSonderzahlungen,
+  setzeSonderzahlung,
+  loescheSonderzahlung,
+  sonderzahlungVorlagenListener,
+  speichereSonderzahlungVorlagen,
   schreibeMonatswechselSnapshot,
   verwerfeMonatswechselSnapshot,
   aktualisiereMitarbeiter,
@@ -38,6 +44,7 @@ import {
   schreibeAuditLog,
 } from '../lib/db';
 import { sichereTeilgebietsdokuAktuell } from '../lib/teilgebietsdoku';
+import { merkeVerteilplanOnlineAenderung, verteilplanRelevanteAenderung } from '../lib/verteilplanOnline';
 import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse';
 import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
 import { getISOWeek } from '../lib/kalender';
@@ -395,10 +402,14 @@ function AbrechnungInhalt() {
     }
 
     try {
-      const [data, lohnkontoFresh, externeFresh] = await Promise.all([
+      // Sonderzahlungen frisch laden (nicht aus einem Listener) — nach dem
+      // Speichern im Detail wird direkt neu berechnet, ein Listener-Stand
+      // könnte da noch veraltet sein.
+      const [data, lohnkontoFresh, externeFresh, sonderzahlungenFresh] = await Promise.all([
         ladePeriodeData(selectedPeriode),
         ladeLohnkontoBuchungen(),
         ladeExterneAbrechnungswerte(selectedPeriode.id),
+        ladeSonderzahlungen(selectedPeriode.id),
       ]);
       setVorarbeitOhneFreigabe(ermittleVorarbeitOhneFreigabe(data, mitarbeiter));
       const result = berechneAbrechnung(
@@ -410,7 +421,8 @@ function AbrechnungInhalt() {
         variablePeriodenZusaetze,
         abrechnungsperioden,
         lohnkontoFresh,
-        externeFresh
+        externeFresh,
+        sonderzahlungenFresh
       );
       setErgebnisse(result);
     } catch (e: any) {
@@ -1789,6 +1801,7 @@ function AbrechnungInhalt() {
                   <th className="px-4 py-3 text-right font-medium text-teal-700 sticky top-0 z-20 bg-gray-50" title="Betrag aus der externen Anwendung (Summe Austragen + Zusammentragen + Vorarbeit). Ist ein Wert gesetzt, ersetzt er diese App-Positionen in Brutto / An Lohnbüro / Lohnübermittlung.">Wert externe<br />Anwendung</th>
                   <th className="px-4 py-3 text-right font-medium text-purple-700 sticky top-0 z-20 bg-gray-50" title="Tätigkeits-Boni in Minuten je Ausgabe (z. B. Orga, Betreuung Zusammenträger)">Min-Boni</th>
                   <th className="px-4 py-3 text-right font-medium text-emerald-700 sticky top-0 z-20 bg-gray-50" title="Bonus Zeiterfassung Austragen — pauschal je vollständig online erfasstem Einsatz">Bonus Zeit</th>
+                  <th className="px-4 py-3 text-right font-medium text-fuchsia-700 sticky top-0 z-20 bg-gray-50" title="Einmalige Sonderzahlung (z. B. Jahresbonus) — im Detail des Mitarbeiters erfassen">Sonder&shy;zahlung</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Fix</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50">Fahrtkosten</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-600 sticky top-0 z-20 bg-gray-50" title="Erbrachte Leistung in dieser Periode (vor Lohnkonto-Bewegung)">Brutto</th>
@@ -1956,6 +1969,15 @@ function AbrechnungInhalt() {
                       >
                         {er.bonusZeiterfassungEur > 0 ? eur(er.bonusZeiterfassungEur) : '—'}
                       </td>
+                      <td
+                        className="px-4 py-3 text-right text-fuchsia-700"
+                        title={[
+                          er.sonderzahlungAnmerkungLohnbuero && `Lohnbüro: ${er.sonderzahlungAnmerkungLohnbuero}`,
+                          er.sonderzahlungAnmerkungIntern && `Intern: ${er.sonderzahlungAnmerkungIntern}`,
+                        ].filter(Boolean).join(' · ')}
+                      >
+                        {(er.sonderzahlung ?? 0) !== 0 ? eur(er.sonderzahlung ?? 0) : '—'}
+                      </td>
                       <td className="px-4 py-3 text-right text-gray-700">
                         {er.fixesGehalt > 0 ? eur(er.fixesGehalt) : '—'}
                       </td>
@@ -2018,7 +2040,7 @@ function AbrechnungInhalt() {
                     {/* Detail-Aufklappung */}
                     {expandedId === er.mitarbeiter.id && (
                       <tr key={`${er.mitarbeiter.id}-detail`}>
-                        <td colSpan={15 + (zeigeGewichtsspalten ? 2 : 0) + (zeigeZeitspalten ? 2 : 0)} className="bg-gray-50 px-6 py-4">
+                        <td colSpan={16 + (zeigeGewichtsspalten ? 2 : 0) + (zeigeZeitspalten ? 2 : 0)} className="bg-gray-50 px-6 py-4">
                           <DetailAnsicht
                             ergebnis={er}
                             periode={selectedPeriode}
@@ -2081,6 +2103,9 @@ function AbrechnungInhalt() {
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-emerald-700">
                     {eur(ergebnisse.reduce((s, e) => s + (e.bonusZeiterfassungEur ?? 0), 0))}
+                  </td>
+                  <td className="px-4 py-3 text-right font-bold text-fuchsia-700">
+                    {eur(ergebnisse.reduce((s, e) => s + (e.sonderzahlung ?? 0), 0))}
                   </td>
                   <td className="px-4 py-3 text-right font-bold text-gray-900">
                     {eur(ergebnisse.reduce((s, e) => s + e.fixesGehalt, 0))}
@@ -2503,8 +2528,11 @@ function StueckzahlAnpassungDialog({
   adminName: string;
   onClose: () => void;
 }) {
+  const { touren } = useApp();
   const tgMap = new Map(teilgebiete.map((t) => [t.id, t]));
   const [busyId, setBusyId] = useState<string | null>(null);
+  /** Übernommene Mengenänderungen, die den Verteilplan online veralten lassen. */
+  const [verteilplanAenderungen, setVerteilplanAenderungen] = useState<string[]>([]);
 
   const offen = [...anpassungen].sort((a, b) => {
     const na = tgMap.get(a.teilgebietId)?.name ?? '';
@@ -2547,6 +2575,19 @@ function StueckzahlAnpassungDialog({
         stueckzahlManuell: true,
       });
       await loescheStueckzahlAnpassung(w.id);
+      const verteilplanAenderung = verteilplanRelevanteAenderung(
+        tg,
+        { ...tg, stueckzahl: w.neueStueckzahl },
+        touren,
+      );
+      if (verteilplanAenderung) {
+        try {
+          await merkeVerteilplanOnlineAenderung(verteilplanAenderung);
+        } catch (err) {
+          console.error('Hinweis „Verteilplan online" konnte nicht gespeichert werden:', err);
+        }
+        setVerteilplanAenderungen((prev) => [...prev, verteilplanAenderung]);
+      }
       await schreibeAuditLog({
         adminName: adminName || 'Unbekannt',
         bereich: 'teilgebiets-anpassung',
@@ -2591,6 +2632,15 @@ function StueckzahlAnpassungDialog({
             des Teilgebiets eingetragen (mit manuellem Override-Flag), der
             Eintrag verschwindet anschließend aus der Vorbereitungsliste.
           </p>
+          {verteilplanAenderungen.length > 0 && (
+            <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <div className="font-semibold">🌐 Bitte „Verteilplan online" aktualisieren</div>
+              <div className="mt-0.5">
+                Geänderte Stückzahl{verteilplanAenderungen.length === 1 ? '' : 'en'}: {verteilplanAenderungen.join(' · ')}.
+                Unter „Verteilplan &amp; Bestellungen" das „📄 PDF blanko" neu erzeugen und auf der Webseite austauschen.
+              </div>
+            </div>
+          )}
         </div>
         <div className="overflow-y-auto flex-1">
           {offen.length === 0 ? (
@@ -2699,7 +2749,7 @@ function DetailAnsicht({
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
       {istGesperrt && (
         <div className="md:col-span-2 rounded border border-gray-300 bg-gray-50 px-3 py-2 text-xs text-gray-600">
-          🔒 Periode ist abgeschlossen — Boni, Vorschüsse und Lohnkonto-Buchungen
+          🔒 Periode ist abgeschlossen — Boni, Sonderzahlung, Vorschüsse und Lohnkonto-Buchungen
           können nicht geändert werden. Zum Bearbeiten zuerst „Entsperren" klicken.
         </div>
       )}
@@ -2711,6 +2761,16 @@ function DetailAnsicht({
           bonus={er.bonus}
           bonusKommentar={er.bonusKommentar}
           bonusId={er.bonusId}
+          onChange={onVorschussChange ?? (() => {})}
+          istGesperrt={istGesperrt}
+        />
+      )}
+      {/* Einmalige Sonderzahlung */}
+      {periode && (
+        <SonderzahlungEditor
+          mitarbeiterId={er.mitarbeiter.id}
+          periodeId={periode.id}
+          ergebnis={er}
           onChange={onVorschussChange ?? (() => {})}
           istGesperrt={istGesperrt}
         />
@@ -3447,6 +3507,364 @@ function BonusEditor({
         </form>
       )}
     </div>
+  );
+}
+
+// ---- Einmalige Sonderzahlung Editor ----------------------------
+//
+// Ein Betrag je MA und Periode mit zwei optionalen Texten:
+//   - „Anmerkung Lohnbüro" (aus Textvorlagen wählbar) → Lohnübermittlung
+//   - „Anmerkung intern" → nur im Excel-Export
+
+function SonderzahlungEditor({
+  mitarbeiterId,
+  periodeId,
+  ergebnis: er,
+  onChange,
+  istGesperrt,
+}: {
+  mitarbeiterId: string;
+  periodeId: string;
+  ergebnis: MitarbeiterAbrechnung;
+  onChange: () => void;
+  istGesperrt?: boolean;
+}) {
+  const { userRole } = useApp();
+  const isAdmin = userRole === 'admin' && !istGesperrt;
+  const betragAktuell = er.sonderzahlung ?? 0;
+  const [edit, setEdit] = useState(false);
+  const [betrag, setBetrag] = useState('');
+  const [anmerkungLohnbuero, setAnmerkungLohnbuero] = useState('');
+  const [anmerkungIntern, setAnmerkungIntern] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [vorlagen, setVorlagen] = useState<string[]>([]);
+  const [vorlagenVerwalten, setVorlagenVerwalten] = useState(false);
+  useEffect(() => sonderzahlungVorlagenListener(setVorlagen), []);
+
+  const vorlagenSortiert = [...vorlagen].sort((a, b) => a.localeCompare(b, 'de'));
+  const textIstVorlage = vorlagen.some((v) => v.trim() === anmerkungLohnbuero.trim());
+
+  function oeffnen() {
+    setBetrag(betragAktuell ? betragAktuell.toString() : '');
+    setAnmerkungLohnbuero(er.sonderzahlungAnmerkungLohnbuero ?? '');
+    setAnmerkungIntern(er.sonderzahlungAnmerkungIntern ?? '');
+    setEdit(true);
+  }
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    const betragEur = parseFloat(betrag.replace(',', '.'));
+    if (isNaN(betragEur) || betragEur <= 0) {
+      alert('Bitte einen Betrag größer 0 eingeben.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await setzeSonderzahlung({
+        abrechnungsperiodeId: periodeId,
+        mitarbeiterId,
+        betragEur,
+        anmerkungLohnbuero,
+        anmerkungIntern,
+      });
+      setEdit(false);
+      onChange();
+    } catch (err) {
+      alert('Speichern fehlgeschlagen: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleLoeschen() {
+    if (!er.sonderzahlungId) return;
+    if (!confirm('Sonderzahlung wirklich löschen?')) return;
+    await loescheSonderzahlung(er.sonderzahlungId);
+    setEdit(false);
+    onChange();
+  }
+
+  async function alsVorlageSpeichern() {
+    const text = anmerkungLohnbuero.trim();
+    if (!text || textIstVorlage) return;
+    try {
+      await speichereSonderzahlungVorlagen([...vorlagen, text]);
+    } catch (err) {
+      alert('Vorlage konnte nicht gespeichert werden: ' + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
+  return (
+    <div className="md:col-span-2">
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="font-semibold text-gray-700 text-sm">
+          Einmalige Sonderzahlung
+          {betragAktuell !== 0 && (
+            <span className="ml-2 font-normal text-fuchsia-700">— {eur(betragAktuell)}</span>
+          )}
+        </h4>
+        {isAdmin && !edit && (
+          <button onClick={oeffnen} className="text-xs text-blue-600 hover:text-blue-800 underline">
+            {er.sonderzahlungId ? 'Bearbeiten' : '+ Sonderzahlung erfassen'}
+          </button>
+        )}
+      </div>
+
+      {!edit && betragAktuell !== 0 && (
+        <div className="bg-white rounded border border-fuchsia-100 px-3 py-1.5 space-y-0.5">
+          <div>
+            <span className="text-gray-500">Anmerkung Lohnbüro:</span>{' '}
+            {er.sonderzahlungAnmerkungLohnbuero || <span className="text-gray-300">—</span>}
+          </div>
+          <div>
+            <span className="text-gray-500">Anmerkung intern:</span>{' '}
+            {er.sonderzahlungAnmerkungIntern || <span className="text-gray-300">—</span>}
+          </div>
+        </div>
+      )}
+
+      {edit && (
+        <form onSubmit={handleSave} className="bg-white rounded border border-blue-200 p-3 mb-2 space-y-3">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Betrag (€) *</label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={betrag}
+                onChange={(e) => setBetrag(e.target.value)}
+                placeholder="z.B. 250.00"
+                className="border border-gray-300 rounded px-2 py-1 text-xs w-28 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                autoFocus
+              />
+            </div>
+            <div className="flex-1 min-w-[16rem]">
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Anmerkung Lohnbüro <span className="font-normal text-gray-400">(erscheint in der Lohnübermittlung)</span>
+              </label>
+              <div className="flex gap-1.5">
+                <select
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) setAnmerkungLohnbuero(e.target.value);
+                  }}
+                  className="border border-gray-300 rounded px-1.5 py-1 text-xs bg-white max-w-[10rem]"
+                  title="Textvorlage übernehmen"
+                >
+                  <option value="">Vorlage…</option>
+                  {vorlagenSortiert.map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={anmerkungLohnbuero}
+                  onChange={(e) => setAnmerkungLohnbuero(e.target.value)}
+                  placeholder="z.B. Jahresbonus"
+                  className="flex-1 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div className="mt-1 flex gap-3 text-[11px]">
+                {anmerkungLohnbuero.trim() && !textIstVorlage && (
+                  <button type="button" onClick={alsVorlageSpeichern} className="text-blue-600 hover:text-blue-800 underline">
+                    ☆ Als Vorlage speichern
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setVorlagenVerwalten(true)}
+                  className="text-gray-500 hover:text-gray-700 underline"
+                >
+                  ⚙ Vorlagen verwalten
+                </button>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Anmerkung intern <span className="font-normal text-gray-400">(nur im Excel-Export, nicht ans Lohnbüro)</span>
+            </label>
+            <input
+              type="text"
+              value={anmerkungIntern}
+              onChange={(e) => setAnmerkungIntern(e.target.value)}
+              placeholder="Optional"
+              className="w-full border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={saving || betrag === ''}
+              className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {saving ? '...' : 'Speichern'}
+            </button>
+            {er.sonderzahlungId && (
+              <button
+                type="button"
+                onClick={handleLoeschen}
+                className="text-xs text-red-500 hover:text-red-700 px-2 py-1"
+              >
+                Löschen
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setEdit(false)}
+              className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
+            >
+              Abbrechen
+            </button>
+          </div>
+        </form>
+      )}
+
+      <SonderzahlungVorlagenModal
+        isOpen={vorlagenVerwalten}
+        onClose={() => setVorlagenVerwalten(false)}
+        vorlagen={vorlagen}
+      />
+    </div>
+  );
+}
+
+/** Textvorlagen für die „Anmerkung Lohnbüro" anlegen, umbenennen, löschen. */
+function SonderzahlungVorlagenModal({
+  isOpen,
+  onClose,
+  vorlagen,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  vorlagen: string[];
+}) {
+  const [neu, setNeu] = useState('');
+  const [editIdx, setEditIdx] = useState<number | null>(null);
+  const [editText, setEditText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const sortiert = vorlagen
+    .map((text, idx) => ({ text, idx }))
+    .sort((a, b) => a.text.localeCompare(b.text, 'de'));
+
+  const vergeben = (text: string, ausserIdx?: number) =>
+    vorlagen.some((v, i) => i !== ausserIdx && v.trim().toLowerCase() === text.trim().toLowerCase());
+
+  async function speichern(liste: string[]): Promise<boolean> {
+    setSaving(true);
+    try {
+      await speichereSonderzahlungVorlagen(liste);
+      return true;
+    } catch (e) {
+      alert('Speichern fehlgeschlagen: ' + (e instanceof Error ? e.message : String(e)));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function hinzufuegen() {
+    const text = neu.trim();
+    if (!text) return;
+    if (vergeben(text)) {
+      alert(`Die Vorlage „${text}" gibt es bereits.`);
+      return;
+    }
+    if (await speichern([...vorlagen, text])) setNeu('');
+  }
+
+  async function umbenennen(idx: number) {
+    const text = editText.trim();
+    if (!text) return;
+    if (vergeben(text, idx)) {
+      alert(`Die Vorlage „${text}" gibt es bereits.`);
+      return;
+    }
+    if (await speichern(vorlagen.map((v, i) => (i === idx ? text : v)))) setEditIdx(null);
+  }
+
+  async function loeschen(idx: number) {
+    if (!confirm(`Vorlage „${vorlagen[idx]}" löschen? Bereits erfasste Sonderzahlungen behalten ihren Text.`)) return;
+    await speichern(vorlagen.filter((_, i) => i !== idx));
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Textvorlagen „Anmerkung Lohnbüro“" size="md">
+      <div className="space-y-4 text-sm">
+        {sortiert.length === 0 ? (
+          <div className="text-gray-400">Noch keine Vorlagen angelegt.</div>
+        ) : (
+          <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
+            {sortiert.map(({ text, idx }) => (
+              <li key={`${idx}-${text}`} className="flex items-center gap-2 px-3 py-1.5">
+                {editIdx === idx ? (
+                  <>
+                    <input
+                      type="text"
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') umbenennen(idx); }}
+                      autoFocus
+                      className="flex-1 border border-gray-300 rounded px-2 py-1 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => umbenennen(idx)}
+                      disabled={saving || !editText.trim()}
+                      className="text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-2 py-1 rounded"
+                    >
+                      OK
+                    </button>
+                    <button type="button" onClick={() => setEditIdx(null)} className="text-xs text-gray-500 hover:text-gray-700">
+                      Abbrechen
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <span className="flex-1">{text}</span>
+                    <button
+                      type="button"
+                      onClick={() => { setEditIdx(idx); setEditText(text); }}
+                      className="text-xs text-blue-600 hover:text-blue-800"
+                    >
+                      Umbenennen
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => loeschen(idx)}
+                      disabled={saving}
+                      className="text-xs text-red-500 hover:text-red-700"
+                    >
+                      Löschen
+                    </button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={neu}
+            onChange={(e) => setNeu(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); hinzufuegen(); } }}
+            placeholder="Neue Vorlage, z. B. Jahresbonus"
+            className="flex-1 border border-gray-300 rounded px-2 py-1.5 text-sm"
+          />
+          <button
+            type="button"
+            onClick={hinzufuegen}
+            disabled={saving || !neu.trim()}
+            className="text-sm bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white px-3 py-1.5 rounded"
+          >
+            + Hinzufügen
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

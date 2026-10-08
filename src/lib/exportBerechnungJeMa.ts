@@ -435,7 +435,7 @@ function schreibeMitarbeiter(s: Schreiber, er: MitarbeiterAbrechnung, k: Berechn
   s.zeile({ a: 'Berechnungsgrundlagen', stil: 'abschnitt' });
   s.zeile({ a: 'Rollen', b: (ma.rollen ?? []).map((r) => ROLLEN_LABELS[r] ?? r).join(', ') || '—', ebene: 1 });
   if (ma.hatFestgehalt) {
-    s.zeile({ a: 'Festgehalt', b: 'Monatsbetrag laut Stammdaten — Austragen, Zusammentragen und Stempelzeiten werden nicht zusätzlich vergütet; Fahrtkosten, Min-Boni und Periodenzusatz kommen hinzu', c: er.fixesGehalt, ebene: 1 });
+    s.zeile({ a: 'Festgehalt', b: 'Monatsbetrag laut Stammdaten — Austragen, Zusammentragen und Stempelzeiten werden nicht zusätzlich vergütet; Fahrtkosten, Min-Boni, Periodenzusatz und Sonderzahlung kommen hinzu', c: er.fixesGehalt, ebene: 1 });
   } else {
     s.zeile({ a: 'Stundenlohn Austragen / Sonstige', b: `${satzText(satzAustr)} — ${stundenlohnHerkunft(ma)}`, ebene: 1 });
     s.zeile({ a: 'Stundenlohn Zusammentragen / Vorarbeit', b: satzText(satzZus), ebene: 1 });
@@ -498,6 +498,13 @@ function schreibeMitarbeiter(s: Schreiber, er: MitarbeiterAbrechnung, k: Berechn
   if (er.ausgabenBoniLohnGesamt) position('Min-Boni (Tätigkeitsbonus)', `${er.ausgabenBoniMinutenGesamt} min ÷ 60 × ${satzText(satzAustr)} — Abschnitt „Boni"`, er.ausgabenBoniLohnGesamt);
   if (er.bonusZeiterfassungEur) position('Bonus Zeiterfassung Austragen', `${er.bonusZeiterfassungAnzahl} × ${eur(bonusBetrag)} — Abschnitt „Boni"`, er.bonusZeiterfassungEur);
   if (er.bonus) position('Bonus / Periodenzusatz', er.bonusKommentar || 'ohne Kommentar', er.bonus);
+  if (er.sonderzahlung) {
+    const anmerkungen = [
+      er.sonderzahlungAnmerkungLohnbuero && `Anmerkung Lohnbüro: ${er.sonderzahlungAnmerkungLohnbuero}`,
+      er.sonderzahlungAnmerkungIntern && `Anmerkung intern: ${er.sonderzahlungAnmerkungIntern}`,
+    ].filter(Boolean);
+    position('Einmalige Sonderzahlung', anmerkungen.join(' · ') || 'ohne Anmerkung', er.sonderzahlung);
+  }
   if (er.fahrtkostenGesamt) position('Fahrtkosten', `${zahl(fahrtKm, 1)} km × ${zahl(er.fahrtSatzEurProKm, 2)} €/km — Abschnitt „Fahrtkosten"`, er.fahrtkostenGesamt);
   if (er.externerWertAktiv) {
     const ersetzt = er.externerWertErsetzt ?? 0;
@@ -516,8 +523,11 @@ function schreibeMitarbeiter(s: Schreiber, er: MitarbeiterAbrechnung, k: Berechn
     s.zeile({ a: '+ Lohnkonto: Verrechnung', b: 'früher geschobener Betrag wird ausgezahlt', d: er.lohnkontoVerrechnungPeriode, ebene: 1 });
   }
   s.zeile({ a: '= Bruttolohn an Lohnbüro', b: 'Brutto (errechnet) − Verschiebung + Verrechnung', d: er.bruttoLohnbuero, stil: 'gesamt' });
-  if (er.fahrtkostenGesamt) {
-    s.zeile({ a: 'Brutto (exkl. FaKo)', b: 'Bruttolohn − Fahrtkosten (wie in der Lohnübermittlung)', c: er.bruttoLohnbuero - er.fahrtkostenGesamt, stil: 'unter', ebene: 1 });
+  const sonderzahlung = er.sonderzahlung ?? 0;
+  if (er.fahrtkostenGesamt || sonderzahlung) {
+    s.zeile(sonderzahlung
+      ? { a: 'Brutto (exkl. FaKo und Sonderzahlung)', b: 'Bruttolohn − Fahrtkosten − Sonderzahlung (wie in der Lohnübermittlung)', c: er.bruttoLohnbuero - er.fahrtkostenGesamt - sonderzahlung, stil: 'unter', ebene: 1 }
+      : { a: 'Brutto (exkl. FaKo)', b: 'Bruttolohn − Fahrtkosten (wie in der Lohnübermittlung)', c: er.bruttoLohnbuero - er.fahrtkostenGesamt, stil: 'unter', ebene: 1 });
   }
   if (er.vorschussSumme) {
     s.zeile({ a: 'Vorschüsse', b: 'bereits ausgezahlt — werden bei der Auszahlung verrechnet', c: er.vorschussSumme, stil: 'unter', ebene: 1 });

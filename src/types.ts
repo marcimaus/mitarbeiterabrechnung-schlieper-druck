@@ -1199,6 +1199,20 @@ export interface Parameter {
    * automatisch die komplette Teilgebietsdoku als Excel-Datei gesichert.
    */
   teilgebietsdokuAutoSicherung?: boolean;
+  /**
+   * Offene Erinnerung „Verteilplan online aktualisieren": gesetzt, sobald
+   * sich eine buchbare Stückzahl geändert hat (Teilgebiet bearbeitet oder
+   * Mengenanpassung beim Monatswechsel übernommen). Der Verteilplan auf der
+   * Webseite (PDF blanko) ist dann veraltet. Wird über „Erledigt" geleert.
+   */
+  verteilplanOnlineHinweis?: VerteilplanOnlineHinweis | null;
+}
+
+export interface VerteilplanOnlineHinweis {
+  /** Zeitpunkt der ersten noch nicht online übernommenen Änderung. */
+  seit: number;
+  /** Lesbare Änderungen, z. B. „Uslar1: 1.234 → 1.250 Stk". */
+  aenderungen: string[];
 }
 
 // ---- Lohnkonto -----------------------------------------------
@@ -1314,6 +1328,27 @@ export interface VariablerPeriodenZusatz {
   abrechnungsperiodeId: string;
   betragEur: number;
   kommentar?: string;
+  erstelltAm: number;
+  aktualisiertAm: number;
+}
+
+// ---- Einmalige Sonderzahlung -------------------------------
+//
+// Einmalbetrag je Mitarbeiter und Periode (z. B. Jahresbonus). Fließt in
+// Brutto / An Lohnbüro ein, wird dem Lohnbüro aber gesondert ausgewiesen
+// (einmalige Zahlung ≠ laufender Lohn). Zwei optionale Texte:
+//   - anmerkungLohnbuero: Grund der Zahlung — steht in der Lohnübermittlung
+//   - anmerkungIntern:    nur intern — steht nur im Excel-Export
+//
+// Doc-ID ist deterministisch: `${abrechnungsperiodeId}_${mitarbeiterId}` —
+// genau eine Sonderzahlung je MA und Periode.
+export interface Sonderzahlung {
+  id: string;
+  mitarbeiterId: string;
+  abrechnungsperiodeId: string;
+  betragEur: number;
+  anmerkungLohnbuero?: string;
+  anmerkungIntern?: string;
   erstelltAm: number;
   aktualisiertAm: number;
 }

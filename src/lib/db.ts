@@ -38,6 +38,7 @@ import type {
   AuditLog,
   VariablerPeriodenZusatz,
   ExterneAbrechnungswert,
+  Sonderzahlung,
   AuslieferungsMemo,
   LohnkontoBuchung,
   StueckzahlAnpassung,
@@ -1414,6 +1415,56 @@ export async function loescheExterneAbrechnungswert(
   mitarbeiterId: string
 ): Promise<void> {
   await deleteDoc(doc(db, 'externeAbrechnungswerte', externerWertDocId(periodeId, mitarbeiterId)));
+}
+
+// ---- Einmalige Sonderzahlungen -----------------------------
+// Genau eine je MA und Periode — Doc-ID `${periodeId}_${mitarbeiterId}`.
+
+export async function ladeSonderzahlungen(periodeId: string): Promise<Sonderzahlung[]> {
+  const snap = await getDocs(
+    query(collection(db, 'sonderzahlungen'), where('abrechnungsperiodeId', '==', periodeId))
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Sonderzahlung));
+}
+
+/** Speichert (bzw. ersetzt) die Sonderzahlung eines MA in einer Periode. */
+export async function setzeSonderzahlung(data: {
+  abrechnungsperiodeId: string;
+  mitarbeiterId: string;
+  betragEur: number;
+  anmerkungLohnbuero?: string;
+  anmerkungIntern?: string;
+}): Promise<void> {
+  const ref = doc(db, 'sonderzahlungen', `${data.abrechnungsperiodeId}_${data.mitarbeiterId}`);
+  const ts = now();
+  const snap = await getDoc(ref);
+  await setDoc(ref, {
+    abrechnungsperiodeId: data.abrechnungsperiodeId,
+    mitarbeiterId: data.mitarbeiterId,
+    betragEur: Math.round(data.betragEur * 100) / 100,
+    ...stripUndef({
+      anmerkungLohnbuero: data.anmerkungLohnbuero?.trim() || undefined,
+      anmerkungIntern: data.anmerkungIntern?.trim() || undefined,
+    }),
+    erstelltAm: snap.exists() ? (snap.data().erstelltAm ?? ts) : ts,
+    aktualisiertAm: ts,
+  });
+}
+
+export async function loescheSonderzahlung(id: string): Promise<void> {
+  await deleteDoc(doc(db, 'sonderzahlungen', id));
+}
+
+// Textvorlagen für die „Anmerkung Lohnbüro" (Singleton meta/sonderzahlungVorlagen, Feld `texte`)
+export function sonderzahlungVorlagenListener(cb: (texte: string[]) => void): Unsubscribe {
+  return onSnapshot(doc(db, 'meta', 'sonderzahlungVorlagen'), (snap) => {
+    const data = snap.exists() ? snap.data() : null;
+    cb((data?.texte as string[] | undefined) ?? []);
+  });
+}
+
+export async function speichereSonderzahlungVorlagen(texte: string[]): Promise<void> {
+  await setDoc(doc(db, 'meta', 'sonderzahlungVorlagen'), { texte }, { merge: true });
 }
 
 // ---- Mitarbeiter-Memos (Abrechnungsvorbereitung) ----------

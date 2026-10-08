@@ -3,7 +3,9 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import AenderungsProtokollModal from '../components/AenderungsProtokollModal';
+import VerteilplanOnlineHinweis from '../components/VerteilplanOnlineHinweis';
 import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
+import { merkeVerteilplanOnlineAenderung, verteilplanRelevanteAenderung } from '../lib/verteilplanOnline';
 import { bestaetigeMonatswechselEinmalProSession } from '../utils';
 import {
   erstelleTeilgebiet,
@@ -57,6 +59,15 @@ import { getCurrentKW } from '../lib/kalender';
 // ---- Hilfsfunktionen -------------------------------------------------------
 
 const newId = () => `${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+
+/** Vergleichsschlüssel für die Straßensuche: „Hauptstr." = „Haupt-Straße" = „hauptstrasse". */
+function strassenKey(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/ß/g, 'ss')
+    .replace(/str\./g, 'strasse')
+    .replace(/[\s.-]/g, '');
+}
 
 type TabId = 'grunddaten' | 'strassen' | 'sonderauslagen' | 'nichtBeliefen' | 'freigaben';
 
@@ -218,12 +229,22 @@ function TeilgebieteInhalt() {
     betrag.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' });
   const [showForm, setShowForm] = useState(false);
   const [editTarget, setEditTarget] = useState<Teilgebiet | null>(null);
+  /** Nach dem Speichern: Beschreibung der verteilplanrelevanten Mengenänderung. */
+  const [verteilplanHinweis, setVerteilplanHinweis] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
+  const [filterStrasse, setFilterStrasse] = useState('');
   const [filterTour, setFilterTour] = useState('');
   const [filterAustraegerId, setFilterAustraegerId] = useState('');
   const [filterAustraegerSuche, setFilterAustraegerSuche] = useState('');
   const [filterAustraegerNurMitTG, setFilterAustraegerNurMitTG] = useState(false);
   const [nurAktive, setNurAktive] = useState(true);
+
+  // Straßensuche: Schreibweisen „Str." / „Straße" / „Strasse" gleich behandeln.
+  const strassenSuche = strassenKey(filterStrasse);
+  const strassenTreffer = (tg: Teilgebiet) =>
+    strassenSuche
+      ? (tg.strassen ?? []).filter((s) => strassenKey(s.strassenname).includes(strassenSuche))
+      : [];
 
   const gefiltert = teilgebiete.filter((tg) => {
     if (nurAktive && !tg.isActive) return false;
@@ -232,6 +253,8 @@ function TeilgebieteInhalt() {
       !tg.name.toLowerCase().includes(filterText.toLowerCase()) &&
       !tg.plz.includes(filterText)
     )
+      return false;
+    if (strassenSuche && !(tg.strassen ?? []).some((s) => strassenKey(s.strassenname).includes(strassenSuche)))
       return false;
     if (filterTour) {
       if (filterTour === '__keine__' && tg.tourId !== null) return false;
@@ -394,6 +417,8 @@ function TeilgebieteInhalt() {
 
       {hauptview === 'liste' && (
       <>
+      <VerteilplanOnlineHinweis mitLinkZumVerteilplan />
+
       {/* Sicherung der Teilgebietsdoku */}
       <TeilgebietsdokuBox
         isAdmin={isAdmin}
@@ -414,6 +439,14 @@ function TeilgebieteInhalt() {
           value={filterText}
           onChange={(e) => setFilterText(e.target.value)}
           className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-52"
+        />
+        <input
+          type="text"
+          placeholder="Straße suchen..."
+          value={filterStrasse}
+          onChange={(e) => setFilterStrasse(e.target.value)}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-44"
+          title="Zeigt Teilgebiete, deren Straßenliste die Straße enthält („Str.“ und „Straße“ werden gleich behandelt)"
         />
         <select
           value={filterTour}
@@ -473,10 +506,10 @@ function TeilgebieteInhalt() {
           />
           Nur aktive
         </label>
-        {(filterText || filterTour || filterAustraegerId || filterAustraegerSuche || filterAustraegerNurMitTG) && (
+        {(filterText || filterStrasse || filterTour || filterAustraegerId || filterAustraegerSuche || filterAustraegerNurMitTG) && (
           <button
             type="button"
-            onClick={() => { setFilterText(''); setFilterTour(''); setFilterAustraegerId(''); setFilterAustraegerSuche(''); setFilterAustraegerNurMitTG(false); }}
+            onClick={() => { setFilterText(''); setFilterStrasse(''); setFilterTour(''); setFilterAustraegerId(''); setFilterAustraegerSuche(''); setFilterAustraegerNurMitTG(false); }}
             className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1"
           >
             ✕ Filter zurücksetzen
@@ -529,6 +562,11 @@ function TeilgebieteInhalt() {
                     >
                       ❄ Saison{istAktuellInSaisonpause(tg) ? ' · zzt. Pause' : ''}
                     </span>
+                  )}
+                  {strassenSuche && (
+                    <div className="mt-0.5 text-xs font-normal text-blue-700">
+                      🔎 {strassenTreffer(tg).map((s) => s.strassenname).join(', ')}
+                    </div>
                   )}
                 </td>
                 <td className="px-4 py-3 text-gray-600">{tg.plz}</td>
@@ -619,16 +657,56 @@ function TeilgebieteInhalt() {
                 }
               : undefined
           }
-          onSave={(stand, neuAngelegt) => {
+          onSave={(stand, neuAngelegt, verteilplanAenderung) => {
             setShowForm(false);
             nachAenderung(
               neuAngelegt
                 ? `Teilgebiet ${stand.name} angelegt`
                 : `Änderung an Teilgebiet ${stand.name}`,
             );
+            setVerteilplanHinweis(verteilplanAenderung);
           }}
           onCancel={() => setShowForm(false)}
         />
+      </Modal>
+
+      {/* Direkt nach dem Speichern: Menge geändert → Verteilplan online veraltet */}
+      <Modal
+        isOpen={verteilplanHinweis !== null}
+        onClose={() => setVerteilplanHinweis(null)}
+        title="Bitte „Verteilplan online“ aktualisieren"
+        size="md"
+      >
+        <div className="space-y-3 text-sm text-gray-700">
+          <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
+            {verteilplanHinweis}
+          </p>
+          <p>
+            Die Stückzahl im Verteilplan hat sich geändert. Der Verteilplan auf der Webseite —
+            und damit der Preis für Beilagenkunden — ist jetzt veraltet. Bitte unter
+            „Verteilplan &amp; Bestellungen" das <strong>📄 PDF blanko</strong> neu erzeugen und
+            auf der Webseite austauschen.
+          </p>
+          <p className="text-xs text-gray-500">
+            Die Erinnerung bleibt oben in den Teilgebieten und im Verteilplan stehen, bis sie
+            mit „✓ Erledigt" bestätigt wird.
+          </p>
+          <div className="flex justify-end gap-2 pt-1">
+            <Link
+              to="/verteilplan"
+              className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+            >
+              Zum Verteilplan →
+            </Link>
+            <button
+              type="button"
+              onClick={() => setVerteilplanHinweis(null)}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
+              OK
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {protokollTg && (
@@ -1206,8 +1284,12 @@ function TeilgebietForm({
   einsaetzeAktJahr: Einsatz[];
   /** Öffnet das Änderungsprotokoll dieses Teilgebiets (nur beim Bearbeiten). */
   onProtokollOeffnen?: () => void;
-  /** Meldet den gespeicherten Stand zurück — Grundlage der Doku-Sicherung. */
-  onSave: (stand: Teilgebiet, neuAngelegt: boolean) => void;
+  /**
+   * Meldet den gespeicherten Stand zurück — Grundlage der Doku-Sicherung.
+   * `verteilplanAenderung`: Beschreibung, falls sich die buchbare Stückzahl
+   * im Verteilplan geändert hat (sonst null).
+   */
+  onSave: (stand: Teilgebiet, neuAngelegt: boolean, verteilplanAenderung: string | null) => void;
   onCancel: () => void;
 }) {
   const { touren, mitarbeiter, teilgebiete, abrechnungsperioden, userRole, adminName } = useApp();
@@ -1446,6 +1528,17 @@ function TeilgebietForm({
         });
       }
 
+      // Buchbare Stückzahl geändert → Verteilplan auf der Webseite veraltet.
+      // Ein Fehler beim Vormerken darf das Speichern nicht scheitern lassen.
+      const verteilplanAenderung = verteilplanRelevanteAenderung(initial, payload, touren);
+      if (verteilplanAenderung) {
+        try {
+          await merkeVerteilplanOnlineAenderung(verteilplanAenderung);
+        } catch (err) {
+          console.error('Hinweis „Verteilplan online" konnte nicht gespeichert werden:', err);
+        }
+      }
+
       const jetzt = Date.now();
       const stand: Teilgebiet = {
         ...payload,
@@ -1453,7 +1546,7 @@ function TeilgebietForm({
         erstelltAm: initial?.erstelltAm ?? jetzt,
         aktualisiertAm: jetzt,
       };
-      onSave(stand, !initial);
+      onSave(stand, !initial, verteilplanAenderung);
     } catch (err) {
       setError('Fehler beim Speichern.');
       console.error(err);

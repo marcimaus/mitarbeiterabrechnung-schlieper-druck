@@ -3498,6 +3498,43 @@ function AusfallModal({
       .sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
   }, [teilgebiete, ausfaelleInKw]);
 
+  // Vorauswahl über den Mitarbeiter (nur Neu-Anlage): Bei einer Krankmeldung
+  // ist meist nur der Name bekannt, nicht das Teilgebiet. Angeboten werden
+  // alle MAs, die aktuell Standardausträger eines aktiven Teilgebiets sind;
+  // die TG-Auswahl wird dann auf deren Teilgebiete eingegrenzt.
+  const [vorauswahlMaId, setVorauswahlMaId] = useState('');
+  const standardTgsJeMa = useMemo(() => {
+    const map = new Map<string, Teilgebiet[]>();
+    for (const t of teilgebiete) {
+      if (!t.isActive || t.istAuslagestelle || !t.standardAustraegerId) continue;
+      if (!mitarbeiterById.has(t.standardAustraegerId)) continue;
+      const liste = map.get(t.standardAustraegerId) ?? [];
+      liste.push(t);
+      map.set(t.standardAustraegerId, liste);
+    }
+    for (const liste of map.values()) {
+      liste.sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+    }
+    return map;
+  }, [teilgebiete, mitarbeiterById]);
+  const vorauswahlMaOptionen = useMemo(
+    () =>
+      [...standardTgsJeMa.keys()]
+        .map((id) => mitarbeiterById.get(id)!)
+        .sort((a, b) => a.name.localeCompare(b.name, 'de')),
+    [standardTgsJeMa, mitarbeiterById],
+  );
+  const vorauswahlTgs = vorauswahlMaId ? standardTgsJeMa.get(vorauswahlMaId) ?? [] : [];
+  const belegteTgIds = new Set(ausfaelleInKw.map((a) => a.teilgebietId));
+
+  function waehleVorauswahlMa(maId: string) {
+    setVorauswahlMaId(maId);
+    if (!maId) return;
+    const frei = (standardTgsJeMa.get(maId) ?? []).filter((t) => !belegteTgIds.has(t.id));
+    // Nur ein freies Teilgebiet → direkt übernehmen; sonst wählt der User.
+    setSelectedTgId(frei.length === 1 ? frei[0].id : null);
+  }
+
   /**
    * Ermittelt alle Geschwister-Einsätze einer Gruppe:
    * gleiche `teilgebietId` + gleiche `(ausfallBisJahr, ausfallBisKw)`.
@@ -3914,6 +3951,35 @@ function AusfallModal({
         </div>
       ))}
       <div className="space-y-3">
+        {/* Mitarbeiter-Vorauswahl — nur bei Neu-Anlage, optional */}
+        {isNeu && (
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Mitarbeiter <span className="font-normal text-gray-400">(optional — grenzt die Teilgebiete ein)</span>
+            </label>
+            <select
+              value={vorauswahlMaId}
+              onChange={(e) => waehleVorauswahlMa(e.target.value)}
+              disabled={istGesperrt}
+              className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
+              autoFocus
+            >
+              <option value="">— alle Teilgebiete —</option>
+              {vorauswahlMaOptionen.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}{m.nummer ? ` (${m.nummer})` : ''} — {(standardTgsJeMa.get(m.id) ?? []).map((t) => t.name).join(', ')}
+                </option>
+              ))}
+            </select>
+            {vorauswahlTgs.length > 1 && (
+              <div className="mt-1 text-[11px] text-amber-700">
+                Standardausträger in {vorauswahlTgs.length} Teilgebieten — für jedes betroffene Teilgebiet
+                einen eigenen Ausfall erfassen.
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Teilgebiet — Auswahl bei Neu, sonst nur Anzeige */}
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Teilgebiet</label>
@@ -3923,14 +3989,20 @@ function AusfallModal({
               onChange={(e) => setSelectedTgId(e.target.value || null)}
               disabled={istGesperrt}
               className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
-              autoFocus
             >
               <option value="">— bitte wählen —</option>
-              {tgOptionen.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}{t.plz ? ` (${t.plz})` : ''}
-                </option>
-              ))}
+              {vorauswahlMaId
+                ? vorauswahlTgs.map((t) => (
+                    <option key={t.id} value={t.id} disabled={belegteTgIds.has(t.id)}>
+                      {t.name}{t.plz ? ` (${t.plz})` : ''}
+                      {belegteTgIds.has(t.id) ? ' — Ausfall in dieser KW bereits erfasst' : ''}
+                    </option>
+                  ))
+                : tgOptionen.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}{t.plz ? ` (${t.plz})` : ''}
+                    </option>
+                  ))}
             </select>
           ) : tg ? (
             <div className="text-sm font-medium">

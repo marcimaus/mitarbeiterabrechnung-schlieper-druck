@@ -485,7 +485,8 @@ export default function AbrechnungsAufschluesselung({
     return zeilen.sort((a, b) => a.jahr - b.jahr || a.kw - b.kw || a.tgName.localeCompare(b.tgName, 'de', { numeric: true }));
   })();
   const bonusOhneMeldung = bonusZeilen.filter((z) => z.fehlt.length > 0);
-  const summeBoni = er.bonusZeiterfassungEur + er.ausgabenBoniLohnGesamt + er.bonus;
+  const sonderzahlung = er.sonderzahlung ?? 0;
+  const summeBoni = er.bonusZeiterfassungEur + er.ausgabenBoniLohnGesamt + er.bonus + sonderzahlung;
   const summeGewicht = er.gewichtsbonusAnzeigenblatt + er.gewichtsbonusBeilagen;
 
   // ---- Fahrten ------------------------------------------------------
@@ -503,6 +504,7 @@ export default function AbrechnungsAufschluesselung({
     er.fixesGehalt +
     er.fahrtkostenGesamt +
     er.bonus +
+    sonderzahlung +
     er.ausgabenBoniLohnGesamt +
     er.bonusZeiterfassungEur;
 
@@ -666,6 +668,7 @@ export default function AbrechnungsAufschluesselung({
   if (er.ausgabenBoniLohnGesamt) positionen.push({ label: 'Min-Boni (Tätigkeitsbonus)', schluessel: `${er.ausgabenBoniMinutenGesamt} min × Stundenlohn`, wert: er.ausgabenBoniLohnGesamt });
   if (er.bonusZeiterfassungEur) positionen.push({ label: 'Bonus Zeiterfassung Austragen', schluessel: `${er.bonusZeiterfassungAnzahl} × ${eur(bonusBetrag)}`, wert: er.bonusZeiterfassungEur });
   if (er.bonus) positionen.push({ label: 'Bonus / Periodenzusatz', schluessel: er.bonusKommentar, wert: er.bonus });
+  if (sonderzahlung) positionen.push({ label: 'Einmalige Sonderzahlung', schluessel: er.sonderzahlungAnmerkungLohnbuero, wert: sonderzahlung });
   if (er.fahrtkostenGesamt) positionen.push({ label: 'Fahrtkosten', schluessel: `${zahl(fahrtKmGesamt, 1)} km × ${zahl(er.fahrtSatzEurProKm, 2)} €/km`, wert: er.fahrtkostenGesamt });
 
   const alleOffen = ALLE_ABSCHNITTE.every((id) => offen.has(id));
@@ -1328,7 +1331,7 @@ export default function AbrechnungsAufschluesselung({
       {/* Boni */}
       <Abschnitt
         titel="Boni"
-        untertitel="Zeiterfassungs-Bonus, Min-Boni, Periodenzusatz, Gewichtszulagen"
+        untertitel="Zeiterfassungs-Bonus, Min-Boni, Periodenzusatz, Sonderzahlung, Gewichtszulagen"
         betrag={eur(summeBoni)}
         betragHinweis={summeGewicht ? `+ ${eur(summeGewicht)} Gewichtszulagen in Austragen` : undefined}
         offen={istOffen('boni')}
@@ -1421,6 +1424,24 @@ export default function AbrechnungsAufschluesselung({
               <p className="text-gray-700">{er.bonusKommentar || <span className="text-gray-400">ohne Kommentar</span>}</p>
             ) : (
               <Leer>Kein Periodenzusatz erfasst.</Leer>
+            )}
+          </div>
+
+          <div>
+            <h5 className="font-semibold text-gray-700 mb-1">Einmalige Sonderzahlung — {eur(sonderzahlung)}</h5>
+            {sonderzahlung ? (
+              <div className="text-gray-700 space-y-0.5">
+                <p>
+                  <span className="text-gray-500">Anmerkung Lohnbüro:</span>{' '}
+                  {er.sonderzahlungAnmerkungLohnbuero || <span className="text-gray-400">—</span>}
+                </p>
+                <p>
+                  <span className="text-gray-500">Anmerkung intern:</span>{' '}
+                  {er.sonderzahlungAnmerkungIntern || <span className="text-gray-400">—</span>}
+                </p>
+              </div>
+            ) : (
+              <Leer>Keine Sonderzahlung erfasst.</Leer>
             )}
           </div>
 
@@ -1546,8 +1567,8 @@ export default function AbrechnungsAufschluesselung({
         >
           <p className="text-gray-700">
             Monatlicher Festbetrag laut Stammdaten. Austragen, Zusammentragen und Stempelzeiten
-            werden bei Festgehalt nicht zusätzlich vergütet; Fahrtkosten, Min-Boni und
-            Periodenzusatz kommen hinzu.
+            werden bei Festgehalt nicht zusätzlich vergütet; Fahrtkosten, Min-Boni,
+            Periodenzusatz und Sonderzahlung kommen hinzu.
           </p>
         </Abschnitt>
       )}

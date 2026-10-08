@@ -23,6 +23,7 @@ import type {
   VariablerPeriodenZusatz,
   ExterneAbrechnungswert,
   LohnkontoBuchung,
+  Sonderzahlung,
 } from '../types';
 import {
   berechneAustraegerLohn,
@@ -127,6 +128,14 @@ export interface MitarbeiterAbrechnung {
   bonus: number;
   bonusKommentar?: string;
   bonusId?: string;
+  // Einmalige Sonderzahlung (in gesamt / bruttoLohnbuero enthalten). Optional,
+  // weil ältere Abrechnungs-Snapshots das Feld nicht haben → `?? 0`.
+  sonderzahlung?: number;
+  /** Grund der Zahlung — wird dem Lohnbüro übermittelt. */
+  sonderzahlungAnmerkungLohnbuero?: string;
+  /** Nur intern — erscheint nur im Excel-Export. */
+  sonderzahlungAnmerkungIntern?: string;
+  sonderzahlungId?: string;
   // Minuten-Boni je Ausgabe (Tätigkeitsbonus, z. B. „Betreuung Zusammenträger")
   ausgabenBoni: AusgabenBonusErgebnis[];
   ausgabenBoniMinutenGesamt: number;
@@ -378,7 +387,8 @@ export function berechneAbrechnung(
   variablePeriodenZusaetze: VariablerPeriodenZusatz[] = [],
   alleAbrechnungsperioden: Abrechnungsperiode[] = [],
   alleLohnkontoBuchungen: LohnkontoBuchung[] = [],
-  externeAbrechnungswerte: ExterneAbrechnungswert[] = []
+  externeAbrechnungswerte: ExterneAbrechnungswert[] = [],
+  sonderzahlungen: Sonderzahlung[] = []
 ): MitarbeiterAbrechnung[] {
   // Snapshot-Stufen:
   //  - End-Snapshot (status='abgeschlossen'): paramSnapshot + periodeSnapshot
@@ -507,6 +517,22 @@ export function berechneAbrechnung(
     const bonusKommentar = zusatz?.kommentar;
     const bonusId = zusatz?.id;
 
+    // --- Einmalige Sonderzahlung ---
+    const sz = periodeId
+      ? sonderzahlungen.find(
+          (z) => z.mitarbeiterId === ma.id && z.abrechnungsperiodeId === periodeId
+        )
+      : undefined;
+    const sonderzahlung = sz?.betragEur ?? 0;
+    const sonderzahlungFelder = sz
+      ? {
+          sonderzahlung,
+          sonderzahlungAnmerkungLohnbuero: sz.anmerkungLohnbuero,
+          sonderzahlungAnmerkungIntern: sz.anmerkungIntern,
+          sonderzahlungId: sz.id,
+        }
+      : { sonderzahlung: 0 };
+
     const stundenlohn = ermittleStundenlohn(ma, effParams);
 
     // --- Ausgaben-Boni (pauschaler Tätigkeitsbonus aus Mitarbeiter-Stammdaten) ---
@@ -542,13 +568,14 @@ export function berechneAbrechnung(
       // dort nicht über Stempelzeit abgerechnet).
       const bonusZeiterfassungEur = 0;
       const bonusZeiterfassungAnzahl = 0;
-      const gesamt = fixesGehalt + bonus + fahrtkostenGesamt + ausgabenBoniLohnGesamt + bonusZeiterfassungEur;
+      const gesamt = fixesGehalt + bonus + sonderzahlung + fahrtkostenGesamt + ausgabenBoniLohnGesamt + bonusZeiterfassungEur;
       const lk = berechneLohnkontoFuer(ma.id);
       const bruttoLohnbuero =
         gesamt - lk.lohnkontoVerschiebungPeriode + lk.lohnkontoVerrechnungPeriode;
       if (
         fixesGehalt > 0 ||
         bonus !== 0 ||
+        sonderzahlung !== 0 ||
         fahrtkostenGesamt > 0 ||
         maVorschuesse.length > 0 ||
         lk.lohnkontoBuchungenPeriode.length > 0 ||
@@ -581,6 +608,7 @@ export function berechneAbrechnung(
           bonus,
           bonusKommentar,
           bonusId,
+          ...sonderzahlungFelder,
           ausgabenBoni: ausgabenBoniDetails,
           ausgabenBoniMinutenGesamt,
           ausgabenBoniLohnGesamt,
@@ -940,7 +968,7 @@ export function berechneAbrechnung(
     // hinterlegt, ERSETZT er die App-Positionen austraegerGesamt +
     // zusammentragenGesamt + Vorarbeit-Zeitlohn. Der Rest der Zeiterfassung
     // (sonstige / austragen-/zusammentragen-Ist-Zeit) sowie Fahrtkosten, Boni,
-    // variabler Zusatz und Lohnkonto bleiben unberührt.
+    // variabler Zusatz, Sonderzahlung und Lohnkonto bleiben unberührt.
     const zeitLohnVorarbeit = maArbeitszeiten
       .filter((a) => a.typ === 'vorarbeit')
       .reduce((s, a) => s + (berechneNettoMinuten(a) / 60) * stundenlohnZusammen, 0);
@@ -962,6 +990,7 @@ export function berechneAbrechnung(
       zeitLohnRest +
       fahrtkostenGesamt +
       bonus +
+      sonderzahlung +
       ausgabenBoniLohnGesamt +
       bonusZeiterfassungEur;
 
@@ -977,6 +1006,7 @@ export function berechneAbrechnung(
       maArbeitszeitenNichtAbgerechnet.length > 0 ||
       maVorschuesse.length > 0 ||
       bonus !== 0 ||
+      sonderzahlung !== 0 ||
       lk.lohnkontoBuchungenPeriode.length > 0 ||
       lk.lohnkontoSaldoVorPeriode !== 0 ||
       ausgabenBoniDetails.length > 0 ||
@@ -1006,6 +1036,7 @@ export function berechneAbrechnung(
         bonus,
         bonusKommentar,
         bonusId,
+        ...sonderzahlungFelder,
         ausgabenBoni: ausgabenBoniDetails,
         ausgabenBoniMinutenGesamt,
         ausgabenBoniLohnGesamt,

@@ -81,10 +81,13 @@ export async function exportiereAbrechnung(
     { header: 'Zeiterfassung (€)', key: 'zeiterfassung', width: 18 },
     { header: 'Min-Boni (€)', key: 'minboni', width: 14 },
     { header: 'Bonus Zeit (€)', key: 'bonuszeit', width: 16 },
+    { header: 'Sonderzahlung (€)', key: 'sonderzahlung', width: 17 },
     { header: 'Fixes Gehalt (€)', key: 'fix', width: 16 },
     { header: 'Fahrtkosten (€)', key: 'fahrtkosten', width: 16 },
     { header: 'Brutto (€)', key: 'gesamt', width: 14 },
     { header: 'Auszahlung (€)', key: 'auszahlung', width: 16 },
+    { header: 'Sonderzahlung: Anmerkung Lohnbüro', key: 'szLohnbuero', width: 34 },
+    { header: 'Sonderzahlung: Anmerkung intern', key: 'szIntern', width: 34 },
   ];
 
   // Titel
@@ -96,14 +99,14 @@ export async function exportiereAbrechnung(
   wsUe.spliceRows(3, 0, []);
 
   // Header-Zeile (Row 4)
-  const headers = ['Nr.', 'Name', 'Minijob', 'SV-frei', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Min-Boni (€)', 'Bonus Zeit (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Brutto (€)', 'Auszahlung (€)'];
+  const headers = ['Nr.', 'Name', 'Minijob', 'SV-frei', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Min-Boni (€)', 'Bonus Zeit (€)', 'Sonderzahlung (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Brutto (€)', 'Auszahlung (€)', 'Sonderzahlung: Anmerkung Lohnbüro', 'Sonderzahlung: Anmerkung intern'];
   const headerRow = wsUe.getRow(4);
   headers.forEach((h, i) => {
     const cell = headerRow.getCell(i + 1);
     cell.value = h;
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D4ED8' } };
-    cell.alignment = { horizontal: i > 3 ? 'right' : 'left' };
+    cell.alignment = { horizontal: i > 3 && i < 14 ? 'right' : 'left' };
   });
 
   ergebnisse.forEach((er, idx) => {
@@ -122,21 +125,24 @@ export async function exportiereAbrechnung(
       er.zeitLohn,
       er.ausgabenBoniLohnGesamt,
       er.bonusZeiterfassungEur ?? 0,
+      er.sonderzahlung ?? 0,
       er.fixesGehalt,
       er.fahrtkostenGesamt,
       bruttoExport,
       istSvBefreit ? bruttoExport - er.vorschussSumme : null,
+      er.sonderzahlungAnmerkungLohnbuero ?? '',
+      er.sonderzahlungAnmerkungIntern ?? '',
     ]);
-    // Zahlenformat Spalten 5..13 (numeric)
-    for (let c = 5; c <= 13; c++) {
+    // Zahlenformat Spalten 5..14 (numeric)
+    for (let c = 5; c <= 14; c++) {
       r.getCell(c).numFmt = '#,##0.00 "€"';
       r.getCell(c).alignment = { horizontal: 'right' };
     }
-    // Auszahlung leer bei nicht-SV-befreit: Hinweistext (Spalte 13)
+    // Auszahlung leer bei nicht-SV-befreit: Hinweistext (Spalte 14)
     if (!istSvBefreit) {
-      r.getCell(13).value = 'Lohnbüro';
-      r.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } };
-      r.getCell(13).numFmt = '@';
+      r.getCell(14).value = 'Lohnbüro';
+      r.getCell(14).font = { italic: true, color: { argb: 'FF9CA3AF' } };
+      r.getCell(14).numFmt = '@';
     }
     if (er.mitarbeiter.istMinijob) {
       r.getCell(3).font = { bold: true, color: { argb: 'FFB45309' } };
@@ -159,6 +165,7 @@ export async function exportiereAbrechnung(
     ergebnisse.reduce((s, e) => s + e.zeitLohn, 0),
     ergebnisse.reduce((s, e) => s + e.ausgabenBoniLohnGesamt, 0),
     ergebnisse.reduce((s, e) => s + (e.bonusZeiterfassungEur ?? 0), 0),
+    ergebnisse.reduce((s, e) => s + (e.sonderzahlung ?? 0), 0),
     ergebnisse.reduce((s, e) => s + e.fixesGehalt, 0),
     ergebnisse.reduce((s, e) => s + e.fahrtkostenGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.bruttoLohnbuero, 0),
@@ -167,7 +174,7 @@ export async function exportiereAbrechnung(
       .reduce((s, e) => s + (e.bruttoLohnbuero - e.vorschussSumme), 0),
   ]);
   sumRow.getCell(2).font = { bold: true };
-  for (let c = 5; c <= 13; c++) {
+  for (let c = 5; c <= 14; c++) {
     sumRow.getCell(c).numFmt = '#,##0.00 "€"';
     sumRow.getCell(c).font = { bold: true };
     sumRow.getCell(c).alignment = { horizontal: 'right' };
@@ -406,7 +413,7 @@ export async function exportiereAbrechnung(
   wsFa.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 8 } };
 
   // ====================================================
-  // Blatt 6: Vorschüsse, Boni & Lohnkonto
+  // Blatt 6: Vorschüsse, Boni, Sonderzahlungen & Lohnkonto
   // ====================================================
   const wsVo = wb.addWorksheet('Vorschüsse & Boni');
   wsVo.columns = [
@@ -414,18 +421,22 @@ export async function exportiereAbrechnung(
     { header: 'Nr.', key: 'nr', width: 8 },
     { header: 'Art', key: 'art', width: 26 },
     { header: 'Betrag (€)', key: 'betrag', width: 13 },
-    { header: 'Kommentar', key: 'kommentar', width: 40 },
+    { header: 'Kommentar / Anmerkung Lohnbüro', key: 'kommentar', width: 40 },
+    { header: 'Anmerkung intern', key: 'intern', width: 40 },
   ];
-  styleHeaderRow(wsVo, 1, 5);
+  styleHeaderRow(wsVo, 1, 6);
   for (const er of ergebnisse) {
     const ma = er.mitarbeiter;
-    const zeile = (art: string, betrag: number, kommentar?: string) => {
-      const r = wsVo.addRow([ma.name, ma.nummer, art, betrag, kommentar ?? '']);
+    const zeile = (art: string, betrag: number, kommentar?: string, intern?: string) => {
+      const r = wsVo.addRow([ma.name, ma.nummer, art, betrag, kommentar ?? '', intern ?? '']);
       r.getCell(4).numFmt = EUR_FMT;
       r.getCell(4).alignment = { horizontal: 'right' };
     };
     for (const v of er.vorschuesse) zeile('Vorschuss', -v.betragEur, v.bemerkung);
     if (er.bonus) zeile('Periodenzusatz / Bonus', er.bonus, er.bonusKommentar);
+    if (er.sonderzahlung) {
+      zeile('Einmalige Sonderzahlung', er.sonderzahlung, er.sonderzahlungAnmerkungLohnbuero, er.sonderzahlungAnmerkungIntern);
+    }
     for (const b of er.ausgabenBoni) {
       zeile(`Tätigkeitsbonus (KW ${b.kw}, ${b.minuten} Min)`, b.lohn, b.kommentar);
     }
@@ -436,7 +447,7 @@ export async function exportiereAbrechnung(
     }
   }
   wsVo.views = [{ state: 'frozen', ySplit: 1 }];
-  wsVo.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 5 } };
+  wsVo.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 6 } };
 
   // ====================================================
   // Blatt 7: Lohnkonten — Salden je MA + Buchungsverlauf
@@ -957,6 +968,11 @@ function fuegeLohnkontenHinzu(
 //     explizit zu erwähnen; Brutto exkl. FaKo + Fahrtkosten = Bruttolohn),
 //     Vorschuss, Auszahlung (nur bei SV-befreiten MAs; sonst ermittelt das
 //     Lohnbüro den Zahlbetrag nach Abzügen)
+//   - gibt es in der Periode einmalige Sonderzahlungen, kommt die Spalte
+//     „Einmalige Sonderzahlung" hinzu (Brutto exkl. FaKo und Sonderzahlung +
+//     Sonderzahlung + Fahrtkosten = Bruttolohn) und unter der Tabelle der
+//     Block „Einmalige Sonderzahlungen" mit der Anmerkung fürs Lohnbüro
+//     (die interne Anmerkung bleibt draußen)
 //   - danach: „Vorläufig nicht abmelden", Memos
 //   - ganz unten: abzumeldende Mitarbeiter (wie im Feld „Abmeldungen ans
 //     Lohnbüro" ausgewählt)
@@ -977,22 +993,25 @@ export async function exportiereLohnuebermittlung(
   wb.created = new Date();
 
   const ws = wb.addWorksheet('Lohnübermittlung');
-  const LETZTE = 'G';
-  const ANZ_SPALTEN = 7;
+  // Spalte „Einmalige Sonderzahlung" nur, wenn es in der Periode eine gibt.
+  const mitSonderzahlung = ergebnisse.some((e) => (e.sonderzahlung ?? 0) !== 0);
+  const LETZTE = mitSonderzahlung ? 'H' : 'G';
+  const ANZ_SPALTEN = mitSonderzahlung ? 8 : 7;
   ws.columns = [
     { width: 14 }, // A Mitarbeiter-Nr.
     { width: 30 }, // B Name
-    { width: 13 }, // C Brutto (exkl. FaKo)
-    { width: 13 }, // D Fahrtkosten
-    { width: 13 }, // E Bruttolohn
-    { width: 13 }, // F Vorschuss
-    { width: 13 }, // G Auszahlung
+    { width: 13 }, // C Brutto (exkl. FaKo [und Sonderzahlung])
+    ...(mitSonderzahlung ? [{ width: 13 }] : []), // D Einmalige Sonderzahlung
+    { width: 13 }, // Fahrtkosten
+    { width: 13 }, // Bruttolohn
+    { width: 13 }, // Vorschuss
+    { width: 13 }, // Auszahlung
   ];
-  // Breite der Spalten C..G zusammen (Zeichen) — für die Zeilenhöhe von
+  // Breite der Spalten C..letzte zusammen (Zeichen) — für die Zeilenhöhe von
   // umbrochenen Texten in verbundenen Zellen.
-  const BREITE_C_BIS_G = 65;
+  const BREITE_C_BIS_LETZTE = mitSonderzahlung ? 78 : 65;
 
-  /** Text über A..G verbinden, umbrechen und Zeilenhöhe schätzen. */
+  /** Text über A..letzte Spalte verbinden, umbrechen und Zeilenhöhe schätzen. */
   function textZeile(rowNr: number, text: string, font: Partial<ExcelJS.Font>) {
     ws.getCell(`A${rowNr}`).value = text;
     ws.getCell(`A${rowNr}`).font = font;
@@ -1024,7 +1043,8 @@ export async function exportiereLohnuebermittlung(
   kopfzeile(headerRow, [
     'Mitarbeiter-Nr.',
     'Name',
-    'Brutto (exkl. FaKo) (€)',
+    mitSonderzahlung ? 'Brutto (exkl. FaKo und Sonderzahlung) (€)' : 'Brutto (exkl. FaKo) (€)',
+    ...(mitSonderzahlung ? ['Einmalige Sonderzahlung (€) ²'] : []),
     'Fahrtkosten (€)',
     'Bruttolohn (€)',
     'Vorschuss (€)',
@@ -1034,7 +1054,7 @@ export async function exportiereLohnuebermittlung(
   for (let c = 3; c <= ANZ_SPALTEN; c++) {
     ws.getRow(headerRow).getCell(c).alignment = { wrapText: true, vertical: 'middle', horizontal: 'right' };
   }
-  ws.getRow(headerRow).height = 32;
+  ws.getRow(headerRow).height = mitSonderzahlung ? 45 : 32;
 
   // Reihenfolge wie in der Ansicht „Abrechnung": `ergebnisse` ist bereits von
   // `berechneAbrechnung` sortiert (Festgehalt → Stunden → Saldo → Brutto desc).
@@ -1044,6 +1064,7 @@ export async function exportiereLohnuebermittlung(
 
   let r = headerRow + 1;
   let sumOhneFaKo = 0;
+  let sumSonderzahlung = 0;
   let sumFaKo = 0;
   let sumBrutto = 0;
   let sumVorschuss = 0;
@@ -1054,16 +1075,18 @@ export async function exportiereLohnuebermittlung(
     const istSvBefreit = !!e.mitarbeiter.sozialversicherungsBefreit;
     const brutto = e.bruttoLohnbuero ?? 0;
     const faKo = e.fahrtkostenGesamt ?? 0;
-    // Alle Lohnbestandteile ohne Fahrtkosten (Fix, Austragen, Zusammentragen,
-    // Vorarbeit, Sonstiges, Boni …) — ergänzt sich mit den Fahrtkosten zum
-    // Bruttolohn.
-    const ohneFaKo = brutto - faKo;
+    const sonderzahlung = e.sonderzahlung ?? 0;
+    // Alle Lohnbestandteile ohne Fahrtkosten und Sonderzahlung (Fix,
+    // Austragen, Zusammentragen, Vorarbeit, Sonstiges, Boni …) — ergänzt sich
+    // mit Sonderzahlung und Fahrtkosten zum Bruttolohn.
+    const ohneFaKo = brutto - faKo - sonderzahlung;
     const vorschuss = e.vorschussSumme ?? 0;
     const auszahlung = istSvBefreit ? brutto - vorschuss : null;
     ws.getRow(r).values = [
       e.mitarbeiter.nummer,
       e.mitarbeiter.name,
       rund(ohneFaKo),
+      ...(mitSonderzahlung ? [sonderzahlung ? rund(sonderzahlung) : null] : []),
       rund(faKo),
       rund(brutto),
       rund(vorschuss),
@@ -1074,6 +1097,7 @@ export async function exportiereLohnuebermittlung(
       ws.getRow(r).getCell(c).alignment = { horizontal: 'right' };
     }
     sumOhneFaKo += ohneFaKo;
+    sumSonderzahlung += sonderzahlung;
     sumFaKo += faKo;
     sumBrutto += brutto;
     sumVorschuss += vorschuss;
@@ -1087,6 +1111,7 @@ export async function exportiereLohnuebermittlung(
     '',
     'Σ Gesamt',
     rund(sumOhneFaKo),
+    ...(mitSonderzahlung ? [rund(sumSonderzahlung)] : []),
     rund(sumFaKo),
     rund(sumBrutto),
     rund(sumVorschuss),
@@ -1106,8 +1131,48 @@ export async function exportiereLohnuebermittlung(
     '¹ Auszahlung nur bei sozialversicherungsbefreiten Mitarbeitern (Bruttolohn − Vorschuss); bei allen anderen ermittelt das Lohnbüro den Zahlbetrag.',
     { italic: true, size: 9, color: { argb: 'FF777777' } },
   );
+  if (mitSonderzahlung) {
+    textZeile(
+      sumRow + 2,
+      '² Einmalige Zahlung — im Bruttolohn enthalten. Anlass siehe „Einmalige Sonderzahlungen" unten.',
+      { italic: true, size: 9, color: { argb: 'FF777777' } },
+    );
+  }
 
   ws.views = [{ state: 'frozen', ySplit: headerRow }];
+
+  let blockRow = sumRow + 4;
+
+  // ====================================================
+  // Einmalige Sonderzahlungen — Betrag + Anmerkung Lohnbüro
+  // ====================================================
+  // Die „Anmerkung intern" wird bewusst NICHT übermittelt.
+  const sonderzahlungen = sortiert.filter((e) => (e.sonderzahlung ?? 0) !== 0);
+  if (sonderzahlungen.length > 0) {
+    textZeile(blockRow, `Einmalige Sonderzahlungen (${sonderzahlungen.length})`, { bold: true, size: 12 });
+    blockRow++;
+    textZeile(
+      blockRow,
+      'Einmalbeträge, die im Bruttolohn oben enthalten sind — bitte als einmalige Zahlung abrechnen.',
+      { italic: true, size: 10, color: { argb: 'FF6B7280' } },
+    );
+    blockRow++;
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Betrag (€)', 'Anmerkung'], 'FFF5D0FE');
+    ws.mergeCells(`D${blockRow}:${LETZTE}${blockRow}`);
+    blockRow++;
+    for (const e of sonderzahlungen) {
+      const anmerkung = e.sonderzahlungAnmerkungLohnbuero ?? '';
+      ws.getRow(blockRow).values = [e.mitarbeiter.nummer, e.mitarbeiter.name, rund(e.sonderzahlung ?? 0), anmerkung];
+      ws.getRow(blockRow).getCell(3).numFmt = EUR_FMT;
+      ws.getRow(blockRow).getCell(3).alignment = { horizontal: 'right', vertical: 'top' };
+      ws.mergeCells(`D${blockRow}:${LETZTE}${blockRow}`);
+      ws.getCell(`D${blockRow}`).alignment = { wrapText: true, vertical: 'top' };
+      const zeilen = Math.max(1, Math.ceil(anmerkung.length / (BREITE_C_BIS_LETZTE - 13)));
+      if (zeilen > 1) ws.getRow(blockRow).height = Math.min(240, 15 * zeilen);
+      blockRow++;
+    }
+    blockRow += 2;
+  }
 
   // ====================================================
   // Vorläufig nicht abmelden
@@ -1124,7 +1189,6 @@ export async function exportiereLohnuebermittlung(
     .filter((m) => m.vorlaeufigNichtAbmelden && m.isActive && !m.abgemeldet)
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
 
-  let blockRow = sumRow + 4;
   if (nichtAbmeldenHinweis.length > 0) {
     textZeile(blockRow, 'Vorläufig NICHT abmelden — bitte angemeldet lassen', { bold: true, size: 12 });
     blockRow++;
@@ -1188,7 +1252,7 @@ export async function exportiereLohnuebermittlung(
       // Höhe grob proportional zur Textlänge — Excel passt die Höhe bei
       // verbundenen Zellen nicht automatisch an, daher pragmatisch geschätzt.
       const laenge = kategorie.length + 2 + memo.text.length;
-      const zeilen = Math.max(1, Math.ceil(laenge / BREITE_C_BIS_G))
+      const zeilen = Math.max(1, Math.ceil(laenge / BREITE_C_BIS_LETZTE))
         + (memo.text.match(/\n/g)?.length ?? 0);
       ws.getRow(blockRow).height = Math.min(240, 15 * zeilen);
       blockRow++;
@@ -1228,7 +1292,7 @@ export async function exportiereLohnuebermittlung(
     }
   }
 
-  // Druck: eine Seite breit, Querformat nicht nötig (7 schmale Spalten).
+  // Druck: eine Seite breit, Querformat nicht nötig (7–8 schmale Spalten).
   ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0, orientation: 'portrait' };
 
   // Download

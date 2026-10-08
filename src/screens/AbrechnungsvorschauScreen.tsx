@@ -22,7 +22,7 @@ import {
   stdMin,
   type MitarbeiterAbrechnung,
 } from '../lib/abrechnungslogik';
-import { ladeFahrten } from '../lib/db';
+import { ladeFahrten, ladeSonderzahlungen } from '../lib/db';
 import {
   berechneAustraegerLohn,
   ermittleStundenlohn,
@@ -231,11 +231,12 @@ function AbrechnungsvorschauInhalt() {
     if (!ma || !periode) { setFehler('Mitarbeiter oder Periode nicht gefunden.'); return; }
     setLoading(true);
     try {
-      const [data, fahrtenMa] = await Promise.all([
+      const [data, fahrtenMa, sonderzahlungen] = await Promise.all([
         ladePeriodeData(periode),
         // Nur für den Prüfhinweis „Fahrt im Monat, aber nicht dieser Periode
         // zugeordnet" — ein Fehler hier darf die Vorschau nicht verhindern.
         ladeFahrten({ mitarbeiterId: ma.id }).catch((): Fahrt[] => []),
+        ladeSonderzahlungen(periode.id),
       ]);
       const monatPraefix = `${periode.jahr}-${String(periode.monat).padStart(2, '0')}`;
       const fahrtenAusserhalb = fahrtenMa.filter(
@@ -294,7 +295,9 @@ function AbrechnungsvorschauInhalt() {
         periode,
         variablePeriodenZusaetze,
         abrechnungsperioden,
-        lohnkontoBuchungen
+        lohnkontoBuchungen,
+        [], // externe Abrechnungswerte: in der Vorschau bewusst nicht ausgewertet
+        sonderzahlungen
       );
       const basis = ergebnisseBasis.find((e) => e.mitarbeiter.id === ma.id) ?? null;
       setPeriodeOhneZusatz(basis);

@@ -10,6 +10,7 @@ import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import BestellungProtokollModal from '../components/BestellungProtokollModal';
+import VerteilplanOnlineHinweis from '../components/VerteilplanOnlineHinweis';
 import type {
   BeilagenFormat,
   BeilagenKennzeichen,
@@ -812,6 +813,8 @@ function VerteilplanInhalt() {
           </button>
         </div>
       </div>
+
+      <VerteilplanOnlineHinweis />
 
       {/* Beilagen-Auftragsvorlage */}
       <div className="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-3">
@@ -2093,6 +2096,13 @@ function VerteilplanSheet({ variante, kunde, tourGruppen, plzGruppen, aktiveTGs,
           Schlieper-Druck GmbH — Auftragsannahme
         </div>
       </div>
+
+      {/* Blanko-Bogen: Stand der Stückzahlen, damit ausgedruckte Exemplare datierbar sind */}
+      {!voll && (
+        <div style={{ marginTop: '4mm', fontSize: '5.5pt', color: '#888' }}>
+          Stand: {new Date().toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+        </div>
+      )}
     </div>
   );
 }

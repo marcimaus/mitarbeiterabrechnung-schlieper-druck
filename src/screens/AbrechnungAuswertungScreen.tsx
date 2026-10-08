@@ -413,7 +413,7 @@ function MitarbeiterAuswertung({
       acc.zusammentragen += a.zusammentragenGesamt ?? 0;
       acc.zeitLohn += a.zeitLohn ?? 0;
       acc.fahrt += a.fahrtkostenGesamt ?? 0;
-      acc.bonus += (a.bonus ?? 0) + (a.ausgabenBoniLohnGesamt ?? 0) + (a.bonusZeiterfassungEur ?? 0);
+      acc.bonus += (a.bonus ?? 0) + (a.ausgabenBoniLohnGesamt ?? 0) + (a.bonusZeiterfassungEur ?? 0) + (a.sonderzahlung ?? 0);
       acc.vorschuss += a.vorschussSumme ?? 0;
       return acc;
     },
@@ -443,7 +443,7 @@ function MitarbeiterAuswertung({
               <th className="px-3 py-2 text-right font-medium">Zusammentragen</th>
               <th className="px-3 py-2 text-right font-medium" title="Zeitlohn (Zeiterfassung, nur gelohnte Zeiten)">Zeitlohn</th>
               <th className="px-3 py-2 text-right font-medium">Fahrtkosten</th>
-              <th className="px-3 py-2 text-right font-medium" title="Variabler Bonus + Ausgaben-Boni + Bonus Zeiterfassung">Boni</th>
+              <th className="px-3 py-2 text-right font-medium" title="Variabler Bonus + Ausgaben-Boni + Bonus Zeiterfassung + einmalige Sonderzahlung">Boni</th>
               <th className="px-3 py-2 text-right font-medium">Vorschüsse</th>
               <th className="px-3 py-2 text-right font-medium" title="Lohnkonto-Saldo NACH dieser Periode">Saldo n. Periode</th>
             </tr>
@@ -464,7 +464,8 @@ function MitarbeiterAuswertung({
               const boni =
                 (a.bonus ?? 0) +
                 (a.ausgabenBoniLohnGesamt ?? 0) +
-                (a.bonusZeiterfassungEur ?? 0);
+                (a.bonusZeiterfassungEur ?? 0) +
+                (a.sonderzahlung ?? 0);
               return (
                 <tr key={z.periode.id} className="hover:bg-gray-50">
                   <td className="px-3 py-2 font-medium text-gray-900">
