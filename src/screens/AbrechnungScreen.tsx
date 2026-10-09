@@ -4538,8 +4538,9 @@ function AnAbmeldungenListe({
   const abmeldungen = offeneAbmeldungen(periode, mitarbeiter);
 
   // Vorschläge: aktive MA ohne Betrag in dieser Abrechnung — Kandidaten für
-  // Abmeldung. Ausschluss: Festgehalt, Geschäftsführer, bereits abgemeldet,
-  // noch nicht angemeldet, schon in Abmeldungs-Liste.
+  // Abmeldung. Ausschluss: Interessenten (nie beim Lohnbüro angemeldet),
+  // Festgehalt, Geschäftsführer, bereits abgemeldet, noch nicht angemeldet,
+  // schon in Abmeldungs-Liste.
   //
   // Hinweis: Der frühere „Wechsel-Verlierer"-Pfad (Standardausträger, der
   // sein letztes TG durch einen vorbereiteten Austrägerwechsel verliert)
@@ -4551,6 +4552,7 @@ function AnAbmeldungenListe({
     .filter((m) => {
       const grund =
         m.isActive
+        && !m.istInteressent
         && !m.abgemeldet
         && !m.nochNichtAngemeldet
         && !m.hatFestgehalt
@@ -4605,6 +4607,7 @@ function AnAbmeldungenListe({
     .filter(
       (m) =>
         !m.abgemeldet &&
+        !m.istInteressent &&
         !ersetzteIds.has(m.id) &&
         m.letzteAbrechnungsperiodeId !== periode.id
     )

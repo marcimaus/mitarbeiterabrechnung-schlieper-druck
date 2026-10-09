@@ -32,6 +32,7 @@ export function offeneAbmeldungen(
     .filter(
       (m) =>
         !m.abgemeldet &&
+        !m.istInteressent &&
         !m.vorlaeufigNichtAbmelden &&
         (ersetzteIds.has(m.id) || m.letzteAbrechnungsperiodeId === periode.id),
     )
