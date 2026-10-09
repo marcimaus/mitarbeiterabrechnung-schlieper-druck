@@ -56,9 +56,10 @@ export default function HomeScreen() {
   }, [isAdminAuthenticated]);
   const offeneReklamationen = reklamationen.filter((r) => !r.mitgeteilt && !r.archiviert);
 
-  // Urlaubsanträge, die durch Abrechnung erfasst und noch nicht freigegeben
-  // sind. Zeigen wir Admin & Abrechnung — Admin damit er entscheidet,
-  // Abrechnung damit sie sieht, was noch in der Warteschlange hängt.
+  // Urlaubsanträge, die durch Abrechnung erfasst oder vom Mitarbeiter selbst
+  // beantragt und noch nicht freigegeben sind. Zeigen wir Admin & Abrechnung —
+  // Admin damit er entscheidet, Abrechnung damit sie sieht, was noch in der
+  // Warteschlange hängt.
   const [offeneUrlaubsantraege, setOffeneUrlaubsantraege] = useState<UrlaubsEintrag[]>([]);
   useEffect(() => {
     if (!isAdminAuthenticated) return;
@@ -621,7 +622,7 @@ export default function HomeScreen() {
                       {u.datumVon && u.datumBis ? ` · ${u.datumVon} – ${u.datumBis}` : ''}
                     </span>
                     <span className="text-[10px] text-amber-600 shrink-0 font-mono">
-                      {u.erstellerName}
+                      {u.erstellerRolle === 'mitarbeiter' ? 'Antrag MA' : u.erstellerName}
                     </span>
                   </a>
                 );

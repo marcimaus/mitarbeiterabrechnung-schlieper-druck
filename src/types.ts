@@ -56,6 +56,19 @@ export interface TeilgebietLieferadresse extends Lieferadresse {
   teilgebietId: string;
 }
 
+/**
+ * Sonder-Lieferadresse für genau eine Ausgabe × Teilgebiet (Ausnahme, z. B.
+ * bei einem Ausfall: in dieser Woche wird an eine andere Adresse geliefert als
+ * lt. Mitarbeiter vorgesehen). Hat auf dem Lieferschein Vorrang vor allen
+ * Stammdaten-Lieferadressen des Empfängers.
+ */
+export interface SonderLieferadresse extends Lieferadresse {
+  /** Herkunft, falls aus einer gespeicherten Adresse übernommen (nur Info). */
+  quelleMitarbeiterId?: string;
+  /** Lesbare Herkunft, z. B. „Wohnadresse Max Muster". */
+  quelleBeschreibung?: string;
+}
+
 export interface Mitarbeiter {
   id: string;
   nummer: string;         // 5-stellig, beginnt mit 9
@@ -976,6 +989,19 @@ export interface Einsatz {
    * `kommentar`.
    */
   nachtragNachMonatswechselAm?: number;
+  /**
+   * Ausnahmsweise Auslieferung an eine andere Adresse — nur in dieser
+   * Ausgabe für dieses Teilgebiet. Steht hervorgehoben auf dem Lieferschein.
+   */
+  sonderLieferadresse?: SonderLieferadresse;
+  /**
+   * Der Einsatz (diese Woche, dieses Teilgebiet) wird dem Austräger als
+   * Vorschuss ausgezahlt. Auswahl/Druck im Einsätze-Screen; in der Abrechnung
+   * nur als Hinweis — der Vorschuss selbst wird dort manuell gebucht.
+   */
+  vorschussVorgemerkt?: boolean;
+  /** Fester Vorschussbetrag; leer = berechneter Lohn des Einsatzes. */
+  vorschussBetragEur?: number;
   // Selbstmeldung durch den Austräger (ohne Login, via QR-Code)
   arbeitszeit?: AustraegerArbeitszeit;
   restmenge?: number;           // nicht ausgetragene Stücke (Überschuss)
@@ -1901,6 +1927,9 @@ export const URLAUB_STATUS_LABELS: Record<UrlaubStatus, string> = {
   'mehrtaegig': 'Urlaub mehrtägig',
 };
 
+/** Wer einen Urlaubseintrag angelegt hat — steuert die Freigabe. */
+export type UrlaubErstellerRolle = 'admin' | 'abrechnung' | 'mitarbeiter';
+
 /**
  * Urlaubseintrag — eine Zelle pro (jahr, kw, mitarbeiterId).
  * docId = `${jahr}-${kw}-${mitarbeiterId}` — Upsert.
@@ -1911,9 +1940,10 @@ export const URLAUB_STATUS_LABELS: Record<UrlaubStatus, string> = {
  *
  * Freigabe-Workflow:
  *  - Erstellt durch Admin → automatisch `freigegeben: true`
- *  - Erstellt durch Abrechnung → `freigegeben: false`; bis ein Admin
- *    den Eintrag freigibt, erscheint er gelb markiert + in der
- *    Hinweisbox auf der Startseite.
+ *  - Erstellt durch Abrechnung oder als Antrag des Mitarbeiters selbst
+ *    (Bereich „Urlaub") → `freigegeben: false`; bis ein Admin den Eintrag
+ *    freigibt, erscheint er gelb markiert + in der Hinweisbox auf der
+ *    Startseite.
  */
 export interface UrlaubsEintrag {
   id: string;
@@ -1934,7 +1964,7 @@ export interface UrlaubsEintrag {
    */
   werktageInKw?: string[];
   erstellerName: string;
-  erstellerRolle: 'admin' | 'abrechnung';
+  erstellerRolle: UrlaubErstellerRolle;
   freigegeben: boolean;
   freigegebenVon?: string;
   freigegebenAm?: number;

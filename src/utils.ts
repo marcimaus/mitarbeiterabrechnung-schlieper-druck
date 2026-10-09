@@ -142,7 +142,7 @@ export interface EffektiveLieferadresse {
 }
 
 /** Eine Lieferadresse gilt als befüllt, wenn Straße oder Ort gesetzt sind. */
-function hatAdresse(a: Lieferadresse | undefined | null): a is Lieferadresse {
+export function hatAdresse(a: Lieferadresse | undefined | null): a is Lieferadresse {
   return !!a && (!!a.strasse?.trim() || !!a.ort?.trim());
 }
 

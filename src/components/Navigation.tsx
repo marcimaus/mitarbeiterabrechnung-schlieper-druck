@@ -28,7 +28,9 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/mitarbeiter', label: 'Mitarbeiter & Interessenten', icon: '👥', roles: ['admin', 'abrechnung'] },
   { to: '/teilgebiete', label: 'Teilgebiete', icon: '📍', roles: ['admin', 'abrechnung'] },
   { to: '/touren', label: 'Touren', icon: '🗺', roles: ['admin', 'abrechnung'] },
-  { to: '/urlaub', label: 'Urlaub', icon: '🏖', roles: ['admin', 'abrechnung'] },
+  // Urlaub: Mitarbeiter sehen dort ihre eigenen Urlaube neben denen
+  // ausgewählter Kollegen und beantragen neuen Urlaub (Filter unten).
+  { to: '/urlaub', label: 'Urlaub', icon: '🏖', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   { to: '/zusammentragen', label: 'Zusammentragen', icon: '📦', roles: ['admin', 'abrechnung', 'mitarbeiter'] },
   { to: '/reklamationen', label: 'Reklamationen', icon: '📞', roles: ['admin', 'abrechnung'] },
   // Abrechnung & Parameter: nur Admin. Lieferscheine: ausgeblendet, Druck
@@ -76,6 +78,11 @@ export default function Navigation() {
     // MA die Rolle „Zusammenträger" hat. Admin/Abrechnung sehen es immer.
     if (item.to === '/zusammentragen' && userRole === 'mitarbeiter') {
       return loggedInMa?.rollen.includes('zusammenträger') === true;
+    }
+    // Urlaub für Mitarbeiter nur mit Rolle „Sonstige" — genau diese MAs
+    // führt die Personalplanung in ihrer Urlaubs-Sektion.
+    if (item.to === '/urlaub' && userRole === 'mitarbeiter') {
+      return loggedInMa?.rollen.includes('sonstige') === true;
     }
     return true;
   });

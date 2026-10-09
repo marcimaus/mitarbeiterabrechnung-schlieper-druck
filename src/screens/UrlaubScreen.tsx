@@ -8,20 +8,26 @@
 // gemeinsamen Tabelle.
 //
 // Read-only. Bearbeitung erfolgt nach wie vor unter /planung.
+//
+// Angemeldete Mitarbeiter sehen stattdessen ihre eigene Ansicht: eigene
+// Urlaube neben denen ausgewählter Kollegen + Urlaubsantrag
+// (siehe UrlaubMitarbeiterAnsicht).
 
 import { useEffect, useMemo, useState } from 'react';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
 import UrlaubAuswertungDruck from '../components/UrlaubAuswertungDruck';
+import UrlaubMitarbeiterAnsicht from '../components/UrlaubMitarbeiterAnsicht';
 import { useApp } from '../context/AppContext';
 import { urlaubsListenerProMa } from '../lib/planung';
 import { URLAUB_STATUS_LABELS, type UrlaubsEintrag } from '../types';
 import { MONATSNAMEN } from '../lib/kalender';
 
 export default function UrlaubScreen() {
+  const { userRole } = useApp();
   return (
-    <AdminPinGate allowedRoles={['admin', 'abrechnung']}>
-      <UrlaubScreenInhalt />
+    <AdminPinGate allowedRoles={['admin', 'abrechnung', 'mitarbeiter']}>
+      {userRole === 'mitarbeiter' ? <UrlaubMitarbeiterAnsicht /> : <UrlaubScreenInhalt />}
     </AdminPinGate>
   );
 }

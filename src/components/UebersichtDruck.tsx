@@ -12,6 +12,7 @@ import type {
   Einsatz,
   Mitarbeiter,
   Parameter,
+  SonderLieferadresse,
   Teilgebiet,
   Tour,
 } from '../types';
@@ -19,7 +20,8 @@ import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
 } from '../lib/berechnung';
-import { effektiverStandardAustraegerId } from '../utils';
+import { effektiverStandardAustraegerId, hatAdresse } from '../utils';
+import { formatAdresse } from '../lib/sonderLieferung';
 
 interface Props {
   ausgabe: Ausgabe;
@@ -41,6 +43,8 @@ interface Zeile {
   beilagenExtern: Beilage[];
   empfaenger: Mitarbeiter | null;
   istSpringer: boolean;
+  /** Andere Lieferadresse nur in dieser Ausgabe (aus dem Einsatz). */
+  sonderLieferadresse?: SonderLieferadresse;
   gewichtKg: number;
 }
 
@@ -114,6 +118,7 @@ export default function UebersichtDruck({
         beilagenExtern: extB,
         empfaenger: empf,
         istSpringer,
+        sonderLieferadresse: hatAdresse(e?.sonderLieferadresse) ? e!.sonderLieferadresse : undefined,
         gewichtKg: gAnz + gBei,
       };
     });
@@ -359,13 +364,22 @@ function UebersichtSheet({
                         {z.istSpringer && <span className="ub-springer-banner">🔄 SPRINGER</span>}
                         {istAbholer && <span className="ub-abholer-banner">📦 ABHOLER</span>}
                       </div>
-                      {empf.adresse?.strasse && (
-                        <div style={{ fontSize: '10px', color: '#374151' }}>{empf.adresse.strasse}</div>
-                      )}
-                      {(empf.adresse?.plz || empf.adresse?.ort) && (
-                        <div style={{ fontSize: '10px', color: '#374151' }}>
-                          {empf.adresse.plz} {empf.adresse.ort}
+                      {z.sonderLieferadresse ? (
+                        <div style={{ fontSize: '10px', color: '#6b21a8', fontWeight: 700 }}>
+                          📍 Sonder-Adresse (nur diese KW): {formatAdresse(z.sonderLieferadresse)}
+                          {z.sonderLieferadresse.telefon && <div style={{ fontWeight: 400 }}>📞 {z.sonderLieferadresse.telefon}</div>}
                         </div>
+                      ) : (
+                        <>
+                          {empf.adresse?.strasse && (
+                            <div style={{ fontSize: '10px', color: '#374151' }}>{empf.adresse.strasse}</div>
+                          )}
+                          {(empf.adresse?.plz || empf.adresse?.ort) && (
+                            <div style={{ fontSize: '10px', color: '#374151' }}>
+                              {empf.adresse.plz} {empf.adresse.ort}
+                            </div>
+                          )}
+                        </>
                       )}
                       {(empf.telefon || empf.mobilnummer) && (
                         <div style={{ fontSize: '10px', color: '#1f2937', marginTop: '1px' }}>

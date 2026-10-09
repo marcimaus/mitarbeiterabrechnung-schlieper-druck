@@ -32,6 +32,7 @@ import type {
   ZusammentragerStatus,
   UrlaubsEintrag,
   UrlaubStatus,
+  UrlaubErstellerRolle,
   StandardAustraegerWechselPlan,
   KwVermerk,
   KwVermerkKategorie,
@@ -217,6 +218,7 @@ export async function setzeZusammentragerPlanung(
 // Freigabe-Workflow:
 //   Admin    → freigegeben:true  beim Anlegen
 //   Abrechnung → freigegeben:false → Admin entscheidet später
+//   Mitarbeiter (eigener Antrag im Bereich „Urlaub") → freigegeben:false
 
 const URLAUB_COLL = 'urlaubsplanung';
 
@@ -301,7 +303,7 @@ export async function setzeUrlaub(
     externerLink?: string;
     werktageInKw?: string[];
     erstellerName: string;
-    erstellerRolle: 'admin' | 'abrechnung';
+    erstellerRolle: UrlaubErstellerRolle;
   },
 ): Promise<void> {
   const id = urlaubDocId(jahr, kw, mitarbeiterId);
@@ -309,6 +311,12 @@ export async function setzeUrlaub(
   const existing = await getDoc(ref);
   const ts = now();
   const ex = existing.exists() ? (existing.data() as UrlaubsEintrag) : null;
+
+  // Mitarbeiter-Antrag: ein freigegebener Eintrag bleibt unangetastet
+  // (die UI sperrt das vorher; hier nur als Backup).
+  if (ex && ex.freigegeben && details.erstellerRolle === 'mitarbeiter') {
+    throw new Error(`KW ${kw}/${jahr} ist bereits als freigegebener Urlaub eingetragen.`);
+  }
 
   // Wenn der Eintrag schon freigegeben ist und der neue Bearbeiter
   // Abrechnung ist: nur Kommentar ergänzen, sonst nichts überschreiben.
@@ -436,7 +444,7 @@ export async function setzeUrlaubsGruppe(
     kommentar?: string;
     externerLink?: string;
     erstellerName: string;
-    erstellerRolle: 'admin' | 'abrechnung';
+    erstellerRolle: UrlaubErstellerRolle;
     // Falls die Gruppe vorher andere von/bis-Daten hatte (z. B. weil der
     // User den Zeitraum verschoben hat), brauchen wir diese, um die alten
     // Geschwister zu finden und ggf. zu löschen.
@@ -506,6 +514,36 @@ export async function freigebenUrlaubsGruppe(
       freigebenUrlaub(e.jahr, e.kw, e.mitarbeiterId, adminName),
     ),
   );
+}
+
+// ============================================================
+// Urlaubs-Vergleich: gemerkte Kollegen-Auswahl je Mitarbeiter
+// ============================================================
+//
+// Im Bereich „Urlaub" sieht ein Mitarbeiter seine Urlaube neben denen
+// ausgewählter Kollegen. Die Auswahl wird je Mitarbeiter gespeichert
+// (docId = mitarbeiterId), damit sie geräteübergreifend erhalten bleibt.
+// Fehlt der Datensatz, gelten alle Kollegen als ausgewählt.
+
+const URLAUB_VERGLEICH_COLL = 'urlaubVergleichAuswahl';
+
+export function urlaubVergleichAuswahlListener(
+  mitarbeiterId: string,
+  cb: (mitarbeiterIds: string[] | null) => void,
+): Unsubscribe {
+  return onSnapshot(doc(db, URLAUB_VERGLEICH_COLL, mitarbeiterId), (snap) => {
+    cb(snap.exists() ? ((snap.data().mitarbeiterIds as string[] | undefined) ?? []) : null);
+  });
+}
+
+export async function speichereUrlaubVergleichAuswahl(
+  mitarbeiterId: string,
+  mitarbeiterIds: string[],
+): Promise<void> {
+  await setDoc(doc(db, URLAUB_VERGLEICH_COLL, mitarbeiterId), {
+    mitarbeiterIds,
+    aktualisiertAm: now(),
+  });
 }
 
 // ============================================================

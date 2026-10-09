@@ -55,77 +55,21 @@ import {
   loescheKwVermerk,
 } from '../lib/planung';
 import { getISOWeek, getISOYear } from '../lib/kalender';
+import { isoFromDate, urlaubWochenAusBereich, zaehleWerktage, bisAusWerktage } from '../lib/urlaub';
 import { istTgAktivFuer } from '../lib/saison';
 import { ferienInKw, feiertageInKw, setzeFerienkalender } from '../lib/ferien';
 import { ferienkalenderListener } from '../lib/ferienkalender';
 import FerienlisterZusammentraeger from '../components/FerienlisterZusammentraeger';
 import FerienkalenderModal from '../components/FerienkalenderModal';
-
-/**
- * Werktagsverteilung pro ISO-Woche für einen Datumsbereich.
- * Liefert je Woche, in die mind. ein Werktag (Mo-Fr) fällt, die Anzahl
- * der enthaltenen Werktage. Wochenenden werden ignoriert.
- *
- * Wird verwendet, um pro Chip den Urlaubsstatus abzuleiten:
- *   5 Werktage  → ganze Woche
- *   2-4         → mehrtägig
- *   1           → einzeltag (z. B. Urlaub beginnt Freitag oder endet Montag)
- */
-function urlaubWochenAusBereich(
-  datumVon: string,
-  datumBis: string,
-  zusatzWerktage: string[] = [],
-): Array<{ jahr: number; kw: number; status: UrlaubStatus; werktageInKw: string[] }> {
-  // Sammle alle Werktage (Mo–Fr) aus dem [von..bis]-Bereich plus
-  // explizite Zusatz-Werktage (z. B. Mo + Mi + Fr in einer KW).
-  const alleTage = new Set<string>();
-  if (datumVon && datumBis) {
-    const von = new Date(datumVon);
-    const bis = new Date(datumBis);
-    if (!isNaN(+von) && !isNaN(+bis) && bis >= von) {
-      const cursor = new Date(von);
-      while (cursor <= bis) {
-        const dow = cursor.getDay();
-        if (dow >= 1 && dow <= 5) {
-          alleTage.add(isoFromDate(cursor));
-        }
-        cursor.setDate(cursor.getDate() + 1);
-      }
-    }
-  }
-  for (const iso of zusatzWerktage) {
-    if (!iso) continue;
-    const d = new Date(iso);
-    if (isNaN(+d)) continue;
-    const dow = d.getDay();
-    if (dow < 1 || dow > 5) continue; // nur Werktage
-    alleTage.add(iso);
-  }
-  if (alleTage.size === 0) return [];
-
-  // Gruppiere nach ISO-Woche.
-  const buckets = new Map<string, { jahr: number; kw: number; tage: string[] }>();
-  for (const iso of alleTage) {
-    const d = new Date(iso);
-    const j = getISOYear(d);
-    const k = getISOWeek(d);
-    const key = `${j}-${k}`;
-    const b = buckets.get(key) ?? { jahr: j, kw: k, tage: [] };
-    b.tage.push(iso);
-    buckets.set(key, b);
-  }
-
-  const out: Array<{ jahr: number; kw: number; status: UrlaubStatus; werktageInKw: string[] }> = [];
-  for (const b of buckets.values()) {
-    b.tage.sort();
-    const c = b.tage.length;
-    const status: UrlaubStatus =
-      c >= 5 ? 'ganze-woche' : c >= 2 ? 'mehrtaegig' : 'einzeltag';
-    out.push({ jahr: b.jahr, kw: b.kw, status, werktageInKw: b.tage });
-  }
-  out.sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
-  return out;
-}
+import SonderLieferungFelder from '../components/SonderLieferungFelder';
+import {
+  beschreibeSonderAenderung,
+  formatAdresse,
+  hatSonderLieferadresse,
+  sonderFelderAusWert,
+  sonderWertAusEinsatz,
+  type SonderLieferungWert,
+} from '../lib/sonderLieferung';
 
 /**
  * Kürzt einen TG-Namen für die schmalen Chip-Zellen so, dass die
@@ -156,53 +100,6 @@ function istVergangeneKw(jahr: number, kw: number): boolean {
   return kw < heute.kw;
 }
 
-function isoFromDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/** Anzahl Werktage (Mo–Fr) zwischen `von` und `bis` inklusiv. */
-function zaehleWerktage(datumVon: string, datumBis: string): number {
-  if (!datumVon || !datumBis) return 0;
-  const v = new Date(datumVon);
-  const b = new Date(datumBis);
-  if (isNaN(+v) || isNaN(+b) || b < v) return 0;
-  let n = 0;
-  const c = new Date(v);
-  while (c <= b) {
-    const dow = c.getDay();
-    if (dow >= 1 && dow <= 5) n++;
-    c.setDate(c.getDate() + 1);
-  }
-  return n;
-}
-
-/**
- * Berechnet aus `datumVon` + Anzahl Werktage das resultierende `datumBis`.
- * Startet beim `datumVon`; wenn dieses ein Wochenend-Tag ist, wird auf den
- * folgenden Montag verschoben. Liefert ISO-Date oder leeren String, wenn
- * die Eingabe ungültig ist.
- */
-function bisAusWerktage(datumVon: string, anzahl: number): string {
-  if (!datumVon || anzahl < 1) return '';
-  const start = new Date(datumVon);
-  if (isNaN(+start)) return '';
-  // Wenn datumVon ein Samstag (6) oder Sonntag (0): auf nächsten Montag legen.
-  const dow0 = start.getDay();
-  if (dow0 === 0) start.setDate(start.getDate() + 1);
-  if (dow0 === 6) start.setDate(start.getDate() + 2);
-  let werktageGezaehlt = 0;
-  const cursor = new Date(start);
-  // Werktage-Count bis Anzahl erreicht. Letzter Werktag = Bis-Datum.
-  while (werktageGezaehlt < anzahl) {
-    const dow = cursor.getDay();
-    if (dow >= 1 && dow <= 5) werktageGezaehlt++;
-    if (werktageGezaehlt < anzahl) cursor.setDate(cursor.getDate() + 1);
-  }
-  return isoFromDate(cursor);
-}
 import {
   DRUCKSAAL_TAETIGKEIT_LABELS,
   ZUSAMMENTRAGER_STATUS_LABELS,
@@ -220,7 +117,6 @@ import {
   type Einsatz,
   type Parameter,
   type UrlaubsEintrag,
-  type UrlaubStatus,
   type StandardAustraegerWechselPlan,
   type Mitarbeiter,
   type Teilgebiet,
@@ -3058,7 +2954,7 @@ function UrlaubModal({
       {existing && !existing.freigegeben && (
         <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
           ⏳ <strong>Noch nicht freigegeben.</strong> Erfasst von {existing.erstellerName}{' '}
-          ({existing.erstellerRolle}) am{' '}
+          ({existing.erstellerRolle === 'mitarbeiter' ? 'Antrag des Mitarbeiters' : existing.erstellerRolle}) am{' '}
           {new Date(existing.erstelltAm).toLocaleDateString('de-DE')}.
           {istAdmin && (
             <button
@@ -3357,6 +3253,8 @@ function AusfallChip({
         `Standard: ${eintrag.standardAustraegerSnapshot ? mitarbeiterById.get(eintrag.standardAustraegerSnapshot)?.name ?? '?' : '—'}\n` +
         (springerName ? `Springer: ${mitarbeiterById.get(eintrag.mitarbeiterId!)?.name ?? '?'}\n` : '') +
         (istAbgekoppelt ? 'Aus Dauer-Springer-Gruppe abgekoppelt (Springer-Ausfall in dieser KW)\n' : '') +
+        (hatSonderLieferadresse(eintrag) ? `📍 Andere Lieferadresse: ${formatAdresse(eintrag.sonderLieferadresse)}\n` : '') +
+        (eintrag.vorschussVorgemerkt && hatSpringer ? '💶 Vorschuss vorgemerkt\n' : '') +
         (eintrag.kommentar ? `Kommentar: ${eintrag.kommentar}` : '')
       }
     >
@@ -3364,6 +3262,12 @@ function AusfallChip({
         {icon} {tgKurz}
         {springerName && <span className="opacity-70"> · {springerName}</span>}
       </div>
+      {(hatSonderLieferadresse(eintrag) || (eintrag.vorschussVorgemerkt && hatSpringer)) && (
+        <span className="absolute -bottom-1 -right-1 text-[9px] leading-none">
+          {hatSonderLieferadresse(eintrag) && '📍'}
+          {eintrag.vorschussVorgemerkt && hatSpringer && '💶'}
+        </span>
+      )}
       {standardChanged && (
         <span className="absolute -top-1 -right-1 text-[10px]" title="Standardausträger hat sich geändert!">⚡</span>
       )}
@@ -3470,6 +3374,10 @@ function AusfallModal({
   });
   const [kommentar, setKommentar] = useState(existing?.kommentar ?? '');
   const [externerLink, setExternerLink] = useState(existing?.externerLink ?? '');
+  // Andere Lieferadresse / Vorschuss — gilt für jede KW dieses Ausfalls.
+  const [sonder, setSonder] = useState<SonderLieferungWert>(() => sonderWertAusEinsatz(existing));
+  const [sonderOffen, setSonderOffen] = useState(() => sonder.adresseAktiv || sonder.vorschuss);
+  const alleMitarbeiter = useMemo(() => [...mitarbeiterById.values()], [mitarbeiterById]);
   // bisKw wird nur explizit als „mehrwöchig" markiert, wenn der bestehende
   // Eintrag eine über die aktuelle KW hinausreichende `ausfallBisKw` trägt.
   const initialBisKw =
@@ -3717,6 +3625,9 @@ function AusfallModal({
       const typ: 'springer' | 'ungeklärt' = springerId ? 'springer' : 'ungeklärt';
       const ausfallBisJahr = bisKw == null ? undefined : jahr;
       const ausfallBisKw = bisKw == null ? undefined : bis;
+      // Vorschuss nur mit Springer (ohne Austräger gibt es niemanden, dem er
+      // ausgezahlt wird) — sonst wird die Vormerkung entfernt.
+      const sonderFelder = sonderFelderAusWert(sonder, !!springerId);
 
       for (let k = von; k <= bis; k++) {
         if (abgekoppelteKws.has(k) || fixierteKws.has(k)) continue;
@@ -3731,6 +3642,7 @@ function AusfallModal({
           springerZuschlagProzent: springerId && springerZuschlag ? parseFloat(springerZuschlag) : undefined,
           kommentar: kommentar.trim() || undefined,
           externerLink: externerLink.trim() || undefined,
+          ...sonderFelder,
           ausfallBisJahr,
           ausfallBisKw,
           // Explizit löschen — falls dieser Eintrag vorher als Single-Cell
@@ -3767,6 +3679,7 @@ function AusfallModal({
         if (springerId) teile.push(`Zuschlag: ${neuZuschlagText}`);
         if (kommentar.trim()) teile.push(`Kommentar: "${kommentar.trim()}"`);
         if (externerLink.trim()) teile.push(`Link: ${externerLink.trim()}`);
+        teile.push(...beschreibeSonderAenderung(null, sonderFelder));
       } else {
         const altVon = existing?.kw ?? von;
         const altBis = existing?.ausfallBisKw ?? altVon;
@@ -3785,6 +3698,7 @@ function AusfallModal({
         if (d3) teile.push(d3);
         const d4 = protokollDiff('Link', existing?.externerLink ?? '', externerLink.trim());
         if (d4) teile.push(d4);
+        teile.push(...beschreibeSonderAenderung(existing, sonderFelder));
         if (teile.length === 0) teile.push('Erneut gespeichert, keine inhaltliche Änderung.');
       }
       await schreibeAuditLog({
@@ -3846,6 +3760,9 @@ function AusfallModal({
         typ: 'ungeklärt',
         kommentar: abkopplungKommentar.trim() || undefined,
         externerLink: existing.externerLink,
+        // Unbesetzt → niemand, dem ein Vorschuss ausgezahlt würde.
+        vorschussVorgemerkt: undefined,
+        vorschussBetragEur: undefined,
         // Single-Cell ab jetzt — diese KW ist nicht mehr Teil der Gruppe.
         ausfallBisJahr: undefined,
         ausfallBisKw: undefined,
@@ -4240,6 +4157,32 @@ function AusfallModal({
             )}
           </div>
         </div>
+
+        {/* Andere Lieferadresse / Vorschuss — je KW des Ausfalls im Einsatz
+            gespeichert; Lieferschein + Einsätze-Screen werten es aus. */}
+        <details
+          className="rounded-lg border border-gray-200"
+          open={sonderOffen}
+          onToggle={(e) => setSonderOffen(e.currentTarget.open)}
+        >
+          <summary className="px-3 py-2 text-xs font-medium text-gray-700 cursor-pointer">
+            📍 Andere Lieferadresse / 💶 Vorschuss (optional)
+          </summary>
+          <div className="px-3 pb-3">
+            <SonderLieferungFelder
+              wert={sonder}
+              onChange={setSonder}
+              teilgebiet={tg}
+              teilgebiete={teilgebiete}
+              mitarbeiter={alleMitarbeiter}
+              empfaengerId={springerId}
+              vorschussMoeglich={!!springerId}
+              vorschussHinweis="Erst einen Springer wählen — ohne Austräger gibt es keinen Vorschuss."
+              mehrereWochen={bisKw != null}
+              disabled={istGesperrt}
+            />
+          </div>
+        </details>
 
         {/* Ausfall / Springer-Übernahme bis KW.
             Label wird kontextabhängig angepasst: Wechsel-Sektion =

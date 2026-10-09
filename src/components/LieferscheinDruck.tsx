@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { istInSaisonpauseFuer } from '../lib/saison';
+import { donnerstagDerKW } from '../lib/kalender';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { ladeAuslieferungsmemosFuerAusgaben } from '../lib/db';
@@ -27,7 +28,8 @@ import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
 } from '../lib/berechnung';
-import { effektiverStandardAustraegerId, effektiveLieferadresse } from '../utils';
+import { effektiverStandardAustraegerId, effektiveLieferadresse, hatAdresse } from '../utils';
+import { formatAdresse } from '../lib/sonderLieferung';
 
 // ---- Typen --------------------------------------------------
 
@@ -61,13 +63,13 @@ interface LieferscheinInfo {
 
 // ---- Hilfsfunktionen ----------------------------------------
 
-/** Mittwoch der ISO-Woche als YYYY-MM-DD */
+/** Mittwoch der ISO-Woche als YYYY-MM-DD.
+ *  Komplett in UTC gerechnet (Donnerstag − 1 Tag), damit `toISOString()`
+ *  nicht durch die Zeitzone (MEZ/MESZ) auf den Vortag rutscht. */
 function mittwochDerKW(kw: number, jahr: number): string {
-  const jan4 = new Date(jahr, 0, 4);
-  const wochentag = jan4.getDay() || 7;
-  const mo = new Date(jan4);
-  mo.setDate(jan4.getDate() - (wochentag - 1) + (kw - 1) * 7 + 2); // +2 = Mittwoch
-  return mo.toISOString().slice(0, 10);
+  const mi = donnerstagDerKW(kw, jahr);
+  mi.setUTCDate(mi.getUTCDate() - 1);
+  return mi.toISOString().slice(0, 10);
 }
 
 function formatDatum(iso: string): string {
@@ -536,7 +538,7 @@ export default function LieferscheinDruck({
                         {s.tour?.name ?? 'Ohne Tour'}
                       </div>
                     )}
-                    <LieferscheinSeite info={s} periode={periode} />
+                    <LieferscheinSeite info={s} periode={periode} selectedKw={selectedKw} />
                   </div>
                 );
               })}
@@ -548,7 +550,7 @@ export default function LieferscheinDruck({
       {/* ---- Druck-Inhalt (nur beim Drucken sichtbar) ---- */}
       <div className="lieferschein-druckbereich hidden print:block">
         {sichtbareScheine.map((s) => (
-          <LieferscheinSeite key={s.schluessel} info={s} periode={periode} />
+          <LieferscheinSeite key={s.schluessel} info={s} periode={periode} selectedKw={selectedKw} />
         ))}
       </div>
     </>
@@ -560,9 +562,12 @@ export default function LieferscheinDruck({
 function LieferscheinSeite({
   info,
   periode,
+  selectedKw,
 }: {
   info: LieferscheinInfo;
   periode: Abrechnungsperiode;
+  /** KW der gedruckten Ausgabe — maßgeblich für eine Sonder-Lieferadresse. */
+  selectedKw: number;
 }) {
   const { teilgebiet: tg, empfaenger: ma, istSpringer, zeilen, memos, tour } = info;
 
@@ -576,14 +581,14 @@ function LieferscheinSeite({
   // Schein gesondert hervorgehoben; die Wohnadresse des MA bleibt als
   // Kontaktangabe stehen.
   const lieferInfo = effektiveLieferadresse(ma, tg.id);
-  const istAbweichendeLieferadresse = lieferInfo.quelle !== 'wohnadresse';
-  const lieferAdr = lieferInfo.adresse;
-  const adresse = [
-    lieferAdr.strasse,
-    `${lieferAdr.plz ?? ''} ${lieferAdr.ort ?? ''}`.trim(),
-  ]
-    .filter(Boolean)
-    .join(', ');
+  const regulaereAdresse = formatAdresse(lieferInfo.adresse);
+  // Sonder-Lieferadresse (nur in der gedruckten Woche) hat Vorrang vor allen
+  // Stammdaten-Adressen.
+  const sonderAdr = zeilen.find((z) => z.kw === selectedKw)?.einsatz?.sonderLieferadresse;
+  const istSonderAdresse = hatAdresse(sonderAdr);
+  const istAbweichendeLieferadresse = istSonderAdresse || lieferInfo.quelle !== 'wohnadresse';
+  const lieferAdr = istSonderAdresse ? sonderAdr : lieferInfo.adresse;
+  const adresse = formatAdresse(lieferAdr);
 
   // Farbe des Kopfbereichs: rot, wenn Springer
   const headerFarbe = istSpringer ? '#b91c1c' : '#1e3a5f';
@@ -658,9 +663,13 @@ function LieferscheinSeite({
       </div>
 
       {/* ---- Adresse direkt darunter ---- */}
-      {istAbweichendeLieferadresse ? (
+      {istSonderAdresse ? (
+        <div style={{ fontSize: '14px', fontWeight: 800, color: '#6b21a8', marginTop: '2px', marginBottom: '10px' }}>
+          SONDER-AUSLIEFERUNGSADRESSE (nur KW {selectedKw}): {adresse || '—'}
+        </div>
+      ) : istAbweichendeLieferadresse ? (
         <div style={{ fontSize: '13px', fontWeight: 700, color: '#9a3412', marginTop: '2px', marginBottom: '10px' }}>
-          📍 Abweichende Lieferadresse: {adresse || '—'}
+          Abweichende Lieferadresse: {adresse || '—'}
         </div>
       ) : (
         <div style={{ fontSize: '13px', color: '#374151', marginTop: '2px', marginBottom: '10px' }}>
@@ -804,8 +813,51 @@ function LieferscheinSeite({
         </div>
       </div>
 
+      {/* ---- Sonder-Auslieferungsadresse nur für diese Woche (hervorgehoben) ---- */}
+      {istSonderAdresse && (
+        <div style={{
+          marginBottom: '12px',
+          border: '3px dashed #7e22ce',
+          borderRadius: '6px',
+          padding: '8px 12px',
+          background: '#faf5ff',
+        }}>
+          <div style={{
+            fontSize: '11px',
+            color: '#6b21a8',
+            fontWeight: 800,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            marginBottom: '4px',
+          }}>
+            Sonder-Auslieferungsadresse — nur für KW {selectedKw} — hierhin liefern!
+          </div>
+          {lieferAdr.strasse && (
+            <div style={{ color: '#581c87', fontWeight: 800, fontSize: '14px' }}>{lieferAdr.strasse}</div>
+          )}
+          {(lieferAdr.plz || lieferAdr.ort) && (
+            <div style={{ color: '#581c87', fontWeight: 800, fontSize: '14px' }}>
+              {lieferAdr.plz} {lieferAdr.ort}
+            </div>
+          )}
+          {lieferAdr.telefon && (
+            <div style={{ color: '#6b21a8', marginTop: '2px' }}><span className="ls-icon">📞</span> {lieferAdr.telefon}</div>
+          )}
+          {lieferAdr.memo && (
+            <div style={{ color: '#6b21a8', marginTop: '3px', fontSize: '11px', whiteSpace: 'pre-wrap' }}>
+              ℹ {lieferAdr.memo}
+            </div>
+          )}
+          {regulaereAdresse && (
+            <div style={{ color: '#6b7280', marginTop: '4px', fontSize: '10px' }}>
+              Ausnahmsweise NICHT an die übliche Adresse ({regulaereAdresse}).
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ---- Abweichende Lieferadresse (hervorgehoben) ---- */}
-      {istAbweichendeLieferadresse && (
+      {istAbweichendeLieferadresse && !istSonderAdresse && (
         <div style={{
           marginBottom: '12px',
           border: '2px solid #c2410c',
@@ -821,7 +873,7 @@ function LieferscheinSeite({
             letterSpacing: '0.05em',
             marginBottom: '4px',
           }}>
-            📍 Abweichende Lieferadresse{lieferInfo.quelle === 'teilgebiet' ? ' (für dieses Teilgebiet)' : ''} — hierhin liefern!
+            Abweichende Lieferadresse{lieferInfo.quelle === 'teilgebiet' ? ' (für dieses Teilgebiet)' : ''} — hierhin liefern!
           </div>
           {lieferAdr.strasse && (
             <div style={{ color: '#7c2d12', fontWeight: 700, fontSize: '13px' }}>{lieferAdr.strasse}</div>
@@ -1036,7 +1088,7 @@ function LieferscheinSeite({
         display: 'flex',
         justifyContent: 'space-between',
       }}>
-        <span>Lieferadresse: {adresse}</span>
+        <span>{istSonderAdresse ? `Sonder-Lieferadresse KW ${selectedKw}` : 'Lieferadresse'}: {adresse}</span>
         <span>Druckdatum: {new Date().toLocaleDateString('de-DE')}</span>
       </div>
     </div>

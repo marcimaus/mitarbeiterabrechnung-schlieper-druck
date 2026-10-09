@@ -56,6 +56,16 @@ export interface AustraegerEinsatzErgebnis {
   nachtrag?: boolean;
 }
 
+/** Vorgemerkter Vorschuss für einen Einsatz (Ausgabe × Teilgebiet). */
+export interface VorschussVormerkung {
+  kw: number;
+  jahr: number;
+  teilgebietId: string;
+  teilgebietName: string;
+  /** Fester Betrag bzw. berechneter Lohn des Einsatzes; null = nicht ermittelbar. */
+  betragEur: number | null;
+}
+
 export interface AusgabenBonusErgebnis {
   id: string;
   ausgabeId: string;
@@ -124,6 +134,13 @@ export interface MitarbeiterAbrechnung {
   // Vorschüsse (Abschlagszahlungen)
   vorschuesse: Vorschuss[];
   vorschussSumme: number;
+  /**
+   * Im Einsätze-Screen / in der Planung als Vorschuss vorgemerkte Einsätze
+   * dieses MA — nur Hinweis, fließt NICHT in vorschussSumme ein (der
+   * Vorschuss wird in der Abrechnung manuell gebucht). Optional, weil
+   * ältere Abrechnungs-Snapshots das Feld nicht haben.
+   */
+  vorschussVormerkungen?: VorschussVormerkung[];
   // Variabler Periodenzusatz / Bonus
   bonus: number;
   bonusKommentar?: string;
@@ -998,6 +1015,39 @@ export function berechneAbrechnung(
     const bruttoLohnbuero =
       gesamt - lk.lohnkontoVerschiebungPeriode + lk.lohnkontoVerrechnungPeriode;
 
+    // --- Vorgemerkte Vorschüsse (nur Hinweis) ---
+    // Zugeordnet wird über die Austragen-Zeile: wer für die Zelle bezahlt
+    // wird, dem gilt auch der Vorschuss. Bei Abrechnung nach Ist-Zeit gibt es
+    // keine Zeilen — dann über den effektiven Austräger, ohne Betrag.
+    const vorschussVormerkungen: VorschussVormerkung[] = [];
+    for (const e of data.einsaetze) {
+      if (!e.vorschussVorgemerkt || e.typ === 'ausfall' || e.typ === 'ungeklärt') continue;
+      const zeile = austraegerEinsaetze.find(
+        (a) => a.jahr === e.jahr && a.kw === e.kw && a.teilgebietId === e.teilgebietId
+      );
+      const tg = effTeilgebiete.find((t) => t.id === e.teilgebietId);
+      if (zeile) {
+        vorschussVormerkungen.push({
+          kw: e.kw,
+          jahr: e.jahr,
+          teilgebietId: e.teilgebietId,
+          teilgebietName: zeile.teilgebietName,
+          betragEur: e.vorschussBetragEur ?? zeile.detail.gesamt,
+        });
+      } else if (effParams.austragenNachIstZeit) {
+        const austraegerId = e.typ === 'springer' ? e.mitarbeiterId : tg?.standardAustraegerId;
+        if (austraegerId !== ma.id) continue;
+        vorschussVormerkungen.push({
+          kw: e.kw,
+          jahr: e.jahr,
+          teilgebietId: e.teilgebietId,
+          teilgebietName: tg?.name ?? '?',
+          betragEur: e.vorschussBetragEur ?? null,
+        });
+      }
+    }
+    vorschussVormerkungen.sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
+
     if (
       gesamt !== 0 ||
       austraegerEinsaetze.length > 0 ||
@@ -1033,6 +1083,7 @@ export function berechneAbrechnung(
         fahrtkostenGesamt,
         vorschuesse: maVorschuesse,
         vorschussSumme,
+        ...(vorschussVormerkungen.length > 0 ? { vorschussVormerkungen } : {}),
         bonus,
         bonusKommentar,
         bonusId,

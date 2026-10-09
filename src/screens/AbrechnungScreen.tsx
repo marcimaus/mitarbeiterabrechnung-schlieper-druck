@@ -46,7 +46,7 @@ import {
 import { sichereTeilgebietsdokuAktuell } from '../lib/teilgebietsdoku';
 import { merkeVerteilplanOnlineAenderung, verteilplanRelevanteAenderung } from '../lib/verteilplanOnline';
 import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse';
-import type { MitarbeiterAbrechnung } from '../lib/abrechnungslogik';
+import type { MitarbeiterAbrechnung, VorschussVormerkung } from '../lib/abrechnungslogik';
 import { getISOWeek } from '../lib/kalender';
 import { vorarbeitAusgabe, zeitfensterText } from '../lib/vorarbeit';
 import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet, Arbeitszeit, Einsatz } from '../types';
@@ -2022,6 +2022,19 @@ function AbrechnungInhalt() {
                       </td>
                       <td className="px-4 py-3 text-right text-red-600 font-medium">
                         {er.vorschussSumme > 0 ? `- ${eur(er.vorschussSumme)}` : '—'}
+                        {(er.vorschussVormerkungen?.length ?? 0) > 0 && (
+                          <div
+                            className="text-[10px] font-normal text-emerald-700 whitespace-nowrap"
+                            title={
+                              'Im Einsätze-Screen als Vorschuss vorgemerkt (nur Hinweis — Buchung manuell):\n' +
+                              er.vorschussVormerkungen!
+                                .map((v) => `KW ${v.kw} · ${v.teilgebietName}: ${v.betragEur != null ? eur(v.betragEur) : '—'}`)
+                                .join('\n')
+                            }
+                          >
+                            💶 vorgemerkt {eur(er.vorschussVormerkungen!.reduce((s, v) => s + (v.betragEur ?? 0), 0))}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right font-bold text-gray-900 pr-5">
                         {er.mitarbeiter.sozialversicherungsBefreit ? (
@@ -3200,6 +3213,7 @@ function DetailAnsicht({
           mitarbeiterId={er.mitarbeiter.id}
           periodeId={periode.id}
           vorschuesse={er.vorschuesse}
+          vormerkungen={er.vorschussVormerkungen ?? []}
           onChange={onVorschussChange ?? (() => {})}
           istGesperrt={istGesperrt}
         />
@@ -3214,12 +3228,15 @@ function VorschussverwaltungDetail({
   mitarbeiterId,
   periodeId,
   vorschuesse,
+  vormerkungen,
   onChange,
   istGesperrt,
 }: {
   mitarbeiterId: string;
   periodeId: string;
   vorschuesse: Vorschuss[];
+  /** Im Einsätze-Screen vorgemerkte Vorschüsse — nur Hinweis. */
+  vormerkungen: VorschussVormerkung[];
   onChange: () => void;
   istGesperrt?: boolean;
 }) {
@@ -3289,6 +3306,38 @@ function VorschussverwaltungDetail({
           </button>
         )}
       </div>
+
+      {vormerkungen.length > 0 && (
+        <div className="mb-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+          <div className="font-medium mb-1">
+            💶 Als Vorschuss vorgemerkt (Einsätze/Planung) — Hinweis, wird nicht automatisch abgezogen:
+          </div>
+          <ul className="space-y-0.5">
+            {vormerkungen.map((v) => (
+              <li key={`${v.jahr}-${v.kw}-${v.teilgebietId}`} className="flex items-center gap-2">
+                <span>
+                  KW {v.kw}/{v.jahr} · {v.teilgebietName}: <strong>{v.betragEur != null ? eur(v.betragEur) : '—'}</strong>
+                </span>
+                {isAdmin && !showForm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditTarget(null);
+                      setBetrag(v.betragEur != null ? v.betragEur.toFixed(2) : '');
+                      setBemerkung(`Vorschuss KW ${v.kw} · ${v.teilgebietName}`);
+                      setShowForm(true);
+                    }}
+                    className="text-blue-600 hover:text-blue-800 underline"
+                    title="Betrag und Bemerkung ins Vorschuss-Formular übernehmen (Erfassen bestätigt die Buchung)"
+                  >
+                    ins Formular übernehmen
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {showForm && (
         <form onSubmit={handleSave} className="bg-white rounded border border-blue-200 p-3 mb-2 flex flex-wrap gap-3 items-end">

@@ -7,6 +7,8 @@ import ZettelchenDruck from '../components/ZettelchenDruck';
 import KontrolleGewichteDruck from '../components/KontrolleGewichteDruck';
 import UebersichtDruck from '../components/UebersichtDruck';
 import AuslieferungsmemoVerwaltung from '../components/AuslieferungsmemoVerwaltung';
+import VorschusslisteDruck, { type VorschusslisteZeile } from '../components/VorschusslisteDruck';
+import SonderLieferungFelder from '../components/SonderLieferungFelder';
 import {
   ladeAusgaben,
   ladeEinsaetze,
@@ -17,11 +19,23 @@ import {
   aktualisiereAusgabe,
   aktualisiereBeilage,
   ladeBeilagenVorlagen,
+  ladeSondervereinbarungen,
 } from '../lib/db';
+import { effektiveParameter, effektiveTeilgebiete } from '../lib/abrechnungslogik';
+import {
+  beschreibeSonderAenderung,
+  effektiverAustraegerId,
+  formatAdresse,
+  geplanterVorschussBetrag,
+  hatSonderLieferadresse,
+  sonderFelderAusWert,
+  sonderWertAusEinsatz,
+  type SonderLieferungWert,
+} from '../lib/sonderLieferung';
 import { gesperrteKwKeys, vorlageTeilgebietIds } from '../lib/beilagenVorlagen';
 import { getCurrentKW } from '../lib/kalender';
 import { istTgAktivFuer, istInSaisonpause, istSaisonAusnahme, saisonPauseText } from '../lib/saison';
-import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage } from '../types';
+import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage, Sondervereinbarung } from '../types';
 import { kwLabel, MONATSNAMEN } from '../lib/kalender';
 import { berechneGewichtAnzeigenblattKg, berechneGewichtBeilagenKg, berechneAustraegezeit, berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 import { effektiverStandardAustraegerId } from '../utils';
@@ -84,11 +98,24 @@ function EinsaetzeInhalt() {
   const [uebersichtOffen, setUebersichtOffen] = useState(false);
   const [memosOffen, setMemosOffen] = useState(false);
   const [beilagenDialogTg, setBeilagenDialogTg] = useState<Teilgebiet | null>(null);
+  // Sonder-Lieferadresse + Vorschuss: im Springer-Dialog und in einem
+  // eigenen Dialog je Zeile (auch für Standard-Einsätze).
+  const [springerSonder, setSpringerSonder] = useState<SonderLieferungWert>(() => sonderWertAusEinsatz(null));
+  const [springerSonderOffen, setSpringerSonderOffen] = useState(false);
+  const [sonderDialogTg, setSonderDialogTg] = useState<Teilgebiet | null>(null);
+  const [sonderWert, setSonderWert] = useState<SonderLieferungWert>(() => sonderWertAusEinsatz(null));
+  const [sonderSpeichert, setSonderSpeichert] = useState(false);
+  const [vorschusslisteOffen, setVorschusslisteOffen] = useState(false);
+  // Für den geplanten Vorschuss (= Austragen-Lohn) — wie in der Abrechnung.
+  const [sondervereinbarungen, setSondervereinbarungen] = useState<Sondervereinbarung[]>([]);
+  useEffect(() => {
+    ladeSondervereinbarungen().then(setSondervereinbarungen);
+  }, []);
 
   // ---- Such- und Filter-Zustand ----
   const [suche, setSuche] = useState('');
   const [filterTourId, setFilterTourId] = useState<string>('');
-  const [filterStatus, setFilterStatus] = useState<'' | 'standard' | 'springer' | 'unbesetzt'>('');
+  const [filterStatus, setFilterStatus] = useState<'' | 'standard' | 'springer' | 'unbesetzt' | 'vorschuss' | 'sonderadresse'>('');
   const [filterMitarbeiterId, setFilterMitarbeiterId] = useState('');
 
   // Ausgaben laden
@@ -279,6 +306,9 @@ function EinsaetzeInhalt() {
       teilgebietId: tg.id,
       mitarbeiterId: null,
       typ: 'ungeklärt',
+      // Ohne Austräger kein Vorschuss — die Vormerkung entfällt.
+      vorschussVorgemerkt: undefined,
+      vorschussBetragEur: undefined,
       ...(istNachtragModus ? nachtragFelder(anmerkung ?? '') : {}),
     });
     await schreibeAuditLog({
@@ -320,6 +350,8 @@ function EinsaetzeInhalt() {
         ausfallBisJahr: undefined,
         ausfallBisKw: undefined,
         vonGruppeAbgekoppelt: undefined,
+        // Vorschuss galt dem bisherigen Austräger (Springer) — entfällt.
+        ...(e.typ !== 'standard' ? { vorschussVorgemerkt: undefined, vorschussBetragEur: undefined } : {}),
         ...nachtragFelder(anmerkung),
       });
       await schreibeAuditLog({
@@ -348,6 +380,8 @@ function EinsaetzeInhalt() {
     if (e.typ === 'springer' && e.mitarbeiterId) verlust.push('• Springer-Zuweisung');
     if (e.typ === 'ungeklärt') verlust.push('• Markierung „ungeklärt"');
     if (e.ausfallBisKw) verlust.push(`• Ausfall-Bereich bis KW ${e.ausfallBisKw}`);
+    if (hatSonderLieferadresse(e)) verlust.push(`• Sonder-Lieferadresse: ${formatAdresse(e.sonderLieferadresse)}`);
+    if (e.vorschussVorgemerkt) verlust.push('• Vorschuss-Vormerkung');
     const warnText = verlust.length > 0
       ? `Der bestehende Eintrag für „${tg.name}" wird gelöscht. Folgendes geht dabei verloren:\n\n${verlust.join('\n')}\n\nFortfahren?`
       : `Eintrag für „${tg.name}" wirklich auf Standardausträger zurücksetzen?`;
@@ -393,13 +427,70 @@ function EinsaetzeInhalt() {
     setSpringerIndividuell(!istListenwert);
     setSpringerFilter('');
     setSpringerAnmerkung(e?.kommentar ?? '');
+    const sonderWertVorher = sonderWertAusEinsatz(e);
+    setSpringerSonder(sonderWertVorher);
+    setSpringerSonderOffen(sonderWertVorher.adresseAktiv || sonderWertVorher.vorschuss);
     setSpringerDialog(tg);
+  }
+
+  function oeffneSonderDialog(tg: Teilgebiet) {
+    setSonderWert(sonderWertAusEinsatz(einsaetze[tg.id]));
+    setSonderDialogTg(tg);
+  }
+
+  /**
+   * Speichert Sonder-Lieferadresse + Vorschuss für eine Ausgabe × TG. Gibt es
+   * noch keinen Einsatz (Standardausträger), wird ein Standard-Einsatz
+   * angelegt — die Abrechnung behandelt ihn wie den Standardfall.
+   */
+  async function handleSonderSpeichern() {
+    if (!sonderDialogTg || !selectedAusgabe) return;
+    const tg = sonderDialogTg;
+    const vorher = einsaetze[tg.id];
+    const austraegerId = austraegerIdFuer(tg);
+    const felder = sonderFelderAusWert(sonderWert, !!austraegerId);
+    const aenderungen = beschreibeSonderAenderung(vorher, felder);
+    if (aenderungen.length === 0) {
+      setSonderDialogTg(null);
+      return;
+    }
+    setSonderSpeichert(true);
+    try {
+      await setzeEinsatz({
+        ausgabeId: selectedAusgabe.id,
+        kw: selectedAusgabe.kw,
+        jahr: selectedAusgabe.jahr,
+        teilgebietId: tg.id,
+        mitarbeiterId: vorher ? vorher.mitarbeiterId : standardFuerAusgabe(tg),
+        typ: vorher ? vorher.typ : 'standard',
+        ...felder,
+      });
+      await schreibeAuditLog({
+        adminName: adminName || 'Unbekannt',
+        bereich: 'austraeger-ausfall',
+        aktion: vorher ? 'geaendert' : 'erstellt',
+        teilgebietId: tg.id,
+        teilgebietName: tg.name,
+        mitarbeiterId: austraegerId,
+        mitarbeiterName: getMitarbeiter(austraegerId)?.name ?? null,
+        jahr: selectedAusgabe.jahr,
+        kwVon: selectedAusgabe.kw,
+        kwBis: selectedAusgabe.kw,
+        beschreibung: `${aenderungen.join('; ')} — Einsätze-Screen`,
+      });
+      await ladeEinsaetzeNeu();
+      setSonderDialogTg(null);
+    } finally {
+      setSonderSpeichert(false);
+    }
   }
 
   async function handleSpringerSpeichern() {
     if (!springerDialog || !selectedAusgabe || !springerMitarbeiterId) return;
     if (istNachtragModus && !springerAnmerkung.trim()) return;
     const vorher = einsaetze[springerDialog.id];
+    const sonderFelder = sonderFelderAusWert(springerSonder, true);
+    const sonderAenderungen = beschreibeSonderAenderung(vorher, sonderFelder);
     await setzeEinsatz({
       ausgabeId: selectedAusgabe.id,
       kw: selectedAusgabe.kw,
@@ -409,6 +500,7 @@ function EinsaetzeInhalt() {
       typ: 'springer',
       springerZuschlagProzent: springerZuschlag ? parseFloat(springerZuschlag) : undefined,
       kommentar: springerAnmerkung.trim() || undefined,
+      ...sonderFelder,
       ...(istNachtragModus ? nachtragFelder(springerAnmerkung) : {}),
     });
     const neuerName = getMitarbeiter(springerMitarbeiterId)?.name ?? springerMitarbeiterId;
@@ -425,7 +517,9 @@ function EinsaetzeInhalt() {
       kwBis: selectedAusgabe.kw,
       beschreibung: `Springer gesetzt: ${neuerName}${
         springerZuschlag ? ` (+${springerZuschlag}%)` : ''
-      } (zuvor: ${beschreibeEinsatz(vorher)}) — Einsätze-Screen${nachtragProtokoll(springerAnmerkung)}`,
+      } (zuvor: ${beschreibeEinsatz(vorher)})${
+        sonderAenderungen.length ? `; ${sonderAenderungen.join('; ')}` : ''
+      } — Einsätze-Screen${nachtragProtokoll(springerAnmerkung)}`,
     });
     const updated = await ladeEinsaetze(selectedAusgabe.id);
     const map: EinsatzMap = {};
@@ -542,6 +636,46 @@ function EinsaetzeInhalt() {
       ? effektiverStandardAustraegerId(tg, selectedAusgabe.jahr, selectedAusgabe.kw, abrechnungsperioden)
       : tg.standardAustraegerId;
 
+  /** Wer trägt das TG in dieser Ausgabe aus (Springer > Standard; unbesetzt = null)? */
+  const austraegerIdFuer = (tg: Teilgebiet) => effektiverAustraegerId(einsaetze[tg.id], standardFuerAusgabe(tg));
+
+  // Parameter + Teilgebiets-Stand wie in der Abrechnung dieser Periode
+  // (Snapshot nach Monatswechsel/Abschluss, sonst live).
+  const effParams = useMemo(
+    () => (parameter ? effektiveParameter(parameter, zugehoerigerPeriode) : null),
+    [parameter, zugehoerigerPeriode],
+  );
+  const effTgById = useMemo(
+    () => new Map(effektiveTeilgebiete(teilgebiete, zugehoerigerPeriode).map((t) => [t.id, t as Teilgebiet])),
+    [teilgebiete, zugehoerigerPeriode],
+  );
+
+  /**
+   * Geplanter Vorschuss für das TG in dieser Ausgabe: fester Betrag oder
+   * berechneter Austragen-Lohn des (ggf. hypothetischen) Einsatzes.
+   */
+  function vorschussBetragFuer(tg: Teilgebiet, maId: string | null, einsatz?: Einsatz): number | null {
+    if (!selectedAusgabe || !effParams || !maId) return null;
+    const ma = getMitarbeiter(maId);
+    if (!ma) return null;
+    const e: Einsatz = einsatz ?? {
+      id: '',
+      ausgabeId: selectedAusgabe.id,
+      kw: selectedAusgabe.kw,
+      jahr: selectedAusgabe.jahr,
+      teilgebietId: tg.id,
+      mitarbeiterId: maId,
+      typ: 'standard',
+      erstelltAm: 0,
+      aktualisiertAm: 0,
+    };
+    const tgRechnung = { ...tg, ...(effTgById.get(tg.id) ?? {}) } as Teilgebiet;
+    return geplanterVorschussBetrag(e, ma, tgRechnung, selectedAusgabe, beilagen, sondervereinbarungen, effParams);
+  }
+
+  /** Vorschuss vorgemerkt UND es gibt einen Austräger, der ihn bekommt. */
+  const hatVorschuss = (tg: Teilgebiet) => einsaetze[tg.id]?.vorschussVorgemerkt === true && !!austraegerIdFuer(tg);
+
   // ---- Filter auf Teilgebiete anwenden ----
   const gefilterte = aktiveTeilgebiete.filter((tg) => {
     // Namens-Suche (Teilgebiet-Name, PLZ ODER Name des effektiven Austrägers).
@@ -588,12 +722,34 @@ function EinsaetzeInhalt() {
       if (effektivId !== filterMitarbeiterId) return false;
     }
     // Status-Filter
-    if (filterStatus) {
+    if (filterStatus === 'vorschuss') {
+      if (!hatVorschuss(tg)) return false;
+    } else if (filterStatus === 'sonderadresse') {
+      if (!hatSonderLieferadresse(einsaetze[tg.id])) return false;
+    } else if (filterStatus) {
       const status = berechneStatus({ standardAustraegerId: standardFuerAusgabe(tg) }, einsaetze[tg.id]);
       if (status !== filterStatus) return false;
     }
     return true;
   });
+
+  // Vorschussliste: vorgemerkte Einsätze der (gefilterten) Liste.
+  const vorschussZeilen: VorschusslisteZeile[] = gefilterte
+    .filter(hatVorschuss)
+    .map((tg) => {
+      const maId = austraegerIdFuer(tg)!;
+      const e = einsaetze[tg.id];
+      return {
+        teilgebiet: tg,
+        tour: getTour(tg.tourId) ?? null,
+        mitarbeiter: getMitarbeiter(maId) ?? null,
+        istSpringer: e?.typ === 'springer',
+        betragEur: vorschussBetragFuer(tg, maId, e),
+        festerBetrag: e?.vorschussBetragEur != null,
+      };
+    });
+  const anzahlVorschuss = aktiveTeilgebiete.filter(hatVorschuss).length;
+  const anzahlSonderadresse = aktiveTeilgebiete.filter((tg) => hatSonderLieferadresse(einsaetze[tg.id])).length;
 
   // Statistiken (über alle aktiven Teilgebiete, nicht über gefilterte)
   const stats = aktiveTeilgebiete.reduce(
@@ -663,6 +819,16 @@ function EinsaetzeInhalt() {
                 <StatBadge label="Standard" count={stats.standard} farbe="bg-gray-100 text-gray-700" />
                 <StatBadge label="Springer" count={stats.springer} farbe="bg-blue-100 text-blue-700" />
                 <StatBadge label="Unbesetzt" count={stats.unbesetzt} farbe="bg-yellow-100 text-yellow-700" />
+                {anzahlVorschuss > 0 && (
+                  <button type="button" onClick={() => setFilterStatus('vorschuss')} title="Nur Einsätze mit vorgemerktem Vorschuss anzeigen">
+                    <StatBadge label="💶 Vorschuss" count={anzahlVorschuss} farbe="bg-emerald-100 text-emerald-800" />
+                  </button>
+                )}
+                {anzahlSonderadresse > 0 && (
+                  <button type="button" onClick={() => setFilterStatus('sonderadresse')} title="Nur Teilgebiete mit Sonder-Lieferadresse anzeigen">
+                    <StatBadge label="📍 Sonder-Adresse" count={anzahlSonderadresse} farbe="bg-orange-100 text-orange-800" />
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleLieferscheineDrucken}
@@ -715,6 +881,19 @@ function EinsaetzeInhalt() {
                   title="Auslieferungs-Memos für diese Ausgabe verwalten (werden auf den Lieferscheinen angezeigt)"
                 >
                   📝 Memos
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVorschusslisteOffen(true)}
+                  disabled={vorschussZeilen.length === 0}
+                  className="text-xs font-medium px-3 py-1.5 rounded-lg border border-emerald-300 bg-white text-emerald-800 hover:border-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title={
+                    vorschussZeilen.length === 0
+                      ? 'Keine Einsätze mit vorgemerktem Vorschuss in der aktuellen Liste'
+                      : 'Liste der vorgemerkten Vorschüsse (Teilgebiet, Austräger, geplanter Betrag) drucken'
+                  }
+                >
+                  💶 Vorschussliste{vorschussZeilen.length > 0 ? ` (${vorschussZeilen.length})` : ''}
                 </button>
               </div>
             );
@@ -771,13 +950,15 @@ function EinsaetzeInhalt() {
           </select>
           <select
             value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value as '' | 'standard' | 'springer' | 'unbesetzt')}
+            onChange={(e) => setFilterStatus(e.target.value as typeof filterStatus)}
             className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="">— alle Status —</option>
             <option value="standard">Standard (mit Standardausträger)</option>
             <option value="springer">Springer (Springer-Einsatz)</option>
             <option value="unbesetzt">Unbesetzt (ohne Austräger)</option>
+            <option value="vorschuss">💶 Vorschuss vorgemerkt ({anzahlVorschuss})</option>
+            <option value="sonderadresse">📍 Sonder-Lieferadresse ({anzahlSonderadresse})</option>
           </select>
           <select
             value={filterMitarbeiterId}
@@ -1031,6 +1212,23 @@ function EinsaetzeInhalt() {
                           )}
                         </div>
                       )}
+                      {hatSonderLieferadresse(einsatz) && (
+                        <div
+                          className="mt-0.5 text-[11px] font-medium text-orange-800 max-w-[12rem] truncate"
+                          title={`Sonder-Lieferadresse nur diese Woche: ${formatAdresse(einsatz!.sonderLieferadresse)}${einsatz!.sonderLieferadresse?.memo ? `\nHinweis: ${einsatz!.sonderLieferadresse.memo}` : ''}`}
+                        >
+                          📍 {formatAdresse(einsatz!.sonderLieferadresse)}
+                        </div>
+                      )}
+                      {hatVorschuss(tg) && (() => {
+                        const betrag = vorschussBetragFuer(tg, austraegerIdFuer(tg), einsatz);
+                        return (
+                          <div className="mt-0.5 text-[11px] font-medium text-emerald-800" title="Einsatz wird als Vorschuss ausgezahlt">
+                            💶 Vorschuss {betrag != null ? betrag.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' }) : '—'}
+                            {einsatz?.vorschussBetragEur != null && <span className="text-gray-500 font-normal"> (fest)</span>}
+                          </div>
+                        );
+                      })()}
                     </td>
 
                     {/* Beilagen int/ext — klickbar: zeigt Details der gebuchten Beilagen */}
@@ -1116,6 +1314,17 @@ function EinsaetzeInhalt() {
                             title="Als ungeklärt markieren"
                           >
                             ?
+                          </button>
+                          <button
+                            onClick={() => oeffneSonderDialog(tg)}
+                            className={`text-xs px-1.5 py-1 rounded whitespace-nowrap transition-colors ${
+                              hatSonderLieferadresse(einsatz) || hatVorschuss(tg)
+                                ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                                : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                            }`}
+                            title="Andere Lieferadresse / Vorschuss für diese Woche"
+                          >
+                            📍€
                           </button>
                           {einsatz && (
                             <button
@@ -1321,6 +1530,44 @@ function EinsaetzeInhalt() {
               pflicht={istNachtragModus}
             />
 
+            <details
+              className="rounded-lg border border-gray-200"
+              open={springerSonderOffen}
+              onToggle={(e) => setSpringerSonderOffen(e.currentTarget.open)}
+            >
+              <summary className="px-3 py-2 text-sm font-medium text-gray-700 cursor-pointer">
+                📍 Andere Lieferadresse / 💶 Vorschuss (optional)
+              </summary>
+              <div className="px-3 pb-3">
+                <SonderLieferungFelder
+                  wert={springerSonder}
+                  onChange={setSpringerSonder}
+                  teilgebiet={springerDialog}
+                  teilgebiete={teilgebiete}
+                  mitarbeiter={mitarbeiter}
+                  empfaengerId={springerMitarbeiterId || null}
+                  vorschussMoeglich={!!springerMitarbeiterId}
+                  vorschussHinweis="Erst einen Springer wählen."
+                  geplanterBetrag={
+                    springerMitarbeiterId && selectedAusgabe
+                      ? vorschussBetragFuer(springerDialog, springerMitarbeiterId, {
+                          id: '',
+                          ausgabeId: selectedAusgabe.id,
+                          kw: selectedAusgabe.kw,
+                          jahr: selectedAusgabe.jahr,
+                          teilgebietId: springerDialog.id,
+                          mitarbeiterId: springerMitarbeiterId,
+                          typ: 'springer',
+                          springerZuschlagProzent: springerZuschlag ? parseFloat(springerZuschlag) : undefined,
+                          erstelltAm: 0,
+                          aktualisiertAm: 0,
+                        })
+                      : null
+                  }
+                />
+              </div>
+            </details>
+
             <div className="flex gap-2 pt-2">
               <button
                 onClick={handleSpringerSpeichern}
@@ -1378,6 +1625,70 @@ function EinsaetzeInhalt() {
           </div>
         )}
       </Modal>
+
+      {/* Sonder-Lieferadresse / Vorschuss je Zeile */}
+      <Modal
+        isOpen={sonderDialogTg !== null}
+        onClose={() => setSonderDialogTg(null)}
+        title={sonderDialogTg && selectedAusgabe ? `Lieferadresse & Vorschuss — ${sonderDialogTg.name} · ${kwLabel(selectedAusgabe.kw, selectedAusgabe.jahr)}` : ''}
+        size="md"
+      >
+        {sonderDialogTg && selectedAusgabe && (() => {
+          const tg = sonderDialogTg;
+          const austraegerId = austraegerIdFuer(tg);
+          const e = einsaetze[tg.id];
+          return (
+            <div className="space-y-4">
+              <div className="text-sm text-gray-700">
+                Austräger diese Woche:{' '}
+                {austraegerId ? (
+                  <strong>
+                    {getMitarbeiter(austraegerId)?.name ?? '?'}
+                    {e?.typ === 'springer' ? ' (Springer)' : ' (Standard)'}
+                  </strong>
+                ) : (
+                  <span className="text-amber-700 font-medium">unbesetzt</span>
+                )}
+              </div>
+              <SonderLieferungFelder
+                wert={sonderWert}
+                onChange={setSonderWert}
+                teilgebiet={tg}
+                teilgebiete={teilgebiete}
+                mitarbeiter={mitarbeiter}
+                empfaengerId={austraegerId}
+                vorschussMoeglich={!!austraegerId}
+                vorschussHinweis="Das Teilgebiet ist diese Woche unbesetzt — erst einen Springer eintragen."
+                geplanterBetrag={austraegerId ? vorschussBetragFuer(tg, austraegerId, e ? { ...e, vorschussBetragEur: undefined } : undefined) : null}
+              />
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={handleSonderSpeichern}
+                  disabled={sonderSpeichert}
+                  className="flex-1 bg-blue-600 text-white py-2 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+                >
+                  {sonderSpeichert ? 'Speichert…' : 'Speichern'}
+                </button>
+                <button
+                  onClick={() => setSonderDialogTg(null)}
+                  className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors text-sm"
+                >
+                  Abbrechen
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
+
+      {/* Vorschussliste (Druck) */}
+      {vorschusslisteOffen && selectedAusgabe && (
+        <VorschusslisteDruck
+          ausgabe={selectedAusgabe}
+          zeilen={vorschussZeilen}
+          onClose={() => setVorschusslisteOffen(false)}
+        />
+      )}
 
       {/* Lieferschein-Druck-Modal */}
       {lieferscheinPeriode && (
