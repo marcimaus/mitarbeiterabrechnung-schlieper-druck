@@ -133,6 +133,14 @@ export default function SonderLieferungFelder({
                               className="w-full text-left px-2 py-1 hover:bg-blue-50 text-xs"
                             >
                               <span className="font-medium text-gray-900">{k.mitarbeiter.name}</span>
+                              {k.ehemalig && (
+                                <span
+                                  className="ml-1 px-1 rounded bg-gray-200 text-gray-600 text-[10px]"
+                                  title={k.mitarbeiter.abgemeldet ? 'abgemeldet' : 'inaktiv / deaktiviert'}
+                                >
+                                  ehemalig
+                                </span>
+                              )}
                               <span className="text-gray-500"> · {k.art}{k.fuerDiesesTg ? ' ★' : ''}</span>
                               <div className="text-gray-700">{formatAdresse(k.adresse)}</div>
                             </button>

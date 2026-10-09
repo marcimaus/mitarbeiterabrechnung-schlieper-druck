@@ -138,11 +138,16 @@ export interface AdressKandidat {
   hatFreigabe: boolean;
   /** Adresse ist dessen Lieferadresse für genau dieses Teilgebiet. */
   fuerDiesesTg: boolean;
+  /** Ehemaliger Mitarbeiter (inaktiv/deaktiviert oder abgemeldet). */
+  ehemalig: boolean;
 }
 
 /**
- * Alle gespeicherten Adressen aktiver Mitarbeiter (Wohnadresse, allgemeine
- * abweichende Lieferadresse, Lieferadressen je Teilgebiet). Sortiert:
+ * Alle gespeicherten Adressen von Mitarbeitern (Wohnadresse, allgemeine
+ * abweichende Lieferadresse, Lieferadressen je Teilgebiet) — ausdrücklich
+ * auch ehemalige (inaktiv/deaktiviert oder abgemeldet): ausnahmsweise wird
+ * auch an jemanden geliefert, der nicht (mehr) angemeldet ist. Interessenten
+ * bleiben außen vor. Sortiert:
  * Mitarbeiter mit Freigabe für das Teilgebiet zuerst, darin deren
  * Lieferadresse für genau dieses Teilgebiet vorn.
  */
@@ -155,15 +160,16 @@ export function adressKandidaten(
   const tgName = new Map(teilgebiete.map((t) => [t.id, t.name]));
   const out: AdressKandidat[] = [];
   for (const ma of mitarbeiter) {
-    if (!ma.isActive || ma.istInteressent || ma.abgemeldet) continue;
+    if (ma.istInteressent) continue;
     if (ma.id === ausserMitarbeiterId) continue;
+    const ehemalig = !ma.isActive || ma.abgemeldet === true;
     const hatFreigabe = ma.teilgebietFreigaben?.includes(teilgebietId) ?? false;
     const wohn: Lieferadresse = { strasse: ma.adresse.strasse, plz: ma.adresse.plz, ort: ma.adresse.ort, telefon: ma.telefon || ma.mobilnummer };
     if (hatAdresse(wohn)) {
-      out.push({ key: `${ma.id}|wohn`, mitarbeiter: ma, art: 'Wohnadresse', adresse: wohn, hatFreigabe, fuerDiesesTg: false });
+      out.push({ key: `${ma.id}|wohn`, mitarbeiter: ma, art: 'Wohnadresse', adresse: wohn, hatFreigabe, fuerDiesesTg: false, ehemalig });
     }
     if (ma.abweichendeLieferadresseAktiv && hatAdresse(ma.abweichendeLieferadresse)) {
-      out.push({ key: `${ma.id}|abw`, mitarbeiter: ma, art: 'Abweichende Lieferadresse', adresse: ma.abweichendeLieferadresse, hatFreigabe, fuerDiesesTg: false });
+      out.push({ key: `${ma.id}|abw`, mitarbeiter: ma, art: 'Abweichende Lieferadresse', adresse: ma.abweichendeLieferadresse, hatFreigabe, fuerDiesesTg: false, ehemalig });
     }
     for (const l of ma.lieferadressenJeTeilgebiet ?? []) {
       if (!hatAdresse(l)) continue;
@@ -174,6 +180,7 @@ export function adressKandidaten(
         adresse: l,
         hatFreigabe,
         fuerDiesesTg: l.teilgebietId === teilgebietId,
+        ehemalig,
       });
     }
   }
