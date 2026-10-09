@@ -4539,8 +4539,8 @@ function AnAbmeldungenListe({
 
   // Vorschläge: aktive MA ohne Betrag in dieser Abrechnung — Kandidaten für
   // Abmeldung. Ausschluss: Interessenten (nie beim Lohnbüro angemeldet),
-  // Festgehalt, Geschäftsführer, bereits abgemeldet, noch nicht angemeldet,
-  // schon in Abmeldungs-Liste.
+  // Festgehalt, Geschäftsführer, bereits abgemeldet, „vorläufig nicht
+  // abmelden", noch nicht angemeldet, schon in Abmeldungs-Liste.
   //
   // Hinweis: Der frühere „Wechsel-Verlierer"-Pfad (Standardausträger, der
   // sein letztes TG durch einen vorbereiteten Austrägerwechsel verliert)
@@ -4554,6 +4554,7 @@ function AnAbmeldungenListe({
         m.isActive
         && !m.istInteressent
         && !m.abgemeldet
+        && !m.vorlaeufigNichtAbmelden
         && !m.nochNichtAngemeldet
         && !m.hatFestgehalt
         && !m.istGeschaeftsfuehrer
