@@ -272,6 +272,8 @@ export interface Mitarbeiter {
   /**
    * Einzelne Ausgaben, für die der Tätigkeitsbonus NICHT gezahlt wird (z. B.
    * MA war in dieser Woche nicht anwesend). Gilt je Ausgabe (Jahr + KW).
+   * Gepflegt in der Abrechnung (Detailansicht des MA → „Min-Boni"), nicht in
+   * der Mitarbeiter-Maske.
    */
   ausgabenBonusAusnahmen?: AusgabenBonusAusnahme[];
   /**

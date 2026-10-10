@@ -159,8 +159,8 @@ export interface MitarbeiterAbrechnung {
   ausgabenBoniMinutenGesamt: number;
   ausgabenBoniLohnGesamt: number;
   /**
-   * Ausgaben der Periode, für die der Tätigkeitsbonus laut Stammdaten
-   * entfällt (`ausgabenBonusAusnahmen`) — nur Anzeige. Optional, weil ältere
+   * Ausgaben der Periode, für die der Tätigkeitsbonus entfällt (in der
+   * Abrechnung ausgenommen, `ausgabenBonusAusnahmen`) — nur Anzeige. Optional, weil ältere
    * Abrechnungs-Snapshots das Feld nicht haben.
    */
   ausgabenBoniEntfallen?: { kw: number; jahr: number; grund?: string }[];
@@ -575,7 +575,7 @@ export function berechneAbrechnung(
     // --- Ausgaben-Boni (pauschaler Tätigkeitsbonus aus Mitarbeiter-Stammdaten) ---
     // `ausgabenBonusMinuten` am MA gilt PRO Ausgabe der Periode. Wir erzeugen
     // pro Ausgabe einen Detail-Eintrag und summieren über alle.
-    // Einzelne Ausgaben können laut Stammdaten ausgenommen sein
+    // Einzelne Ausgaben können in der Abrechnung ausgenommen sein
     // (`ausgabenBonusAusnahmen`, z. B. MA nicht anwesend).
     const bonusMinutenProAusgabe = nachAbmeldung ? 0 : ma.ausgabenBonusMinuten ?? 0;
     const ausgabenBoniDetails: AusgabenBonusErgebnis[] = [];

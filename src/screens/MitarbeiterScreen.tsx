@@ -1,5 +1,4 @@
 import { Fragment, useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
-import { kwLabel } from '../lib/kalender';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -26,7 +25,7 @@ import VerdienstbescheinigungDruck from '../components/VerdienstbescheinigungDru
 import type { LohnbueroAbrechnung, LohnbueroDriveLink, VerdienstbescheinigungWert, VerdienstbescheinigungFrage, VerdienstbescheinigungAntwortTyp } from '../types';
 import { hashPin, ermittlePinAusHash } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { AuditLog, Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse, AnmeldeHistorieEintrag, AusgabenBonusAusnahme, Abrechnungsperiode } from '../types';
+import type { AuditLog, Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse, AnmeldeHistorieEintrag, Abrechnungsperiode } from '../types';
 // Re-Export, damit die Tab-Komponente unten den selben Typen-Pfad nutzt.
 import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
@@ -987,7 +986,6 @@ function MitarbeiterForm({
         sozialversicherungsBefreit: initial.sozialversicherungsBefreit ?? false,
         ausgabenBonusMinuten: initial.ausgabenBonusMinuten,
         ausgabenBonusKommentar: initial.ausgabenBonusKommentar,
-        ausgabenBonusAusnahmen: initial.ausgabenBonusAusnahmen?.map((a) => ({ ...a })),
         isActive: initial.isActive,
         istInteressent: initial.istInteressent ?? false,
         interesseWeitereTaetigkeit: initial.interesseWeitereTaetigkeit ?? false,
@@ -1327,8 +1325,6 @@ function MitarbeiterForm({
           : undefined,
         lieferadressenJeTeilgebiet:
           lieferadressenTgClean.length > 0 ? lieferadressenTgClean : undefined,
-        ausgabenBonusAusnahmen:
-          (form.ausgabenBonusAusnahmen ?? []).length > 0 ? form.ausgabenBonusAusnahmen : undefined,
         // Wenn aus Interessent ein „echter" MA wird, automatisch als
         // „noch nicht angemeldet" markieren — analog zu Neuerfassung.
         ...(wurdeEntInteressent ? { nochNichtAngemeldet: true } : {}),
@@ -2886,7 +2882,7 @@ function MitarbeiterForm({
         label="Tätigkeitsbonus je Ausgabe (Minuten)"
         hint={
           isAdmin
-            ? 'Pauschal pro Ausgabe einer Abrechnungsperiode — wird mit dem Stundensatz vergütet (z. B. 60 Min × Stundensatz × Anzahl Ausgaben).'
+            ? 'Pauschal pro Ausgabe einer Abrechnungsperiode — wird mit dem Stundensatz vergütet (z. B. 60 Min × Stundensatz × Anzahl Ausgaben). Entfällt der Bonus für einzelne Ausgaben (z. B. nicht anwesend): in der Abrechnung der Periode beim Mitarbeiter unter „Min-Boni".'
             : 'Anzeige — Bearbeitung nur durch Admin.'
         }
       >
@@ -2920,15 +2916,6 @@ function MitarbeiterForm({
             className={`${inputClass} ${!isAdmin ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : ''}`}
           />
         </FormField>
-      )}
-
-      {((form.ausgabenBonusMinuten ?? 0) > 0 || (form.ausgabenBonusAusnahmen ?? []).length > 0) && (
-        <BonusAusnahmenFeld
-          ausnahmen={form.ausgabenBonusAusnahmen ?? []}
-          onChange={(liste) => setForm((f) => ({ ...f, ausgabenBonusAusnahmen: liste }))}
-          abrechnungsperioden={abrechnungsperioden}
-          darfBearbeiten={isAdmin}
-        />
       )}
 
       <FormField
@@ -3813,141 +3800,6 @@ function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter })
         </p>
       )}
     </div>
-  );
-}
-
-// ---- Tätigkeitsbonus: einzelne Ausgaben ausnehmen ------------
-
-/**
- * Ausgaben (Jahr + KW), für die der Tätigkeitsbonus entfällt — z. B. MA war
- * in der Woche nicht anwesend. Auswahl über Abrechnungsperiode + KW; nur
- * offene Perioden (abgeschlossene sind eingefroren).
- */
-function BonusAusnahmenFeld({
-  ausnahmen,
-  onChange,
-  abrechnungsperioden,
-  darfBearbeiten,
-}: {
-  ausnahmen: AusgabenBonusAusnahme[];
-  onChange: (liste: AusgabenBonusAusnahme[]) => void;
-  abrechnungsperioden: Abrechnungsperiode[];
-  darfBearbeiten: boolean;
-}) {
-  // Neueste zuerst; vorausgewählt ist die Periode des laufenden Monats
-  // (sonst die jüngste nicht in der Zukunft liegende).
-  const offenePerioden = [...abrechnungsperioden]
-    .filter((p) => p.status !== 'abgeschlossen')
-    .sort((a, b) => b.jahr - a.jahr || b.monat - a.monat);
-  const [periodeId, setPeriodeId] = useState(() => {
-    const heute = new Date();
-    const jetzt = heute.getFullYear() * 12 + heute.getMonth() + 1;
-    return (offenePerioden.find((p) => p.jahr * 12 + p.monat <= jetzt) ?? offenePerioden[0])?.id ?? '';
-  });
-  const [kw, setKw] = useState<number | ''>('');
-  const [grund, setGrund] = useState('');
-
-  const periode = offenePerioden.find((p) => p.id === periodeId);
-  const kwOptionen = periode
-    ? [...periode.kalenderwochen]
-        .sort((a, b) => a - b)
-        .filter((k) => !ausnahmen.some((x) => x.jahr === periode.jahr && x.kw === k))
-    : [];
-  const sortiert = [...ausnahmen].sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
-  const periodeVon = (a: AusgabenBonusAusnahme) =>
-    abrechnungsperioden.find((p) => p.jahr === a.jahr && p.kalenderwochen.includes(a.kw));
-
-  function hinzufuegen() {
-    if (!periode || kw === '') return;
-    const g = grund.trim();
-    onChange([...ausnahmen, { jahr: periode.jahr, kw, ...(g ? { grund: g } : {}) }]);
-    setKw('');
-    setGrund('');
-  }
-
-  return (
-    <FormField
-      label="Ausgaben ohne Tätigkeitsbonus"
-      hint="Für diese Ausgaben wird der Tätigkeitsbonus nicht gezahlt (z. B. Mitarbeiter war in der Woche nicht anwesend)."
-    >
-      {sortiert.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5 mb-2">
-          {sortiert.map((a) => {
-            const p = periodeVon(a);
-            const abgeschlossen = p?.status === 'abgeschlossen';
-            return (
-              <span
-                key={`${a.jahr}-${a.kw}`}
-                className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${
-                  abgeschlossen ? 'bg-gray-50 border-gray-200 text-gray-500' : 'bg-purple-50 border-purple-200 text-purple-800'
-                }`}
-                title={abgeschlossen ? `${p?.bezeichnung} ist abgeschlossen — wirkt nicht mehr auf die Abrechnung` : p?.bezeichnung}
-              >
-                {abgeschlossen && '🔒 '}
-                {kwLabel(a.kw, a.jahr)}
-                {a.grund && <span className="text-gray-500">— {a.grund}</span>}
-                {darfBearbeiten && (
-                  <button
-                    type="button"
-                    onClick={() => onChange(ausnahmen.filter((x) => !(x.jahr === a.jahr && x.kw === a.kw)))}
-                    className="ml-0.5 text-gray-400 hover:text-red-600"
-                    title="Ausnahme entfernen — Bonus wird für diese Ausgabe wieder gezahlt"
-                  >
-                    ✕
-                  </button>
-                )}
-              </span>
-            );
-          })}
-        </div>
-      ) : (
-        <p className="text-xs text-gray-400 italic mb-2">Keine — Bonus gilt für alle Ausgaben.</p>
-      )}
-      {darfBearbeiten && (
-        offenePerioden.length === 0 ? (
-          <p className="text-xs text-gray-400 italic">Keine offene Abrechnungsperiode vorhanden.</p>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={periodeId}
-              onChange={(e) => { setPeriodeId(e.target.value); setKw(''); }}
-              className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
-              title="Abrechnungsperiode"
-            >
-              {offenePerioden.map((p) => (
-                <option key={p.id} value={p.id}>{p.bezeichnung}</option>
-              ))}
-            </select>
-            <select
-              value={kw}
-              onChange={(e) => setKw(e.target.value ? Number(e.target.value) : '')}
-              className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
-              title="Ausgabe (KW)"
-            >
-              <option value="">— Ausgabe —</option>
-              {kwOptionen.map((k) => (
-                <option key={k} value={k}>KW {k}</option>
-              ))}
-            </select>
-            <input
-              type="text"
-              value={grund}
-              onChange={(e) => setGrund(e.target.value)}
-              placeholder="Grund, z. B. nicht anwesend"
-              className="flex-1 min-w-[10rem] border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
-            />
-            <button
-              type="button"
-              onClick={hinzufuegen}
-              disabled={!periode || kw === ''}
-              className="text-sm px-3 py-1.5 rounded-lg border border-purple-300 bg-purple-50 text-purple-800 hover:bg-purple-100 disabled:opacity-40"
-            >
-              + Bonus entfällt
-            </button>
-          </div>
-        )
-      )}
-    </FormField>
   );
 }
 

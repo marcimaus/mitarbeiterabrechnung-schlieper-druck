@@ -49,7 +49,7 @@ import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse
 import type { MitarbeiterAbrechnung, VorschussVormerkung } from '../lib/abrechnungslogik';
 import { getISOWeek } from '../lib/kalender';
 import { vorarbeitAusgabe, zeitfensterText } from '../lib/vorarbeit';
-import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet, Arbeitszeit, Einsatz } from '../types';
+import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet, Arbeitszeit, Einsatz, AusgabenBonusAusnahme } from '../types';
 import {
   austraegerwechselPlanListener,
   loescheAustraegerwechselPlan,
@@ -241,6 +241,13 @@ function AbrechnungInhalt() {
   const { mitarbeiter, teilgebiete, abrechnungsperioden, parameter: params, userRole, adminName, variablePeriodenZusaetze, externeAbrechnungswerte, stueckzahlAnpassungen, mitarbeiterMemos, memoKategorienEigene, lohnbueroAbrechnungen } = useApp();
   const [selectedPeriodeId, setSelectedPeriodeId] = useState('');
   const [ergebnisse, setErgebnisse] = useState<MitarbeiterAbrechnung[] | null>(null);
+  // Aktueller MA-Stand für handleBerechnen: Detail-Editoren rufen nach dem
+  // Speichern eine ältere Instanz von handleBerechnen auf — die sähe über die
+  // Closure noch den MA-Stand VOR der Änderung (z. B. Tätigkeitsbonus-Ausnahme).
+  const mitarbeiterAktuell = useRef(mitarbeiter);
+  useEffect(() => {
+    mitarbeiterAktuell.current = mitarbeiter;
+  }, [mitarbeiter]);
   const [loading, setLoading] = useState(false);
   const [fehler, setFehler] = useState('');
   const [exportierend, setExportierend] = useState(false);
@@ -411,9 +418,9 @@ function AbrechnungInhalt() {
         ladeExterneAbrechnungswerte(selectedPeriode.id),
         ladeSonderzahlungen(selectedPeriode.id),
       ]);
-      setVorarbeitOhneFreigabe(ermittleVorarbeitOhneFreigabe(data, mitarbeiter));
+      setVorarbeitOhneFreigabe(ermittleVorarbeitOhneFreigabe(data, mitarbeiterAktuell.current));
       const result = berechneAbrechnung(
-        mitarbeiter,
+        mitarbeiterAktuell.current,
         teilgebiete,
         data,
         params,
@@ -2850,60 +2857,13 @@ function DetailAnsicht({
         </div>
       )}
 
-      {/* Minuten-Boni je Ausgabe (inkl. laut Stammdaten entfallener Ausgaben) */}
+      {/* Minuten-Boni je Ausgabe — einzelne Ausgaben lassen sich hier ausnehmen */}
       {(er.ausgabenBoni.length > 0 || (er.ausgabenBoniEntfallen?.length ?? 0) > 0) && (
-        <div className="md:col-span-2">
-          <h4 className="font-semibold text-gray-700 mb-2 text-sm">
-            Min-Boni ({er.ausgabenBoni.length} Einträge ·
-            {' '}{er.ausgabenBoniMinutenGesamt} min · {eur(er.ausgabenBoniLohnGesamt)})
-          </h4>
-          <div className="overflow-hidden rounded border border-gray-200 bg-white">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-100 text-gray-600">
-                <tr>
-                  <th className="px-2 py-1.5 text-left font-medium">KW</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Minuten</th>
-                  <th className="px-2 py-1.5 text-left font-medium">Kommentar / Grund</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Lohn</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {er.ausgabenBoni.map((b) => (
-                  <tr key={b.id}>
-                    <td className="px-2 py-1.5 text-gray-500">{b.kw}/{b.jahr}</td>
-                    <td className="px-2 py-1.5 text-right text-gray-700 font-mono">{b.minuten}</td>
-                    <td className="px-2 py-1.5 text-gray-700">
-                      {b.kommentar ?? <span className="text-gray-300">—</span>}
-                    </td>
-                    <td className="px-2 py-1.5 text-right font-semibold text-purple-700">
-                      {eur(b.lohn)}
-                    </td>
-                  </tr>
-                ))}
-                {(er.ausgabenBoniEntfallen ?? []).map((b, i) => (
-                  <tr key={`entfallen-${b.jahr}-${b.kw}-${i}`} className="text-gray-400">
-                    <td className="px-2 py-1.5">{b.kw}/{b.jahr}</td>
-                    <td className="px-2 py-1.5 text-right font-mono line-through">—</td>
-                    <td className="px-2 py-1.5 italic">
-                      entfällt{b.grund ? ` — ${b.grund}` : ''}
-                    </td>
-                    <td className="px-2 py-1.5 text-right">{eur(0)}</td>
-                  </tr>
-                ))}
-                <tr className="bg-gray-50 border-t border-gray-200 font-semibold">
-                  <td className="px-2 py-1.5 text-gray-700">∑</td>
-                  <td className="px-2 py-1.5 text-right text-gray-700">
-                    {er.ausgabenBoniMinutenGesamt} min
-                  </td>
-                  <td className="px-2 py-1.5"></td>
-                  <td className="px-2 py-1.5 text-right text-purple-800">
-                    {eur(er.ausgabenBoniLohnGesamt)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <TaetigkeitsbonusTabelle
+          ergebnis={er}
+          istGesperrt={istGesperrt || !periode}
+          onChange={onVorschussChange ?? (() => {})}
+        />
       )}
 
       {/* Austräger-Einsätze */}
@@ -3272,6 +3232,150 @@ function DetailAnsicht({
 }
 
 // ---- Vorschuss-Verwaltung in Detail-Ansicht -----------------
+
+/**
+ * Min-Boni (Tätigkeitsbonus) je Ausgabe der Periode. Der Admin kann einzelne
+ * Ausgaben ausnehmen („entfällt", z. B. MA nicht anwesend) oder wieder
+ * zahlen lassen. Gespeichert wird am MA (`ausgabenBonusAusnahmen`, mit
+ * Änderungsprotokoll); danach wird neu berechnet.
+ */
+function TaetigkeitsbonusTabelle({
+  ergebnis: er,
+  istGesperrt,
+  onChange,
+}: {
+  ergebnis: MitarbeiterAbrechnung;
+  istGesperrt: boolean;
+  onChange: () => void;
+}) {
+  const { userRole, adminName, mitarbeiter, teilgebiete, abrechnungsperioden } = useApp();
+  const darfAendern = userRole === 'admin' && !istGesperrt;
+  const [speichert, setSpeichert] = useState(false);
+
+  async function setzeAusnahmen(aendern: (liste: AusgabenBonusAusnahme[]) => AusgabenBonusAusnahme[]) {
+    // Aktueller Stand aus dem Listener — nicht der MA-Stand der Berechnung.
+    const ma = mitarbeiter.find((m) => m.id === er.mitarbeiter.id);
+    if (!ma) return;
+    const neu = aendern(ma.ausgabenBonusAusnahmen ?? []);
+    setSpeichert(true);
+    try {
+      await aktualisiereMitarbeiterMitProtokoll(
+        ma,
+        { ausgabenBonusAusnahmen: neu.length > 0 ? neu : undefined },
+        { adminName, ktx: { mitarbeiter, teilgebiete, abrechnungsperioden } },
+      );
+      onChange();
+    } catch (err) {
+      alert('Speichern fehlgeschlagen: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setSpeichert(false);
+    }
+  }
+
+  async function entfaellt(jahr: number, kw: number) {
+    const eingabe = prompt(`Tätigkeitsbonus KW ${kw}/${jahr} entfällt.\n\nGrund (optional, z. B. „nicht anwesend"):`, 'nicht anwesend');
+    if (eingabe === null) return;
+    const grund = eingabe.trim();
+    await setzeAusnahmen((liste) => [
+      ...liste.filter((x) => !(x.jahr === jahr && x.kw === kw)),
+      { jahr, kw, ...(grund ? { grund } : {}) },
+    ]);
+  }
+
+  async function zahlen(jahr: number, kw: number) {
+    await setzeAusnahmen((liste) => liste.filter((x) => !(x.jahr === jahr && x.kw === kw)));
+  }
+
+  const aktionBtn = 'text-[11px] px-1.5 py-0.5 rounded border disabled:opacity-40';
+
+  return (
+    <div className="md:col-span-2">
+      <h4 className="font-semibold text-gray-700 mb-2 text-sm">
+        Min-Boni ({er.ausgabenBoni.length} Einträge ·
+        {' '}{er.ausgabenBoniMinutenGesamt} min · {eur(er.ausgabenBoniLohnGesamt)})
+      </h4>
+      {darfAendern && (
+        <p className="text-xs text-gray-500 -mt-1 mb-2">
+          Fällt der Bonus für eine Ausgabe nicht an (z. B. Mitarbeiter nicht anwesend), dort auf „entfällt" klicken.
+        </p>
+      )}
+      <div className="overflow-hidden rounded border border-gray-200 bg-white">
+        <table className="w-full text-xs">
+          <thead className="bg-gray-100 text-gray-600">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-medium">KW</th>
+              <th className="px-2 py-1.5 text-right font-medium">Minuten</th>
+              <th className="px-2 py-1.5 text-left font-medium">Kommentar / Grund</th>
+              <th className="px-2 py-1.5 text-right font-medium">Lohn</th>
+              {darfAendern && <th className="px-2 py-1.5"></th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {er.ausgabenBoni.map((b) => (
+              <tr key={b.id}>
+                <td className="px-2 py-1.5 text-gray-500">{b.kw}/{b.jahr}</td>
+                <td className="px-2 py-1.5 text-right text-gray-700 font-mono">{b.minuten}</td>
+                <td className="px-2 py-1.5 text-gray-700">
+                  {b.kommentar ?? <span className="text-gray-300">—</span>}
+                </td>
+                <td className="px-2 py-1.5 text-right font-semibold text-purple-700">
+                  {eur(b.lohn)}
+                </td>
+                {darfAendern && (
+                  <td className="px-2 py-1.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() => entfaellt(b.jahr, b.kw)}
+                      disabled={speichert}
+                      className={`${aktionBtn} border-red-200 text-red-700 hover:bg-red-50`}
+                      title="Für diese Ausgabe keinen Tätigkeitsbonus zahlen"
+                    >
+                      entfällt
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            {(er.ausgabenBoniEntfallen ?? []).map((b, i) => (
+              <tr key={`entfallen-${b.jahr}-${b.kw}-${i}`} className="text-gray-400">
+                <td className="px-2 py-1.5">{b.kw}/{b.jahr}</td>
+                <td className="px-2 py-1.5 text-right font-mono line-through">—</td>
+                <td className="px-2 py-1.5 italic">
+                  entfällt{b.grund ? ` — ${b.grund}` : ''}
+                </td>
+                <td className="px-2 py-1.5 text-right">{eur(0)}</td>
+                {darfAendern && (
+                  <td className="px-2 py-1.5 text-right">
+                    <button
+                      type="button"
+                      onClick={() => zahlen(b.jahr, b.kw)}
+                      disabled={speichert}
+                      className={`${aktionBtn} border-green-200 text-green-700 hover:bg-green-50`}
+                      title="Tätigkeitsbonus für diese Ausgabe wieder zahlen"
+                    >
+                      ↺ zahlen
+                    </button>
+                  </td>
+                )}
+              </tr>
+            ))}
+            <tr className="bg-gray-50 border-t border-gray-200 font-semibold">
+              <td className="px-2 py-1.5 text-gray-700">∑</td>
+              <td className="px-2 py-1.5 text-right text-gray-700">
+                {er.ausgabenBoniMinutenGesamt} min
+              </td>
+              <td className="px-2 py-1.5"></td>
+              <td className="px-2 py-1.5 text-right text-purple-800">
+                {eur(er.ausgabenBoniLohnGesamt)}
+              </td>
+              {darfAendern && <td className="px-2 py-1.5"></td>}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function VorschussverwaltungDetail({
   mitarbeiterId,

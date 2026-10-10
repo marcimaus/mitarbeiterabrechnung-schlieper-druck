@@ -1402,7 +1402,7 @@ export default function AbrechnungsAufschluesselung({
             </h5>
             {(er.ausgabenBoniEntfallen?.length ?? 0) > 0 && (
               <p className="text-gray-500 mb-1.5">
-                Entfällt laut Stammdaten:{' '}
+                Entfällt (in der Abrechnung ausgenommen):{' '}
                 {er.ausgabenBoniEntfallen!.map((b) => `KW ${b.kw}${b.grund ? ` (${b.grund})` : ''}`).join(', ')}
               </p>
             )}
