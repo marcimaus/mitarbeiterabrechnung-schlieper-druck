@@ -20,7 +20,7 @@ import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
 } from '../lib/berechnung';
-import { effektiverStandardAustraegerId, hatAdresse } from '../utils';
+import { effektiverStandardAustraegerId, hatAdresse, istAbholerFuer, tgLieferadresseFuer } from '../utils';
 import { formatAdresse } from '../lib/sonderLieferung';
 
 interface Props {
@@ -290,7 +290,10 @@ function UebersichtSheet({
           )}
           {zeilen.map((z) => {
             const empf = z.empfaenger;
-            const istAbholer = empf?.istAbholer === true;
+            // Abholer nur, wenn für dieses TG keine eigene Lieferadresse und
+            // keine Sonder-Lieferadresse gilt — sonst wird beliefert.
+            const istAbholer = !!empf && istAbholerFuer(empf, z.tg.id, z.sonderLieferadresse);
+            const tgAdresse = empf ? tgLieferadresseFuer(empf, z.tg.id) : undefined;
             return (
               <tr key={z.tg.id} className="ub-row">
                 <td style={{ textAlign: 'center' }}>
@@ -368,6 +371,11 @@ function UebersichtSheet({
                         <div style={{ fontSize: '10px', color: '#6b21a8', fontWeight: 700 }}>
                           📍 Sonder-Adresse (nur diese KW): {formatAdresse(z.sonderLieferadresse)}
                           {z.sonderLieferadresse.telefon && <div style={{ fontWeight: 400 }}>📞 {z.sonderLieferadresse.telefon}</div>}
+                        </div>
+                      ) : tgAdresse ? (
+                        <div style={{ fontSize: '10px', color: '#9a3412', fontWeight: 700 }}>
+                          📍 Lieferadresse für dieses TG: {formatAdresse(tgAdresse)}
+                          {tgAdresse.telefon && <div style={{ fontWeight: 400 }}>📞 {tgAdresse.telefon}</div>}
                         </div>
                       ) : (
                         <>

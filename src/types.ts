@@ -270,13 +270,21 @@ export interface Mitarbeiter {
   /** Grund / Vermerk zum Tätigkeitsbonus, z. B. „Betreuung Zusammenträger und Orga". */
   ausgabenBonusKommentar?: string;
   /**
+   * Einzelne Ausgaben, für die der Tätigkeitsbonus NICHT gezahlt wird (z. B.
+   * MA war in dieser Woche nicht anwesend). Gilt je Ausgabe (Jahr + KW).
+   */
+  ausgabenBonusAusnahmen?: AusgabenBonusAusnahme[];
+  /**
    * Befreiung von Sozialversicherung liegt vor.
    * Nur bei diesen Mitarbeitern ist Brutto = Netto und die Auszahlung kann direkt berechnet werden.
    */
   sozialversicherungsBefreit?: boolean;
   isActive: boolean;
   // ---- Anmeldung / Abmeldung beim Lohnbüro ------------------
-  /** MA ist neu — noch nicht beim Lohnbüro angemeldet. Nicht in Auswahllisten. */
+  /**
+   * MA ist neu — noch nicht beim Lohnbüro angemeldet. In Auswahllisten mit
+   * Hinweis wählbar; die Abrechnung warnt, sobald ein Betrag anfällt.
+   */
   nochNichtAngemeldet?: boolean;
   /** Bei Minderjährigen: Erlaubnis der Eltern eingeholt. */
   erlaubnisElternEingeholt?: boolean;
@@ -300,7 +308,11 @@ export interface Mitarbeiter {
    * (z. B. Steuer-ID, Krankenkasse, SV-Nummer). Statusunabhängig.
    */
   anmeldungMemo?: string;
-  /** MA wurde beim Lohnbüro abgemeldet. */
+  /**
+   * MA wurde beim Lohnbüro abgemeldet. In Personalplanung und Einsätzen
+   * weiterhin auswählbar (am Listenende, mit Warnung); fällt nach der
+   * Abmeldung ein Betrag an, warnt die Abrechnung.
+   */
   abgemeldet?: boolean;
   /**
    * „Vorläufig nicht abmelden": Bedarfs-Springer, der mehrere Monate
@@ -317,6 +329,13 @@ export interface Mitarbeiter {
   abmeldungUebermittlungDatum?: string;
   /** Letzte Abrechnungsperiode des MA. */
   letzteAbrechnungsperiodeId?: string;
+  /**
+   * Frühere An-/Abmeldungen: Wird bei einem abgemeldeten MA das Kennzeichen
+   * „abgemeldet" entfernt und der Anmeldeprozess neu gestartet, wandern die
+   * bisherigen Anmelde- und Abmeldedaten hierher (nicht gelöscht, sondern
+   * historisiert) und die Felder werden für die neue Anmeldung geleert.
+   */
+  anmeldeHistorie?: AnmeldeHistorieEintrag[];
   teilgebietFreigaben?: string[];      // IDs der Teilgebiete, die dieser MA austragen darf
   teilgebietBoni?: TeilgebietBonus[];  // Bonus je Teilgebiet und Ausgabe
   // ---- Abweichende Lieferadresse ----------------------------
@@ -403,6 +422,36 @@ export interface Mitarbeiter {
   adminNotiz?: string;
   erstelltAm: number;     // Unix-Timestamp ms
   aktualisiertAm: number;
+}
+
+/** Ausgabe (Jahr + KW), für die der Tätigkeitsbonus eines MA entfällt. */
+export interface AusgabenBonusAusnahme {
+  jahr: number;
+  kw: number;
+  /** Grund, z. B. „nicht anwesend". */
+  grund?: string;
+}
+
+/**
+ * Historisierte An-/Abmeldung beim Lohnbüro (siehe `Mitarbeiter.anmeldeHistorie`).
+ * Enthält die Werte, die vor dem Neustart des Anmeldeprozesses am MA standen.
+ */
+export interface AnmeldeHistorieEintrag {
+  /** Zeitpunkt des Neustarts (Unix ms). */
+  archiviertAm: number;
+  /** Benutzer, der den Neustart ausgelöst hat. */
+  archiviertVon?: string;
+  erlaubnisElternEingeholt?: boolean;
+  lohnbueroBestaetigungLink?: string;
+  startAbrechnungsperiodeId?: string;
+  startDatum?: string;
+  anmeldungStatus?: Mitarbeiter['anmeldungStatus'];
+  anmeldungUnvollstaendigMemo?: string;
+  anmeldungUebermittlungDatum?: string;
+  abmeldungUebermittlungDatum?: string;
+  letzteAbrechnungsperiodeId?: string;
+  /** MA, der als Nachfolger („ersetzt") eingetragen war. */
+  ersetztDurchId?: string;
 }
 
 export type InteresseTaetigkeit =

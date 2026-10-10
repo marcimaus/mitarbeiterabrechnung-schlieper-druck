@@ -70,6 +70,19 @@ import {
   sonderWertAusEinsatz,
   type SonderLieferungWert,
 } from '../lib/sonderLieferung';
+import {
+  abholerLieferadrZusatz,
+  anmeldeHinweis,
+  anmeldeStatus,
+  ANMELDESTATUS_ICON,
+  bestaetigeMaAuswahl,
+  erstelleMaAuswahlKontext,
+  istInPlanungAuswaehlbar,
+  maAuswahlLabel,
+  teileMaAuswahl,
+  type MaAuswahlKontext,
+} from '../lib/maAuswahl';
+import MaAuswahlHinweise from '../components/MaAuswahlHinweise';
 
 /**
  * Kürzt einen TG-Namen für die schmalen Chip-Zellen so, dass die
@@ -511,15 +524,21 @@ function PlanungContent() {
   }, [abrechnungsperioden, currentKW.jahr, currentKW.kw]);
 
   // ---- Stammdaten-Subsets ----
+  // Auswahlfelder (Drucksaal, Fahrer, Springer, neuer Standardausträger)
+  // bieten auch abgemeldete MA an — am Listenende, mit Warnung bei Auswahl.
+  const maKtx = useMemo(
+    () => erstelleMaAuswahlKontext(abrechnungsperioden, mitarbeiter),
+    [abrechnungsperioden, mitarbeiter],
+  );
   const drucksaalMa = useMemo(
     () => mitarbeiter
-      .filter((m) => m.isActive && !m.istInteressent && m.istDrucksaal)
+      .filter((m) => istInPlanungAuswaehlbar(m) && m.istDrucksaal)
       .sort((a, b) => a.name.localeCompare(b.name, 'de')),
     [mitarbeiter],
   );
   const fahrerMa = useMemo(
     () => mitarbeiter
-      .filter((m) => m.isActive && !m.istInteressent && m.fahrtkostenerstattung)
+      .filter((m) => istInPlanungAuswaehlbar(m) && m.fahrtkostenerstattung)
       .sort((a, b) => a.name.localeCompare(b.name, 'de')),
     [mitarbeiter],
   );
@@ -599,7 +618,7 @@ function PlanungContent() {
   }
   const austraegerMa = useMemo(
     () => mitarbeiter
-      .filter((m) => m.isActive && !m.istInteressent && m.rollen.includes('austräger'))
+      .filter((m) => istInPlanungAuswaehlbar(m) && m.rollen.includes('austräger'))
       .sort((a, b) => a.name.localeCompare(b.name, 'de')),
     [mitarbeiter],
   );
@@ -1130,6 +1149,7 @@ function PlanungContent() {
                     mitarbeiterId={entry?.mitarbeiterId ?? null}
                     kommentar={entry?.kommentar}
                     options={drucksaalMa}
+                    ktx={maKtx}
                     showKuerzel
                     onChangeMa={(maId) => setzeDrucksaalPlanung(jahr, kw, t, maId, entry?.kommentar)}
                     onChangeKommentar={(text) => setzeDrucksaalPlanung(jahr, kw, t, entry?.mitarbeiterId ?? null, text)}
@@ -1195,6 +1215,7 @@ function PlanungContent() {
                     mitarbeiterId={entry?.mitarbeiterId ?? null}
                     kommentar={entry?.kommentar}
                     options={fahrerMa}
+                    ktx={maKtx}
                     showKuerzel
                     onChangeMa={(maId) => setzeFahrerPlanung(jahr, kw, tour.id, maId, entry?.kommentar)}
                     onChangeKommentar={(text) => setzeFahrerPlanung(jahr, kw, tour.id, entry?.mitarbeiterId ?? null, text)}
@@ -1830,6 +1851,7 @@ function PlanungContent() {
           einsaetzeImJahr={einsaetze}
           parameter={parameter}
           austraegerMa={austraegerMa}
+          maKtx={maKtx}
           mitarbeiterById={mitarbeiterById}
           maxKwImJahr={kws[kws.length - 1]}
           jahr={jahr}
@@ -1871,6 +1893,7 @@ function PlanungContent() {
           ausfaelleInKw={ausfaelleByKw.get(ausfallModal.kw) ?? []}
           einsaetzeImJahr={alleAusfallEinsaetze}
           austraegerMa={austraegerMa}
+          maKtx={maKtx}
           mitarbeiterById={mitarbeiterById}
           maxKwImJahr={kws[kws.length - 1]}
           parameter={parameter}
@@ -2314,6 +2337,7 @@ function MaCommentCell({
   mitarbeiterId,
   kommentar,
   options,
+  ktx,
   showKuerzel,
   onChangeMa,
   onChangeKommentar,
@@ -2321,25 +2345,42 @@ function MaCommentCell({
   mitarbeiterId: string | null;
   kommentar: string | undefined;
   options: Mitarbeiter[];
+  ktx: MaAuswahlKontext;
   showKuerzel?: boolean;
   onChangeMa: (id: string | null) => void;
   onChangeKommentar: (text: string) => void;
 }) {
   const [showPopup, setShowPopup] = useState(false);
   const hatKommentar = !!kommentar?.trim();
+  // Anmeldestatus des eingetragenen MA (abgemeldet, Abmeldung vorgesehen,
+  // noch nicht angemeldet) — Symbol links oben + Text im Tooltip.
+  const gewaehlt = mitarbeiterId ? options.find((m) => m.id === mitarbeiterId) : undefined;
+  const statusHinweis = gewaehlt ? anmeldeHinweis(gewaehlt, ktx) : null;
+  const statusIcon = gewaehlt ? ANMELDESTATUS_ICON[anmeldeStatus(gewaehlt, ktx)] : '';
+  const tooltip = [
+    statusHinweis ? `${statusHinweis.stufe === 'warnung' ? '⚠' : 'ℹ'} ${statusHinweis.text}` : '',
+    hatKommentar ? `💬 ${kommentar}` : '',
+    '(Rechtsklick für Kommentar)',
+  ].filter(Boolean).join('\n\n');
 
   return (
     <div
       className="relative"
       onContextMenu={(e) => { e.preventDefault(); setShowPopup((v) => !v); }}
-      title={hatKommentar ? `💬 ${kommentar}\n\n(Rechtsklick für Kommentar)` : 'Rechtsklick für Kommentar'}
+      title={tooltip}
     >
       <MaSelect
         value={mitarbeiterId}
         options={options}
+        ktx={ktx}
         onChange={onChangeMa}
         showKuerzel={showKuerzel}
       />
+      {statusIcon && (
+        <span className="absolute -top-1 -left-1 text-[10px] pointer-events-none">
+          {statusIcon}
+        </span>
+      )}
       {hatKommentar && (
         <span className="absolute -top-1 -right-1 text-[10px] pointer-events-none" title={kommentar}>
           💬
@@ -2388,12 +2429,14 @@ function MaCommentCell({
 function MaSelect({
   value,
   options,
+  ktx,
   onChange,
   disabled,
   showKuerzel,
 }: {
   value: string | null;
   options: Mitarbeiter[];
+  ktx: MaAuswahlKontext;
   onChange: (id: string | null) => void;
   disabled?: boolean;
   /**
@@ -2404,21 +2447,45 @@ function MaSelect({
    */
   showKuerzel?: boolean;
 }) {
-  const label = (m: Mitarbeiter) =>
-    showKuerzel && m.kuerzel ? m.kuerzel : m.name;
+  const label = (m: Mitarbeiter) => maAuswahlLabel(m, ktx, { kuerzel: showKuerzel });
+  // Abgemeldete ganz unten; Auswahl eines abgemeldeten MA nur nach Rückfrage.
+  const { oben, abgemeldet } = teileMaAuswahl(options);
+  const gewaehlt = value ? options.find((m) => m.id === value) : undefined;
+  const status = gewaehlt ? anmeldeStatus(gewaehlt, ktx) : 'angemeldet';
+  const farbe = !value
+    ? 'bg-white border-gray-200 text-gray-400'
+    : status === 'abgemeldet'
+      ? 'bg-red-50 border-red-400 text-red-900'
+      : status !== 'angemeldet'
+        ? 'bg-amber-50 border-amber-400 text-amber-900'
+        : 'bg-blue-50 border-blue-200 text-blue-900';
   return (
     <select
       value={value ?? ''}
-      onChange={(e) => onChange(e.target.value || null)}
+      onChange={(e) => {
+        const id = e.target.value || null;
+        if (id && !bestaetigeMaAuswahl(options.find((m) => m.id === id))) {
+          e.target.value = value ?? '';
+          return;
+        }
+        onChange(id);
+      }}
       disabled={disabled}
-      className={`w-full text-xs px-1 py-1 rounded border ${
-        value ? 'bg-blue-50 border-blue-200 text-blue-900' : 'bg-white border-gray-200 text-gray-400'
-      } ${disabled ? 'opacity-60 cursor-not-allowed' : ''} ${showKuerzel ? 'font-mono tracking-wide text-center' : ''}`}
+      className={`w-full text-xs px-1 py-1 rounded border ${farbe} ${
+        disabled ? 'opacity-60 cursor-not-allowed' : ''
+      } ${showKuerzel ? 'font-mono tracking-wide text-center' : ''}`}
     >
       <option value="">—</option>
-      {options.map((m) => (
+      {oben.map((m) => (
         <option key={m.id} value={m.id}>{label(m)}</option>
       ))}
+      {abgemeldet.length > 0 && (
+        <optgroup label="— abgemeldet —">
+          {abgemeldet.map((m) => (
+            <option key={m.id} value={m.id}>{label(m)}</option>
+          ))}
+        </optgroup>
+      )}
     </select>
   );
 }
@@ -3299,6 +3366,7 @@ function AusfallModal({
   ausfaelleInKw,
   einsaetzeImJahr,
   austraegerMa,
+  maKtx,
   mitarbeiterById,
   maxKwImJahr,
   parameter,
@@ -3322,6 +3390,8 @@ function AusfallModal({
   /** Alle Einsätze des Jahres — Quelle für Gruppen-Geschwister. */
   einsaetzeImJahr: Einsatz[];
   austraegerMa: Mitarbeiter[];
+  /** Anmeldestatus für Namenszusätze und Hinweise in der Springer-Auswahl. */
+  maKtx: MaAuswahlKontext;
   mitarbeiterById: Map<string, Mitarbeiter>;
   maxKwImJahr: number;
   parameter: Parameter | null;
@@ -3884,7 +3954,7 @@ function AusfallModal({
               <option value="">— alle Teilgebiete —</option>
               {vorauswahlMaOptionen.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name}{m.nummer ? ` (${m.nummer})` : ''} — {(standardTgsJeMa.get(m.id) ?? []).map((t) => t.name).join(', ')}
+                  {maAuswahlLabel(m, maKtx, { zusaetze: m.nummer ? [m.nummer] : [] })} — {(standardTgsJeMa.get(m.id) ?? []).map((t) => t.name).join(', ')}
                 </option>
               ))}
             </select>
@@ -4018,6 +4088,21 @@ function AusfallModal({
             const ma = austraegerMa.find((m) => m.id === springerId);
             if (ma) zeigeListe.push(ma);
           }
+          // Abgemeldete ganz unten (Auswahl nur nach Rückfrage).
+          const { oben, abgemeldet } = teileMaAuswahl(zeigeListe);
+          const anzahlFreigegeben = freigegebeneMa.filter((m) => !m.abgemeldet).length;
+          const option = (m: Mitarbeiter) => (
+            <option key={m.id} value={m.id}>
+              {maAuswahlLabel(m, maKtx, {
+                zusaetze: [
+                  ...abholerLieferadrZusatz(m, selectedTgId),
+                  ...(m.id === springerId && !m.teilgebietFreigaben?.includes(selectedTgId ?? '')
+                    ? ['⚠ keine TG-Freigabe']
+                    : []),
+                ],
+              })}
+            </option>
+          );
           return (
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -4025,28 +4110,37 @@ function AusfallModal({
               </label>
               <select
                 value={springerId ?? ''}
-                onChange={(e) => setSpringerId(e.target.value || null)}
+                onChange={(e) => {
+                  const id = e.target.value || null;
+                  if (id && !bestaetigeMaAuswahl(mitarbeiterById.get(id))) {
+                    e.target.value = springerId ?? '';
+                    return;
+                  }
+                  setSpringerId(id);
+                }}
                 disabled={!selectedTgId || istGesperrt}
                 className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
               >
                 <option value="">— noch nicht gefunden —</option>
-                {zeigeListe.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                    {m.id === springerId &&
-                    !m.teilgebietFreigaben?.includes(selectedTgId ?? '')
-                      ? ' (⚠ keine TG-Freigabe)'
-                      : ''}
-                  </option>
-                ))}
+                {oben.map(option)}
+                {abgemeldet.length > 0 && (
+                  <optgroup label="— abgemeldet —">{abgemeldet.map(option)}</optgroup>
+                )}
               </select>
               <p className="text-[11px] text-gray-500 mt-0.5">
                 {selectedTgId
                   ? freigegebeneMa.length === 0
                     ? '⚠ Kein Austräger hat eine Freigabe für dieses Teilgebiet.'
-                    : `${freigegebeneMa.length} Austräger mit Freigabe für dieses TG.`
+                    : anzahlFreigegeben === 0
+                      ? '⚠ Nur abgemeldete Austräger haben eine Freigabe für dieses Teilgebiet.'
+                      : `${anzahlFreigegeben} Austräger mit Freigabe für dieses TG.`
                   : 'Erst Teilgebiet wählen, dann Springer.'}
               </p>
+              <MaAuswahlHinweise
+                ma={springerId ? mitarbeiterById.get(springerId) : null}
+                ktx={maKtx}
+                teilgebietId={selectedTgId}
+              />
             </div>
           );
         })()}
@@ -4508,6 +4602,7 @@ function WechselModal({
   einsaetzeImJahr,
   parameter,
   austraegerMa,
+  maKtx,
   mitarbeiterById,
   maxKwImJahr,
   jahr,
@@ -4524,6 +4619,8 @@ function WechselModal({
   einsaetzeImJahr: Einsatz[];
   parameter: Parameter | null;
   austraegerMa: Mitarbeiter[];
+  /** Anmeldestatus für Namenszusätze und Hinweise in der Austräger-Auswahl. */
+  maKtx: MaAuswahlKontext;
   mitarbeiterById: Map<string, Mitarbeiter>;
   maxKwImJahr: number;
   jahr: number;
@@ -4573,6 +4670,19 @@ function WechselModal({
     }
     return list;
   }, [freigegeben, neuerMa, austraegerMa]);
+  // Abgemeldete ganz unten (Auswahl nur nach Rückfrage).
+  const { oben: optionenOben, abgemeldet: optionenAbgemeldet } = teileMaAuswahl(optionen);
+  const anzahlFreigegeben = freigegeben.filter((m) => !m.abgemeldet).length;
+  const option = (m: Mitarbeiter) => (
+    <option key={m.id} value={m.id}>
+      {maAuswahlLabel(m, maKtx, {
+        zusaetze: [
+          ...abholerLieferadrZusatz(m, teilgebietId),
+          ...(!m.teilgebietFreigaben?.includes(teilgebietId) ? ['⚠ keine TG-Freigabe'] : []),
+        ],
+      })}
+    </option>
+  );
 
   // H: Vorjahr entfällt; im laufenden Jahr sind ab Beginn des aktuellen
   // Monats auch bereits vergangene Ausgaben wählbar (für nachträgliche
@@ -5178,6 +5288,10 @@ function WechselModal({
             value={neuerMa ?? ''}
             onChange={(e) => {
               const v = e.target.value || null;
+              if (v && !bestaetigeMaAuswahl(mitarbeiterById.get(v))) {
+                e.target.value = neuerMa ?? '';
+                return;
+              }
               setNeuerMa(v);
               // Wenn der Nachfolger entfernt wird („noch unbekannt"), sind
               // „ab Ausgabe (Jahr/KW)" inhaltlich gegenstandslos — direkt
@@ -5191,18 +5305,23 @@ function WechselModal({
             className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"
           >
             <option value="">— noch unbekannt —</option>
-            {optionen.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-                {!m.teilgebietFreigaben?.includes(teilgebietId) ? ' (⚠ keine TG-Freigabe)' : ''}
-              </option>
-            ))}
+            {optionenOben.map(option)}
+            {optionenAbgemeldet.length > 0 && (
+              <optgroup label="— abgemeldet —">{optionenAbgemeldet.map(option)}</optgroup>
+            )}
           </select>
           <p className="text-[11px] text-gray-500 mt-0.5">
             {freigegeben.length === 0
               ? '⚠ Kein Austräger hat eine Freigabe für dieses TG.'
-              : `${freigegeben.length} Austräger mit Freigabe für dieses TG.`}
+              : anzahlFreigegeben === 0
+                ? '⚠ Nur abgemeldete Austräger haben eine Freigabe für dieses TG.'
+                : `${anzahlFreigegeben} Austräger mit Freigabe für dieses TG.`}
           </p>
+          <MaAuswahlHinweise
+            ma={neuerMa ? mitarbeiterById.get(neuerMa) : null}
+            ktx={maKtx}
+            teilgebietId={teilgebietId}
+          />
         </div>
 
         <div>

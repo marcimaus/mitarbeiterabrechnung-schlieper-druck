@@ -36,6 +36,7 @@ import { berechneNettoMinuten } from './zeiterfassung';
 import { getISOWeek, getISOYear } from './kalender';
 import { vorarbeitAusgabe, kappeVorarbeit } from './vorarbeit';
 import { istInSaisonpauseFuer } from './saison';
+import { istPeriodeNachAbmeldung } from './abmeldungen';
 import type { Arbeitszeit, ZusammentragenEinsatz } from '../types';
 
 // ---- Ergebnistypen -----------------------------------------
@@ -157,6 +158,18 @@ export interface MitarbeiterAbrechnung {
   ausgabenBoni: AusgabenBonusErgebnis[];
   ausgabenBoniMinutenGesamt: number;
   ausgabenBoniLohnGesamt: number;
+  /**
+   * Ausgaben der Periode, für die der Tätigkeitsbonus laut Stammdaten
+   * entfällt (`ausgabenBonusAusnahmen`) — nur Anzeige. Optional, weil ältere
+   * Abrechnungs-Snapshots das Feld nicht haben.
+   */
+  ausgabenBoniEntfallen?: { kw: number; jahr: number; grund?: string }[];
+  /**
+   * true = MA ist abgemeldet und die Periode liegt nach seiner Abmeldung.
+   * Dann entfallen Festgehalt und Tätigkeitsbonus; gerechnet werden nur
+   * tatsächliche Einsätze/Zeiten — die Abrechnung warnt bei jedem Betrag.
+   */
+  nachAbmeldung?: boolean;
   /** Bonus „Zeiterfassung Austragen": pauschaler Betrag je vollständig online
    *  erfasstem Einsatz (Austragen) — Bedingungen: Arbeitszeit + Restmenge +
    *  meldungEingereichtAm gesetzt. */
@@ -511,7 +524,14 @@ export function berechneAbrechnung(
   }
 
   for (const ma of mitarbeiterListe) {
-    if (!ma.isActive) continue;
+    // Abgemeldete MA sind meist deaktiviert (Periodenabschluss), werden aber
+    // trotzdem gerechnet: Beträge aus Einsätzen nach der Abmeldung dürfen
+    // nicht stillschweigend entfallen — die Abrechnung warnt stattdessen.
+    const abgemeldetMitrechnen = ma.abgemeldet === true && !ma.istLegacy && !ma.istInteressent;
+    if (!ma.isActive && !abgemeldetMitrechnen) continue;
+    // Nach der Abmeldung keine stammdatenbedingten Beträge (Festgehalt,
+    // Tätigkeitsbonus, reiner Lohnkonto-Saldo) — nur echte Bewegungen.
+    const nachAbmeldung = !!periode && istPeriodeNachAbmeldung(ma, periode, alleAbrechnungsperioden);
 
     // --- Fahrtkosten (werden IMMER berechnet, unabhängig vom Modell) ---
     const maFahrten = data.fahrten.filter((f) => f.mitarbeiterId === ma.id);
@@ -555,13 +575,27 @@ export function berechneAbrechnung(
     // --- Ausgaben-Boni (pauschaler Tätigkeitsbonus aus Mitarbeiter-Stammdaten) ---
     // `ausgabenBonusMinuten` am MA gilt PRO Ausgabe der Periode. Wir erzeugen
     // pro Ausgabe einen Detail-Eintrag und summieren über alle.
-    const bonusMinutenProAusgabe = ma.ausgabenBonusMinuten ?? 0;
+    // Einzelne Ausgaben können laut Stammdaten ausgenommen sein
+    // (`ausgabenBonusAusnahmen`, z. B. MA nicht anwesend).
+    const bonusMinutenProAusgabe = nachAbmeldung ? 0 : ma.ausgabenBonusMinuten ?? 0;
     const ausgabenBoniDetails: AusgabenBonusErgebnis[] = [];
+    const ausgabenBoniEntfallen: { kw: number; jahr: number; grund?: string }[] = [];
     if (bonusMinutenProAusgabe > 0) {
       const sortedAusgaben = [...data.ausgaben].sort((a, b) =>
         a.jahr !== b.jahr ? a.jahr - b.jahr : a.kw - b.kw
       );
       for (const ausgabe of sortedAusgaben) {
+        const ausnahme = ma.ausgabenBonusAusnahmen?.find(
+          (x) => x.jahr === ausgabe.jahr && x.kw === ausgabe.kw
+        );
+        if (ausnahme) {
+          ausgabenBoniEntfallen.push({
+            kw: ausgabe.kw,
+            jahr: ausgabe.jahr,
+            ...(ausnahme.grund ? { grund: ausnahme.grund } : {}),
+          });
+          continue;
+        }
         ausgabenBoniDetails.push({
           id: `${ma.id}-${ausgabe.id}`,
           ausgabeId: ausgabe.id,
@@ -575,12 +609,16 @@ export function berechneAbrechnung(
     }
     const ausgabenBoniMinutenGesamt = ausgabenBoniDetails.reduce((s, e) => s + e.minuten, 0);
     const ausgabenBoniLohnGesamt = ausgabenBoniDetails.reduce((s, e) => s + e.lohn, 0);
+    const zusatzFelder = {
+      ...(ausgabenBoniEntfallen.length > 0 ? { ausgabenBoniEntfallen } : {}),
+      ...(nachAbmeldung ? { nachAbmeldung: true } : {}),
+    };
 
     // =======================================================
     // FESTGEHALT-MITARBEITER — absoluter Override
     // =======================================================
     if (ma.hatFestgehalt) {
-      const fixesGehalt = ma.festgehaltEur ?? ma.fixesGehalt ?? 0;
+      const fixesGehalt = nachAbmeldung ? 0 : ma.festgehaltEur ?? ma.fixesGehalt ?? 0;
       // Festgehälter erhalten keinen Zeiterfassungs-Bonus (Austragen ist
       // dort nicht über Stempelzeit abgerechnet).
       const bonusZeiterfassungEur = 0;
@@ -596,7 +634,7 @@ export function berechneAbrechnung(
         fahrtkostenGesamt > 0 ||
         maVorschuesse.length > 0 ||
         lk.lohnkontoBuchungenPeriode.length > 0 ||
-        lk.lohnkontoSaldoVorPeriode !== 0 ||
+        (lk.lohnkontoSaldoVorPeriode !== 0 && !nachAbmeldung) ||
         ausgabenBoniDetails.length > 0
       ) {
         // Auch bei Festgehalt: alle Arbeitszeiten informativ anzeigen
@@ -629,6 +667,7 @@ export function berechneAbrechnung(
           ausgabenBoni: ausgabenBoniDetails,
           ausgabenBoniMinutenGesamt,
           ausgabenBoniLohnGesamt,
+          ...zusatzFelder,
           bonusZeiterfassungEur,
           bonusZeiterfassungAnzahl,
           externerWertAktiv: false,
@@ -1058,7 +1097,7 @@ export function berechneAbrechnung(
       bonus !== 0 ||
       sonderzahlung !== 0 ||
       lk.lohnkontoBuchungenPeriode.length > 0 ||
-      lk.lohnkontoSaldoVorPeriode !== 0 ||
+      (lk.lohnkontoSaldoVorPeriode !== 0 && !nachAbmeldung) ||
       ausgabenBoniDetails.length > 0 ||
       externerWertAktiv
     ) {
@@ -1091,6 +1130,7 @@ export function berechneAbrechnung(
         ausgabenBoni: ausgabenBoniDetails,
         ausgabenBoniMinutenGesamt,
         ausgabenBoniLohnGesamt,
+        ...zusatzFelder,
         bonusZeiterfassungEur,
         bonusZeiterfassungAnzahl,
         externerWert,

@@ -8,7 +8,7 @@ import { ladePeriodeData, berechneAbrechnung, eur, stdMin, zeitLohnAufteilung } 
 import { aktualisiereMitarbeiterMitProtokoll } from '../lib/mitarbeiterProtokoll';
 import { berechneNettoMinuten } from '../lib/zeiterfassung';
 import { exportiereAbrechnung, exportiereLohnuebermittlung } from '../lib/exportXlsx';
-import { offeneAbmeldungen, periodenEndeIso as periodenEndeIsoVon } from '../lib/abmeldungen';
+import { istPeriodeNachAbmeldung, offeneAbmeldungen, periodenEndeIso as periodenEndeIsoVon } from '../lib/abmeldungen';
 import {
   schliessePeriodeAb,
   oeffnePeriodeWieder,
@@ -807,6 +807,12 @@ function AbrechnungInhalt() {
 
   // Noch nicht angemeldete MAs, die in dieser Abrechnung Beträge bekommen
   const nichtAngemeldeteWarnung = ergebnisse?.filter((e) => e.mitarbeiter.nochNichtAngemeldet) ?? [];
+
+  // Abgemeldete MAs, die in einer Periode NACH ihrer Abmeldung Beträge
+  // bekommen (z. B. als Springer eingeplant, noch Standardausträger).
+  const abgemeldeteWarnung = selectedPeriode
+    ? ergebnisse?.filter((e) => istPeriodeNachAbmeldung(e.mitarbeiter, selectedPeriode, abrechnungsperioden)) ?? []
+    : [];
 
   // Dummy-MA „90000" — wird verwendet, wenn der tatsächliche MA anonym
   // sein soll. Darf NIE einen Betrag in der Abrechnung tragen — sonst
@@ -1667,6 +1673,39 @@ function AbrechnungInhalt() {
                   <li key={e.mitarbeiter.id}>
                     <span className="font-medium">{e.mitarbeiter.name}</span>
                     <span className="text-gray-500"> ({e.mitarbeiter.nummer})</span>
+                    {' — Brutto '}
+                    <span className="font-medium">{eur(e.gesamt)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Warnung: abgemeldete Mitarbeiter mit Betrag nach ihrer Abmeldung */}
+          {abgemeldeteWarnung.length > 0 && (
+            <div className="mb-4 rounded-lg border border-red-400 bg-red-50 px-4 py-3 text-sm">
+              <div className="font-semibold text-red-800 mb-1">
+                🚪 Abgemeldete Mitarbeiter in dieser Abrechnung
+              </div>
+              <p className="text-xs text-red-700 mb-1">
+                Diese Mitarbeiter sind beim Lohnbüro abgemeldet, haben in dieser
+                Periode (nach ihrer Abmeldung) aber Beträge — z. B. als Springer
+                eingeplant oder noch als Standardausträger eingetragen. Vor dem
+                Periodenabschluss klären: wieder anmelden (Mitarbeiter → Anmeldung /
+                Abmeldung) oder Einsätze korrigieren. Festgehalt und
+                Tätigkeitsbonus werden nach der Abmeldung nicht mehr gerechnet.
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 text-red-900">
+                {abgemeldeteWarnung.map((e) => (
+                  <li key={e.mitarbeiter.id}>
+                    <span className="font-medium">{e.mitarbeiter.name}</span>
+                    <span className="text-gray-500"> ({e.mitarbeiter.nummer})</span>
+                    {e.mitarbeiter.abmeldungUebermittlungDatum && (
+                      <span className="text-gray-500">
+                        {' — abgemeldet zum '}
+                        {e.mitarbeiter.abmeldungUebermittlungDatum.split('-').reverse().join('.')}
+                      </span>
+                    )}
                     {' — Brutto '}
                     <span className="font-medium">{eur(e.gesamt)}</span>
                   </li>
@@ -2811,8 +2850,8 @@ function DetailAnsicht({
         </div>
       )}
 
-      {/* Minuten-Boni je Ausgabe */}
-      {er.ausgabenBoni.length > 0 && (
+      {/* Minuten-Boni je Ausgabe (inkl. laut Stammdaten entfallener Ausgaben) */}
+      {(er.ausgabenBoni.length > 0 || (er.ausgabenBoniEntfallen?.length ?? 0) > 0) && (
         <div className="md:col-span-2">
           <h4 className="font-semibold text-gray-700 mb-2 text-sm">
             Min-Boni ({er.ausgabenBoni.length} Einträge ·
@@ -2839,6 +2878,16 @@ function DetailAnsicht({
                     <td className="px-2 py-1.5 text-right font-semibold text-purple-700">
                       {eur(b.lohn)}
                     </td>
+                  </tr>
+                ))}
+                {(er.ausgabenBoniEntfallen ?? []).map((b, i) => (
+                  <tr key={`entfallen-${b.jahr}-${b.kw}-${i}`} className="text-gray-400">
+                    <td className="px-2 py-1.5">{b.kw}/{b.jahr}</td>
+                    <td className="px-2 py-1.5 text-right font-mono line-through">—</td>
+                    <td className="px-2 py-1.5 italic">
+                      entfällt{b.grund ? ` — ${b.grund}` : ''}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">{eur(0)}</td>
                   </tr>
                 ))}
                 <tr className="bg-gray-50 border-t border-gray-200 font-semibold">

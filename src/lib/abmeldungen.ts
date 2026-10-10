@@ -39,6 +39,49 @@ export function offeneAbmeldungen(
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Zur Abmeldung vorgesehene MA über alle noch nicht abgeschlossenen
+ * Perioden: MA-ID → früheste Periode, in deren Abmelde-Liste der MA steht.
+ */
+export function abmeldungVorgesehenJeMa(
+  perioden: Abrechnungsperiode[],
+  mitarbeiter: Mitarbeiter[],
+): Map<string, Abrechnungsperiode> {
+  const out = new Map<string, Abrechnungsperiode>();
+  const offen = perioden
+    .filter((p) => p.status !== 'abgeschlossen')
+    .sort((a, b) => a.jahr - b.jahr || a.monat - b.monat);
+  for (const p of offen) {
+    for (const m of offeneAbmeldungen(p, mitarbeiter)) {
+      if (!out.has(m.id)) out.set(m.id, p);
+    }
+  }
+  return out;
+}
+
+/**
+ * Liegt die Periode nach der Abmeldung des MA? Maßgeblich ist die letzte
+ * Abrechnungsperiode des MA, ersatzweise das Abmeldedatum (Periode beginnt
+ * danach). Ohne beides gilt ein abgemeldeter MA in jeder Periode als
+ * abgemeldet.
+ */
+export function istPeriodeNachAbmeldung(
+  ma: Pick<Mitarbeiter, 'abgemeldet' | 'letzteAbrechnungsperiodeId' | 'abmeldungUebermittlungDatum'>,
+  periode: Pick<Abrechnungsperiode, 'jahr' | 'monat'>,
+  perioden: Abrechnungsperiode[],
+): boolean {
+  if (!ma.abgemeldet) return false;
+  const letzte = ma.letzteAbrechnungsperiodeId
+    ? perioden.find((p) => p.id === ma.letzteAbrechnungsperiodeId)
+    : undefined;
+  if (letzte) return periode.jahr * 12 + periode.monat > letzte.jahr * 12 + letzte.monat;
+  if (ma.abmeldungUebermittlungDatum) {
+    const beginn = `${periode.jahr}-${periode.monat.toString().padStart(2, '0')}-01`;
+    return beginn > ma.abmeldungUebermittlungDatum;
+  }
+  return true;
+}
+
 export interface AbmeldeEintrag {
   mitarbeiterId: string;
   name: string;

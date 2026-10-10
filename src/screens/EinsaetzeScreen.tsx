@@ -39,6 +39,15 @@ import type { Ausgabe, Einsatz, Teilgebiet, Abrechnungsperiode, Beilage, Sonderv
 import { kwLabel, MONATSNAMEN } from '../lib/kalender';
 import { berechneGewichtAnzeigenblattKg, berechneGewichtBeilagenKg, berechneAustraegezeit, berechneZusammentragZeit, formatierStunden } from '../lib/berechnung';
 import { effektiverStandardAustraegerId } from '../utils';
+import {
+  abholerLieferadrZusatz,
+  bestaetigeMaAuswahl,
+  erstelleMaAuswahlKontext,
+  istInPlanungAuswaehlbar,
+  maAuswahlLabel,
+  teileMaAuswahl,
+} from '../lib/maAuswahl';
+import MaAuswahlHinweise from '../components/MaAuswahlHinweise';
 
 // Hilfsfunktion: Ausgaben der letzten 2 Jahre laden (aus AppContext)
 // Teilgebiete + Mitarbeiter kommen aus AppContext
@@ -242,6 +251,13 @@ function EinsaetzeInhalt() {
   const getMitarbeiter = useCallback(
     (id: string | null) => (id ? mitarbeiter.find((m) => m.id === id) : undefined),
     [mitarbeiter]
+  );
+
+  // Anmeldestatus (abgemeldet / Abmeldung vorgesehen / noch nicht angemeldet)
+  // für die Springer-Auswahl.
+  const maKtx = useMemo(
+    () => erstelleMaAuswahlKontext(abrechnungsperioden, mitarbeiter),
+    [abrechnungsperioden, mitarbeiter]
   );
 
   /** Menschenlesbare Kurzbeschreibung des bisherigen Zustands — fürs Änderungsprotokoll. */
@@ -1426,36 +1442,60 @@ function EinsaetzeInhalt() {
               />
             </div>
 
-            <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
-              {mitarbeiter
+            {(() => {
+              // Abgemeldete MA bleiben wählbar — am Listenende und nur nach
+              // Rückfrage. Namenszusatz zeigt den Anmeldestatus.
+              const kandidaten = mitarbeiter
                 .filter((m) => {
-                  if (m.abgemeldet) return false;
-                  if (!m.isActive || !m.rollen.includes('austräger')) return false;
+                  if (!istInPlanungAuswaehlbar(m) || !m.rollen.includes('austräger')) return false;
                   // Strikte Gebietsfreigabe: nur Mitarbeiter, die für dieses Teilgebiet freigegeben sind.
-                  if (!springerDialog) return false;
                   const f = m.teilgebietFreigaben ?? [];
-                  if (!f.includes(springerDialog.id)) return false;
-                  return true;
+                  return f.includes(springerDialog.id);
                 })
                 .filter((m) =>
                   m.name.toLowerCase().includes(springerFilter.toLowerCase()) ||
                   m.nummer.includes(springerFilter)
                 )
-                .map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setSpringerMitarbeiterId(m.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2 text-sm transition-colors ${
-                      springerMitarbeiterId === m.id
-                        ? 'bg-blue-50 text-blue-700'
+                .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+              const { oben, abgemeldet } = teileMaAuswahl(kandidaten);
+              const zeile = (m: (typeof kandidaten)[number]) => (
+                <button
+                  key={m.id}
+                  onClick={() => {
+                    if (!bestaetigeMaAuswahl(m)) return;
+                    setSpringerMitarbeiterId(m.id);
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-2 text-sm transition-colors ${
+                    springerMitarbeiterId === m.id
+                      ? 'bg-blue-50 text-blue-700'
+                      : m.abgemeldet
+                        ? 'hover:bg-gray-50 text-gray-500'
                         : 'hover:bg-gray-50 text-gray-800'
-                    }`}
-                  >
-                    <span className="font-medium">{m.name}</span>
-                    <span className="text-gray-400">{m.nummer}</span>
-                  </button>
-                ))}
-            </div>
+                  }`}
+                >
+                  <span className="font-medium text-left">
+                    {maAuswahlLabel(m, maKtx, { zusaetze: abholerLieferadrZusatz(m, springerDialog.id) })}
+                  </span>
+                  <span className="text-gray-400">{m.nummer}</span>
+                </button>
+              );
+              return (
+                <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                  {oben.map(zeile)}
+                  {abgemeldet.length > 0 && (
+                    <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 bg-gray-50">
+                      abgemeldet
+                    </div>
+                  )}
+                  {abgemeldet.map(zeile)}
+                </div>
+              );
+            })()}
+            <MaAuswahlHinweise
+              ma={springerMitarbeiterId ? getMitarbeiter(springerMitarbeiterId) : null}
+              ktx={maKtx}
+              teilgebietId={springerDialog.id}
+            />
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">

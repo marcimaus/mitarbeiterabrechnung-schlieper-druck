@@ -28,6 +28,8 @@ import {
 } from '../lib/berechnung';
 import { berechneNettoMinuten } from '../lib/zeiterfassung';
 import { zeitfensterText } from '../lib/vorarbeit';
+import { istPeriodeNachAbmeldung } from '../lib/abmeldungen';
+import { useApp } from '../context/AppContext';
 import type {
   Abrechnungsperiode,
   Arbeitszeit,
@@ -254,6 +256,7 @@ export default function AbrechnungsAufschluesselung({
       return neu;
     });
 
+  const { abrechnungsperioden } = useApp();
   const { periode, data, params, maBerechnung: ma, maStamm } = kontext;
   const hatSim = !!basisOhneZusatz;
   const delta = hatSim ? er.gesamt - (basisOhneZusatz?.gesamt ?? 0) : 0;
@@ -536,8 +539,10 @@ export default function AbrechnungsAufschluesselung({
   }
   if (maStamm.istInteressent) {
     hinweise.push({ stufe: 'info', text: 'Interessent — rein hypothetische Berechnung.' });
-  } else if (!maStamm.isActive || maStamm.abgemeldet) {
-    hinweise.push({ stufe: 'warnung', text: 'MA ist inaktiv/abgemeldet — die echte Abrechnung überspringt inaktive Mitarbeiter; die Vorschau rechnet ihn trotzdem.' });
+  } else if (maStamm.abgemeldet && istPeriodeNachAbmeldung(maStamm, periode, abrechnungsperioden)) {
+    hinweise.push({ stufe: 'warnung', text: 'MA ist abgemeldet und die Periode liegt nach der Abmeldung — die echte Abrechnung rechnet nur tatsächliche Einsätze/Zeiten (ohne Festgehalt und Tätigkeitsbonus) und warnt bei jedem Betrag; die Vorschau rechnet ihn wie einen aktiven MA.' });
+  } else if (!maStamm.isActive && !maStamm.abgemeldet) {
+    hinweise.push({ stufe: 'warnung', text: 'MA ist inaktiv — die echte Abrechnung überspringt inaktive Mitarbeiter; die Vorschau rechnet ihn trotzdem.' });
   }
   if (!hatSim && !gleich(nachgerechnetesBrutto, er.gesamt)) {
     hinweise.push({ stufe: 'fehler', text: <>Summe der Einzelpositionen ({eur(nachgerechnetesBrutto)}) weicht vom Brutto ({eur(er.gesamt)}) ab.</> });
@@ -1395,8 +1400,20 @@ export default function AbrechnungsAufschluesselung({
             <h5 className="font-semibold text-gray-700 mb-1">
               Min-Boni (Tätigkeitsbonus) — {er.ausgabenBoniMinutenGesamt} min = {eur(er.ausgabenBoniLohnGesamt)}
             </h5>
+            {(er.ausgabenBoniEntfallen?.length ?? 0) > 0 && (
+              <p className="text-gray-500 mb-1.5">
+                Entfällt laut Stammdaten:{' '}
+                {er.ausgabenBoniEntfallen!.map((b) => `KW ${b.kw}${b.grund ? ` (${b.grund})` : ''}`).join(', ')}
+              </p>
+            )}
             {er.ausgabenBoni.length === 0 ? (
-              <Leer>Kein Tätigkeitsbonus in den Stammdaten hinterlegt.</Leer>
+              <Leer>
+                {(er.ausgabenBoniEntfallen?.length ?? 0) > 0
+                  ? 'Tätigkeitsbonus entfällt für alle Ausgaben der Periode.'
+                  : er.nachAbmeldung
+                    ? 'Kein Tätigkeitsbonus — Periode liegt nach der Abmeldung.'
+                    : 'Kein Tätigkeitsbonus in den Stammdaten hinterlegt.'}
+              </Leer>
             ) : (
               <>
                 <p className="text-gray-500 mb-1.5">

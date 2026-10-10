@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
+import { Fragment, useState, useEffect, useMemo, useRef, type FormEvent } from 'react';
+import { kwLabel } from '../lib/kalender';
 import { useApp } from '../context/AppContext';
 import AdminPinGate from '../components/AdminPinGate';
 import Modal from '../components/Modal';
@@ -25,7 +26,7 @@ import VerdienstbescheinigungDruck from '../components/VerdienstbescheinigungDru
 import type { LohnbueroAbrechnung, LohnbueroDriveLink, VerdienstbescheinigungWert, VerdienstbescheinigungFrage, VerdienstbescheinigungAntwortTyp } from '../types';
 import { hashPin, ermittlePinAusHash } from '../lib/auth';
 import { beschreibeNfcTag, nfcVerfuegbar } from '../lib/zeiterfassung';
-import type { AuditLog, Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse } from '../types';
+import type { AuditLog, Mitarbeiter, Rolle, Sondervereinbarung, Teilgebiet, InteresseTaetigkeit, TeilgebietLieferadresse, AnmeldeHistorieEintrag, AusgabenBonusAusnahme, Abrechnungsperiode } from '../types';
 // Re-Export, damit die Tab-Komponente unten den selben Typen-Pfad nutzt.
 import { ROLLEN_LABELS, INTERESSE_TAETIGKEIT_LABELS } from '../types';
 import { berechneAlter } from '../lib/berechnung';
@@ -981,6 +982,7 @@ function MitarbeiterForm({
         sozialversicherungsBefreit: initial.sozialversicherungsBefreit ?? false,
         ausgabenBonusMinuten: initial.ausgabenBonusMinuten,
         ausgabenBonusKommentar: initial.ausgabenBonusKommentar,
+        ausgabenBonusAusnahmen: initial.ausgabenBonusAusnahmen?.map((a) => ({ ...a })),
         isActive: initial.isActive,
         istInteressent: initial.istInteressent ?? false,
         interesseWeitereTaetigkeit: initial.interesseWeitereTaetigkeit ?? false,
@@ -1038,6 +1040,88 @@ function MitarbeiterForm({
   // Anzahl der Sondervereinbarungen — wird vom Reiter selbst aktualisiert,
   // damit der Tab-Badge ohne zusätzliche Daten am MA-Payload korrekt zählt.
   const [sondervereinbarungenCount, setSondervereinbarungenCount] = useState(0);
+  // „abgemeldet" wurde entfernt und der Anmeldeprozess neu gestartet: Beim
+  // Speichern wandern die bisherigen An-/Abmeldedaten in die Historie.
+  const [anmeldungNeustart, setAnmeldungNeustart] = useState(false);
+  // MA, der diesen als Nachfolger „ersetzt" — die Verknüpfung wird beim
+  // Neustart aufgehoben, sonst schlüge die Abrechnung ihn erneut zur Abmeldung vor.
+  const ersetzendeMa = initial ? mitarbeiter.find((m) => m.ersetztMitarbeiterId === initial.id) : undefined;
+
+  function handleAbgemeldetAendern(checked: boolean) {
+    if (!checked && initial?.abgemeldet && !anmeldungNeustart) {
+      const neustart = confirm(
+        `Kennzeichen „abgemeldet" bei ${initial.name} entfernen.\n\n` +
+          'Soll der Anmeldeprozess beim Lohnbüro gestartet werden?\n\n' +
+          'OK = Ja: Kennzeichen „Noch nicht angemeldet" wird gesetzt und der Mitarbeiter wieder aktiviert. ' +
+          'Erlaubnis Eltern, FastDok-Link, erste Abrechnungsperiode, Startdatum und Vollständigkeit der Erfassung ' +
+          'sowie Abmeldedatum und letzte Abrechnungsperiode werden geleert — die bisherigen Werte bleiben unter ' +
+          '„Frühere An-/Abmeldungen" einsehbar.' +
+          (ersetzendeMa ? ` Die Verknüpfung „ersetzt durch ${ersetzendeMa.name}" wird aufgehoben.` : '') +
+          '\n\nAbbrechen = Nein: nur das Kennzeichen „abgemeldet" entfernen (z. B. Korrektur).',
+      );
+      if (neustart) {
+        setAnmeldungNeustart(true);
+        setForm((f) => ({
+          ...f,
+          abgemeldet: false,
+          nochNichtAngemeldet: true,
+          isActive: true,
+          erlaubnisElternEingeholt: undefined,
+          lohnbueroBestaetigungLink: undefined,
+          startAbrechnungsperiodeId: undefined,
+          startDatum: undefined,
+          anmeldungStatus: undefined,
+          anmeldungUnvollstaendigMemo: undefined,
+          anmeldungUebermittlungDatum: undefined,
+          abmeldungUebermittlungDatum: undefined,
+          letzteAbrechnungsperiodeId: undefined,
+        }));
+        return;
+      }
+    }
+    if (checked && anmeldungNeustart && initial) {
+      // Neustart zurücknehmen — gespeicherten Stand wiederherstellen.
+      setAnmeldungNeustart(false);
+      setForm((f) => ({
+        ...f,
+        abgemeldet: true,
+        nochNichtAngemeldet: initial.nochNichtAngemeldet ?? false,
+        isActive: initial.isActive,
+        erlaubnisElternEingeholt: initial.erlaubnisElternEingeholt ?? false,
+        lohnbueroBestaetigungLink: initial.lohnbueroBestaetigungLink,
+        startAbrechnungsperiodeId: initial.startAbrechnungsperiodeId,
+        startDatum: initial.startDatum,
+        anmeldungStatus: initial.anmeldungStatus,
+        anmeldungUnvollstaendigMemo: initial.anmeldungUnvollstaendigMemo,
+        anmeldungUebermittlungDatum: initial.anmeldungUebermittlungDatum,
+        abmeldungUebermittlungDatum: initial.abmeldungUebermittlungDatum,
+        letzteAbrechnungsperiodeId: initial.letzteAbrechnungsperiodeId,
+      }));
+      return;
+    }
+    setForm((f) => ({ ...f, abgemeldet: checked }));
+  }
+
+  /** Bisherige An-/Abmeldedaten als Historien-Eintrag (ohne undefined — Firestore). */
+  function historienEintrag(ma: Mitarbeiter): AnmeldeHistorieEintrag {
+    const roh: AnmeldeHistorieEintrag = {
+      archiviertAm: Date.now(),
+      archiviertVon: adminName || userRole || undefined,
+      erlaubnisElternEingeholt: ma.erlaubnisElternEingeholt || undefined,
+      lohnbueroBestaetigungLink: ma.lohnbueroBestaetigungLink,
+      startAbrechnungsperiodeId: ma.startAbrechnungsperiodeId,
+      startDatum: ma.startDatum,
+      anmeldungStatus: ma.anmeldungStatus,
+      anmeldungUnvollstaendigMemo: ma.anmeldungUnvollstaendigMemo,
+      anmeldungUebermittlungDatum: ma.anmeldungUebermittlungDatum,
+      abmeldungUebermittlungDatum: ma.abmeldungUebermittlungDatum,
+      letzteAbrechnungsperiodeId: ma.letzteAbrechnungsperiodeId,
+      ersetztDurchId: ersetzendeMa?.id,
+    };
+    return Object.fromEntries(
+      Object.entries(roh).filter(([, v]) => v !== undefined && v !== ''),
+    ) as unknown as AnmeldeHistorieEintrag;
+  }
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1231,11 +1315,24 @@ function MitarbeiterForm({
           : undefined,
         lieferadressenJeTeilgebiet:
           lieferadressenTgClean.length > 0 ? lieferadressenTgClean : undefined,
+        ausgabenBonusAusnahmen:
+          (form.ausgabenBonusAusnahmen ?? []).length > 0 ? form.ausgabenBonusAusnahmen : undefined,
         // Wenn aus Interessent ein „echter" MA wird, automatisch als
         // „noch nicht angemeldet" markieren — analog zu Neuerfassung.
         ...(wurdeEntInteressent ? { nochNichtAngemeldet: true } : {}),
+        // Anmeldeprozess neu gestartet: bisherige An-/Abmeldedaten historisieren.
+        ...(anmeldungNeustart && initial
+          ? { anmeldeHistorie: [...(initial.anmeldeHistorie ?? []), historienEintrag(initial)] }
+          : {}),
       };
       await speichere(payload);
+      if (anmeldungNeustart && ersetzendeMa) {
+        await aktualisiereMitarbeiterMitProtokoll(
+          ersetzendeMa,
+          { ersetztMitarbeiterId: undefined },
+          { ...protokollOpts, praefix: `Anmeldeprozess ${form.name} neu gestartet: ` },
+        );
+      }
       onSave();
     } catch (err) {
       setError('Fehler beim Speichern. Bitte erneut versuchen.');
@@ -2813,9 +2910,18 @@ function MitarbeiterForm({
         </FormField>
       )}
 
+      {((form.ausgabenBonusMinuten ?? 0) > 0 || (form.ausgabenBonusAusnahmen ?? []).length > 0) && (
+        <BonusAusnahmenFeld
+          ausnahmen={form.ausgabenBonusAusnahmen ?? []}
+          onChange={(liste) => setForm((f) => ({ ...f, ausgabenBonusAusnahmen: liste }))}
+          abrechnungsperioden={abrechnungsperioden}
+          darfBearbeiten={isAdmin}
+        />
+      )}
+
       <FormField
         label="Abholer"
-        hint="Markiert Austräger, die ihren Stapel Anzeigenblätter selbst im Werk abholen. Auf dem Lieferschein erscheint dann ein deutlicher Hinweis 📦 ‚Stapel bleibt im Werk — Abholung durch Austräger‘ — der Tour-Fahrer nimmt diesen Stapel NICHT mit."
+        hint="Markiert Austräger, die ihren Stapel Anzeigenblätter selbst im Werk abholen. Auf dem Lieferschein erscheint dann ein deutlicher Hinweis 📦 ‚Stapel bleibt im Werk — Abholung durch Austräger‘ — der Tour-Fahrer nimmt diesen Stapel NICHT mit. Ausnahme: Teilgebiete mit eigener Lieferadresse (Reiter „Lieferadressen“) bzw. eine Sonder-Lieferadresse der Woche — dorthin wird geliefert, ohne Abholer-Hinweis."
       >
         <label className="flex items-center gap-2 cursor-pointer">
           <input
@@ -3167,8 +3273,9 @@ function MitarbeiterForm({
                 <span>
                   <span className="font-medium">⏳ Noch nicht angemeldet</span>
                   <span className="block text-xs text-gray-500">
-                    Solange aktiviert, ist der Mitarbeiter in keiner operativen Auswahl
-                    selektierbar (Standardausträger, Springer, Zusammentragen, Zeit-Erfassung).
+                    Der Mitarbeiter ist trotzdem auswählbar — in Personalplanung und Einsätzen
+                    mit Zusatz „noch nicht angemeldet" und Hinweis. Die Abrechnung warnt, sobald
+                    ein Betrag anfällt.
                   </span>
                 </span>
               </label>
@@ -3307,17 +3414,29 @@ function MitarbeiterForm({
                 <input
                   type="checkbox"
                   checked={form.abgemeldet ?? false}
-                  onChange={(e) => setForm((f) => ({ ...f, abgemeldet: e.target.checked }))}
+                  onChange={(e) => handleAbgemeldetAendern(e.target.checked)}
                   className="rounded mt-0.5"
                 />
                 <span>
                   <span className="font-medium">Mitarbeiter abgemeldet</span>
                   <span className="block text-xs text-gray-500">
-                    MA verlässt das Unternehmen. Erscheint nicht mehr in operativen Auswahllisten.
+                    MA verlässt das Unternehmen. In Personalplanung und Einsätzen bleibt er
+                    auswählbar — am Ende der Liste mit Zusatz „abgemeldet" und Warnung. Wird das
+                    Kennzeichen entfernt, fragt die App, ob der Anmeldeprozess neu gestartet wird.
                   </span>
                 </span>
               </label>
             </FormField>
+
+            {anmeldungNeustart && (
+              <div className="rounded border border-blue-300 bg-white px-3 py-2 text-xs text-blue-900">
+                🔄 <strong>Anmeldeprozess wird neu gestartet.</strong> Beim Speichern werden die
+                bisherigen An-/Abmeldedaten unter „Frühere An-/Abmeldungen" abgelegt,
+                „Noch nicht angemeldet" gesetzt und der Mitarbeiter wieder aktiviert.
+                {ersetzendeMa && <> Die Verknüpfung „ersetzt durch {ersetzendeMa.name}" wird aufgehoben.</>}
+                {' '}Zum Zurücknehmen „Mitarbeiter abgemeldet" wieder anhaken.
+              </div>
+            )}
 
             {form.abgemeldet && (
               <>
@@ -3347,6 +3466,14 @@ function MitarbeiterForm({
               </>
             )}
           </div>
+
+          {(initial?.anmeldeHistorie?.length ?? 0) > 0 && (
+            <AnmeldeHistorie
+              eintraege={initial!.anmeldeHistorie!}
+              abrechnungsperioden={abrechnungsperioden}
+              mitarbeiter={mitarbeiter}
+            />
+          )}
         </div>
       )}
 
@@ -3668,6 +3795,211 @@ function PinVerwaltung({ mitarbeiter: initialMa }: { mitarbeiter: Mitarbeiter })
           {message}
         </p>
       )}
+    </div>
+  );
+}
+
+// ---- Tätigkeitsbonus: einzelne Ausgaben ausnehmen ------------
+
+/**
+ * Ausgaben (Jahr + KW), für die der Tätigkeitsbonus entfällt — z. B. MA war
+ * in der Woche nicht anwesend. Auswahl über Abrechnungsperiode + KW; nur
+ * offene Perioden (abgeschlossene sind eingefroren).
+ */
+function BonusAusnahmenFeld({
+  ausnahmen,
+  onChange,
+  abrechnungsperioden,
+  darfBearbeiten,
+}: {
+  ausnahmen: AusgabenBonusAusnahme[];
+  onChange: (liste: AusgabenBonusAusnahme[]) => void;
+  abrechnungsperioden: Abrechnungsperiode[];
+  darfBearbeiten: boolean;
+}) {
+  // Neueste zuerst; vorausgewählt ist die Periode des laufenden Monats
+  // (sonst die jüngste nicht in der Zukunft liegende).
+  const offenePerioden = [...abrechnungsperioden]
+    .filter((p) => p.status !== 'abgeschlossen')
+    .sort((a, b) => b.jahr - a.jahr || b.monat - a.monat);
+  const [periodeId, setPeriodeId] = useState(() => {
+    const heute = new Date();
+    const jetzt = heute.getFullYear() * 12 + heute.getMonth() + 1;
+    return (offenePerioden.find((p) => p.jahr * 12 + p.monat <= jetzt) ?? offenePerioden[0])?.id ?? '';
+  });
+  const [kw, setKw] = useState<number | ''>('');
+  const [grund, setGrund] = useState('');
+
+  const periode = offenePerioden.find((p) => p.id === periodeId);
+  const kwOptionen = periode
+    ? [...periode.kalenderwochen]
+        .sort((a, b) => a - b)
+        .filter((k) => !ausnahmen.some((x) => x.jahr === periode.jahr && x.kw === k))
+    : [];
+  const sortiert = [...ausnahmen].sort((a, b) => a.jahr - b.jahr || a.kw - b.kw);
+  const periodeVon = (a: AusgabenBonusAusnahme) =>
+    abrechnungsperioden.find((p) => p.jahr === a.jahr && p.kalenderwochen.includes(a.kw));
+
+  function hinzufuegen() {
+    if (!periode || kw === '') return;
+    const g = grund.trim();
+    onChange([...ausnahmen, { jahr: periode.jahr, kw, ...(g ? { grund: g } : {}) }]);
+    setKw('');
+    setGrund('');
+  }
+
+  return (
+    <FormField
+      label="Ausgaben ohne Tätigkeitsbonus"
+      hint="Für diese Ausgaben wird der Tätigkeitsbonus nicht gezahlt (z. B. Mitarbeiter war in der Woche nicht anwesend)."
+    >
+      {sortiert.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {sortiert.map((a) => {
+            const p = periodeVon(a);
+            const abgeschlossen = p?.status === 'abgeschlossen';
+            return (
+              <span
+                key={`${a.jahr}-${a.kw}`}
+                className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border ${
+                  abgeschlossen ? 'bg-gray-50 border-gray-200 text-gray-500' : 'bg-purple-50 border-purple-200 text-purple-800'
+                }`}
+                title={abgeschlossen ? `${p?.bezeichnung} ist abgeschlossen — wirkt nicht mehr auf die Abrechnung` : p?.bezeichnung}
+              >
+                {abgeschlossen && '🔒 '}
+                {kwLabel(a.kw, a.jahr)}
+                {a.grund && <span className="text-gray-500">— {a.grund}</span>}
+                {darfBearbeiten && (
+                  <button
+                    type="button"
+                    onClick={() => onChange(ausnahmen.filter((x) => !(x.jahr === a.jahr && x.kw === a.kw)))}
+                    className="ml-0.5 text-gray-400 hover:text-red-600"
+                    title="Ausnahme entfernen — Bonus wird für diese Ausgabe wieder gezahlt"
+                  >
+                    ✕
+                  </button>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="text-xs text-gray-400 italic mb-2">Keine — Bonus gilt für alle Ausgaben.</p>
+      )}
+      {darfBearbeiten && (
+        offenePerioden.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">Keine offene Abrechnungsperiode vorhanden.</p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={periodeId}
+              onChange={(e) => { setPeriodeId(e.target.value); setKw(''); }}
+              className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+              title="Abrechnungsperiode"
+            >
+              {offenePerioden.map((p) => (
+                <option key={p.id} value={p.id}>{p.bezeichnung}</option>
+              ))}
+            </select>
+            <select
+              value={kw}
+              onChange={(e) => setKw(e.target.value ? Number(e.target.value) : '')}
+              className="border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+              title="Ausgabe (KW)"
+            >
+              <option value="">— Ausgabe —</option>
+              {kwOptionen.map((k) => (
+                <option key={k} value={k}>KW {k}</option>
+              ))}
+            </select>
+            <input
+              type="text"
+              value={grund}
+              onChange={(e) => setGrund(e.target.value)}
+              placeholder="Grund, z. B. nicht anwesend"
+              className="flex-1 min-w-[10rem] border border-gray-300 rounded-lg px-2 py-1.5 text-sm"
+            />
+            <button
+              type="button"
+              onClick={hinzufuegen}
+              disabled={!periode || kw === ''}
+              className="text-sm px-3 py-1.5 rounded-lg border border-purple-300 bg-purple-50 text-purple-800 hover:bg-purple-100 disabled:opacity-40"
+            >
+              + Bonus entfällt
+            </button>
+          </div>
+        )
+      )}
+    </FormField>
+  );
+}
+
+// ---- Frühere An-/Abmeldungen (historisiert) -----------------
+
+const ANMELDESTATUS_TEXT: Record<NonNullable<Mitarbeiter['anmeldungStatus']>, string> = {
+  'fragebogen-beim-ma': '1. Fragebogen beim Mitarbeiter',
+  'fragebogen-zurueck-unvollstaendig': '2. Fragebogen zurück, unvollständig',
+  vollstaendig: '3. Vollständig',
+};
+
+function AnmeldeHistorie({
+  eintraege,
+  abrechnungsperioden,
+  mitarbeiter,
+}: {
+  eintraege: AnmeldeHistorieEintrag[];
+  abrechnungsperioden: Abrechnungsperiode[];
+  mitarbeiter: Mitarbeiter[];
+}) {
+  const datum = (iso?: string) => (iso ? iso.split('-').reverse().join('.') : undefined);
+  const periode = (id?: string) =>
+    id ? abrechnungsperioden.find((p) => p.id === id)?.bezeichnung ?? id : undefined;
+  const sortiert = [...eintraege].sort((a, b) => b.archiviertAm - a.archiviertAm);
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
+      <div className="text-sm font-semibold text-gray-800">
+        🗂 Frühere An-/Abmeldungen ({eintraege.length})
+      </div>
+      {sortiert.map((h) => {
+        const ersetztDurch = h.ersetztDurchId ? mitarbeiter.find((m) => m.id === h.ersetztDurchId)?.name ?? h.ersetztDurchId : undefined;
+        const zeilen: [string, React.ReactNode | undefined][] = [
+          ['Erlaubnis Eltern', h.erlaubnisElternEingeholt ? 'eingeholt' : undefined],
+          [
+            'FastDok-Bestätigungsmail',
+            h.lohnbueroBestaetigungLink ? (
+              <a href={h.lohnbueroBestaetigungLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:text-blue-800 underline break-all">
+                🔗 Mail öffnen
+              </a>
+            ) : undefined,
+          ],
+          ['Erste Abrechnungsperiode', periode(h.startAbrechnungsperiodeId)],
+          ['Startdatum', datum(h.startDatum)],
+          ['Vollständigkeit der Erfassung', h.anmeldungStatus ? ANMELDESTATUS_TEXT[h.anmeldungStatus] : undefined],
+          ['Fehlende Informationen', h.anmeldungUnvollstaendigMemo],
+          ['Datenübermittlung an Lohnbüro', datum(h.anmeldungUebermittlungDatum)],
+          ['Abmeldung zum', datum(h.abmeldungUebermittlungDatum)],
+          ['Letzte Abrechnungsperiode', periode(h.letzteAbrechnungsperiodeId)],
+          ['Ersetzt durch', ersetztDurch],
+        ];
+        return (
+          <div key={h.archiviertAm} className="rounded border border-gray-200 bg-white px-3 py-2 text-xs">
+            <div className="text-gray-500 mb-1">
+              Archiviert am {new Date(h.archiviertAm).toLocaleDateString('de-DE')}
+              {h.archiviertVon ? ` von ${h.archiviertVon}` : ''} (Anmeldeprozess neu gestartet)
+            </div>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+              {zeilen
+                .filter(([, v]) => v !== undefined && v !== '')
+                .map(([k, v]) => (
+                  <Fragment key={k}>
+                    <dt className="text-gray-500">{k}</dt>
+                    <dd className="text-gray-800 whitespace-pre-wrap">{v}</dd>
+                  </Fragment>
+                ))}
+            </dl>
+          </div>
+        );
+      })}
     </div>
   );
 }

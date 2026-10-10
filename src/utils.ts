@@ -1,6 +1,6 @@
 // Allgemeine Helfer-Funktionen
 
-import type { Abrechnungsperiode, Lieferadresse, Mitarbeiter } from './types';
+import type { Abrechnungsperiode, Lieferadresse, Mitarbeiter, TeilgebietLieferadresse } from './types';
 
 export function nameMitFestgehaltSymbol(m: { name: string; hatFestgehalt?: boolean }): string {
   return m.hatFestgehalt ? `🔒 ${m.name}` : m.name;
@@ -144,6 +144,30 @@ export interface EffektiveLieferadresse {
 /** Eine Lieferadresse gilt als befüllt, wenn Straße oder Ort gesetzt sind. */
 export function hatAdresse(a: Lieferadresse | undefined | null): a is Lieferadresse {
   return !!a && (!!a.strasse?.trim() || !!a.ort?.trim());
+}
+
+/** Befüllte abweichende Lieferadresse des MA für genau dieses Teilgebiet. */
+export function tgLieferadresseFuer(
+  ma: Pick<Mitarbeiter, 'lieferadressenJeTeilgebiet'>,
+  teilgebietId: string,
+): TeilgebietLieferadresse | undefined {
+  const proTg = ma.lieferadressenJeTeilgebiet?.find((l) => l.teilgebietId === teilgebietId);
+  return hatAdresse(proTg) ? proTg : undefined;
+}
+
+/**
+ * „Abholer" gilt je Lieferung: Hat der MA für das Teilgebiet eine eigene
+ * abweichende Lieferadresse — oder ist für die Woche eine Sonder-
+ * Lieferadresse gesetzt —, wird er dorthin beliefert und holt NICHT ab.
+ */
+export function istAbholerFuer(
+  ma: Pick<Mitarbeiter, 'istAbholer' | 'lieferadressenJeTeilgebiet'>,
+  teilgebietId: string,
+  sonderLieferadresse?: Lieferadresse | null,
+): boolean {
+  if (ma.istAbholer !== true) return false;
+  if (hatAdresse(sonderLieferadresse)) return false;
+  return !tgLieferadresseFuer(ma, teilgebietId);
 }
 
 /**

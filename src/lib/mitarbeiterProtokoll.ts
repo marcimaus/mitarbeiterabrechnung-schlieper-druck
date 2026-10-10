@@ -18,6 +18,8 @@ import {
   INTERESSE_TAETIGKEIT_LABELS,
   ROLLEN_LABELS,
   type Abrechnungsperiode,
+  type AnmeldeHistorieEintrag,
+  type AusgabenBonusAusnahme,
   type InteresseTaetigkeit,
   type Mitarbeiter,
   type Rolle,
@@ -107,6 +109,8 @@ const FELD_LABEL: Record<string, string> = {
   lohngrenzeIndividuellLink: 'Individuelle Lohngrenze — Link',
   ausgabenBonusMinuten: 'Tätigkeitsbonus (Min./Ausgabe)',
   ausgabenBonusKommentar: 'Tätigkeitsbonus — Kommentar',
+  ausgabenBonusAusnahmen: 'Tätigkeitsbonus entfällt',
+  anmeldeHistorie: 'Frühere An-/Abmeldungen',
   sozialversicherungsBefreit: 'SV-befreit',
   isActive: 'Aktiv',
   nochNichtAngemeldet: 'Noch nicht angemeldet',
@@ -313,6 +317,41 @@ export function mitarbeiterAenderungen(
         if (sa === sn) continue;
         const tg = ktx.teilgebiete.find((t) => t.id === tgId)?.name ?? tgId;
         out.push(eintrag(`${label} ${tg}`, sa, sn));
+      }
+      continue;
+    }
+
+    // Tätigkeitsbonus-Ausnahmen: je hinzugefügter/entfernter Ausgabe ein Eintrag.
+    if (key === 'ausgabenBonusAusnahmen') {
+      const fmt = (x: AusgabenBonusAusnahme) => `KW ${x.kw}/${x.jahr}${x.grund ? ` (${x.grund})` : ''}`;
+      const altMap = new Map(((va as AusgabenBonusAusnahme[] | undefined) ?? []).map((x) => [`${x.jahr}-${x.kw}`, fmt(x)]));
+      const neuMap = new Map(((vn as AusgabenBonusAusnahme[] | undefined) ?? []).map((x) => [`${x.jahr}-${x.kw}`, fmt(x)]));
+      for (const k of new Set([...altMap.keys(), ...neuMap.keys()])) {
+        const sa = altMap.get(k) ?? '';
+        const sn = neuMap.get(k) ?? '';
+        if (sa !== sn) out.push(eintrag(label, sa, sn));
+      }
+      continue;
+    }
+
+    // Anmelde-Historie: nur neue Einträge (Anmeldeprozess neu gestartet).
+    if (key === 'anmeldeHistorie') {
+      const altZeiten = new Set(((va as AnmeldeHistorieEintrag[] | undefined) ?? []).map((h) => h.archiviertAm));
+      for (const h of (vn as AnmeldeHistorieEintrag[] | undefined) ?? []) {
+        if (altZeiten.has(h.archiviertAm)) continue;
+        const teile = [
+          h.anmeldungStatus ? `Erfassung: ${ANMELDESTATUS_LABEL[h.anmeldungStatus] ?? h.anmeldungStatus}` : '',
+          h.startAbrechnungsperiodeId ? `erste Periode: ${fmtSkalar('startAbrechnungsperiodeId', h.startAbrechnungsperiodeId, ktx)}` : '',
+          h.startDatum ? `Start: ${fmtDatum(h.startDatum)}` : '',
+          h.abmeldungUebermittlungDatum ? `Abmeldung zum ${fmtDatum(h.abmeldungUebermittlungDatum)}` : '',
+          h.letzteAbrechnungsperiodeId ? `letzte Periode: ${fmtSkalar('letzteAbrechnungsperiodeId', h.letzteAbrechnungsperiodeId, ktx)}` : '',
+        ].filter(Boolean);
+        out.push({
+          feld: 'Anmeldeprozess neu gestartet — bisherige Daten historisiert',
+          alt: '',
+          neu: teile.join(', '),
+          beschreibung: `Anmeldeprozess neu gestartet — bisherige An-/Abmeldedaten historisiert${teile.length ? ` (${teile.join(', ')})` : ''}`,
+        });
       }
       continue;
     }

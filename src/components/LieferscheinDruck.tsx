@@ -28,7 +28,7 @@ import {
   berechneGewichtAnzeigenblattKg,
   berechneGewichtBeilagenKg,
 } from '../lib/berechnung';
-import { effektiverStandardAustraegerId, effektiveLieferadresse, hatAdresse } from '../utils';
+import { effektiverStandardAustraegerId, effektiveLieferadresse, hatAdresse, istAbholerFuer } from '../utils';
 import { formatAdresse } from '../lib/sonderLieferung';
 
 // ---- Typen --------------------------------------------------
@@ -596,8 +596,10 @@ function LieferscheinSeite({
   const boxBorder = istSpringer ? '#fca5a5' : '#d1d5db';
 
   // „Abholer": Austräger holt den Stapel selbst im Werk ab — der Tour-Fahrer
-  // soll diesen Stapel NICHT mitnehmen.
-  const istAbholer = ma.istAbholer === true;
+  // soll diesen Stapel NICHT mitnehmen. Gilt nicht, wenn der MA für dieses
+  // Teilgebiet eine eigene Lieferadresse hat oder für die Woche eine
+  // Sonder-Lieferadresse gesetzt ist — dann wird er beliefert.
+  const istAbholer = istAbholerFuer(ma, tg.id, sonderAdr);
 
   // Online-Erfassung nur für freigeschaltete Mitarbeiter: sonst kein
   // QR-Code, kein Hinweistext dazu und keine bereits gemeldeten Werte
