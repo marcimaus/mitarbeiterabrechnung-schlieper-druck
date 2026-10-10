@@ -110,6 +110,7 @@ const FELD_LABEL: Record<string, string> = {
   ausgabenBonusMinuten: 'Tätigkeitsbonus (Min./Ausgabe)',
   ausgabenBonusKommentar: 'Tätigkeitsbonus — Kommentar',
   ausgabenBonusAusnahmen: 'Tätigkeitsbonus entfällt',
+  ausgabenBonusOhneZeitGewaehrt: 'Tätigkeitsbonus ohne Arbeitszeit gewährt',
   anmeldeHistorie: 'Frühere An-/Abmeldungen',
   sozialversicherungsBefreit: 'SV-befreit',
   isActive: 'Aktiv',
@@ -321,8 +322,9 @@ export function mitarbeiterAenderungen(
       continue;
     }
 
-    // Tätigkeitsbonus-Ausnahmen: je hinzugefügter/entfernter Ausgabe ein Eintrag.
-    if (key === 'ausgabenBonusAusnahmen') {
+    // Tätigkeitsbonus-Ausnahmen bzw. „ohne Arbeitszeit gewährt": je
+    // hinzugefügter/entfernter Ausgabe ein Eintrag.
+    if (key === 'ausgabenBonusAusnahmen' || key === 'ausgabenBonusOhneZeitGewaehrt') {
       const fmt = (x: AusgabenBonusAusnahme) => `KW ${x.kw}/${x.jahr}${x.grund ? ` (${x.grund})` : ''}`;
       const altMap = new Map(((va as AusgabenBonusAusnahme[] | undefined) ?? []).map((x) => [`${x.jahr}-${x.kw}`, fmt(x)]));
       const neuMap = new Map(((vn as AusgabenBonusAusnahme[] | undefined) ?? []).map((x) => [`${x.jahr}-${x.kw}`, fmt(x)]));

@@ -42,14 +42,15 @@ import {
   ladeEinsaetzeFuerJahre,
   loescheEinsatz,
   schreibeAuditLog,
+  ladeArbeitszeiten,
 } from '../lib/db';
 import { sichereTeilgebietsdokuAktuell } from '../lib/teilgebietsdoku';
 import { merkeVerteilplanOnlineAenderung, verteilplanRelevanteAenderung } from '../lib/verteilplanOnline';
 import { analysiereRestmengen, juengstePerioden } from '../lib/restmengenanalyse';
 import type { MitarbeiterAbrechnung, VorschussVormerkung } from '../lib/abrechnungslogik';
-import { getISOWeek } from '../lib/kalender';
+import { donnerstagDerKW, getISOWeek, getISOYear } from '../lib/kalender';
 import { vorarbeitAusgabe, zeitfensterText } from '../lib/vorarbeit';
-import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet, Arbeitszeit, Einsatz, AusgabenBonusAusnahme } from '../types';
+import type { Abrechnungsperiode, Vorschuss, Mitarbeiter, Rolle, Ausgabe, StandardAustraegerWechselPlan, Teilgebiet, Arbeitszeit, Einsatz } from '../types';
 import {
   austraegerwechselPlanListener,
   loescheAustraegerwechselPlan,
@@ -467,6 +468,37 @@ function AbrechnungInhalt() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPeriodeId, selectedPeriode?.abrechnungSnapshot]);
 
+  // Tätigkeitsbonus-Rückfrage: KWs mit erfasster Arbeitszeit je MA mit
+  // Bonus. Alle Zeiten des MA laden (nicht nur die des Periodenmonats) —
+  // KWs am Monatsrand reichen in den Nachbarmonat. Nur offene Perioden.
+  const [arbeitszeitKwsJeMa, setArbeitszeitKwsJeMa] = useState<Map<string, Set<string>>>(() => new Map());
+  const [bonusFrageSpeichert, setBonusFrageSpeichert] = useState(false);
+  useEffect(() => {
+    if (!ergebnisse || selectedPeriode?.status === 'abgeschlossen') return;
+    const ids = ergebnisse.filter((e) => e.ausgabenBoni.length > 0).map((e) => e.mitarbeiter.id);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      ids.map(async (id) => {
+        const zeiten = await ladeArbeitszeiten(id);
+        const kws = new Set(
+          zeiten
+            .filter((a) => !a.nichtBeruecksichtigen)
+            .map((a) => {
+              const d = new Date(a.startTime);
+              return kwSchluessel(getISOYear(d), getISOWeek(d));
+            }),
+        );
+        return [id, kws] as const;
+      }),
+    )
+      .then((paare) => {
+        if (!cancelled) setArbeitszeitKwsJeMa(new Map(paare));
+      })
+      .catch((err) => console.error('Fehler beim Laden der Arbeitszeiten (Tätigkeitsbonus):', err));
+    return () => { cancelled = true; };
+  }, [ergebnisse, selectedPeriode?.status]);
+
   async function handleExport() {
     if (!selectedPeriode || !ergebnisse) return;
     setExportierend(true);
@@ -814,6 +846,52 @@ function AbrechnungInhalt() {
 
   // Noch nicht angemeldete MAs, die in dieser Abrechnung Beträge bekommen
   const nichtAngemeldeteWarnung = ergebnisse?.filter((e) => e.mitarbeiter.nochNichtAngemeldet) ?? [];
+
+  // Tätigkeitsbonus für Ausgaben, in denen der MA keine Arbeitszeit erfasst
+  // hat — Rückfrage, ob der Bonus gewährt werden soll. Nichts wird
+  // automatisch geändert; erledigt ist die Frage mit „Ja" (gewährt) oder
+  // „Nein" (Ausnahme „entfällt").
+  const bonusOhneZeitFragen =
+    selectedPeriode && selectedPeriode.status !== 'abgeschlossen'
+      ? (ergebnisse ?? []).flatMap((e) => {
+          const kwsMitZeit = arbeitszeitKwsJeMa.get(e.mitarbeiter.id);
+          const ma = mitarbeiter.find((m) => m.id === e.mitarbeiter.id);
+          if (!kwsMitZeit || !ma || e.ausgabenBoni.length === 0) return [];
+          const gesehen = new Set<string>();
+          const kws = e.ausgabenBoni
+            .filter((b) => {
+              const k = kwSchluessel(b.jahr, b.kw);
+              if (gesehen.has(k)) return false;
+              gesehen.add(k);
+              return (
+                kwAbgelaufen(b.jahr, b.kw) &&
+                !kwsMitZeit.has(k) &&
+                !bonusOhneZeitGewaehrt(ma, b.jahr, b.kw) &&
+                !ma.ausgabenBonusAusnahmen?.some((x) => x.jahr === b.jahr && x.kw === b.kw)
+              );
+            })
+            .map((b) => ({ jahr: b.jahr, kw: b.kw }));
+          return kws.length > 0 ? [{ ma, kws }] : [];
+        })
+      : [];
+
+  async function beantworteBonusFrage(ma: Mitarbeiter, art: 'gewaehrt' | 'entfaellt', jahr: number, kw: number) {
+    const grund = art === 'entfaellt' ? frageGrundEntfaellt(jahr, kw) : undefined;
+    if (grund === null) return;
+    setBonusFrageSpeichert(true);
+    try {
+      await setzeBonusEntscheidung(ma, art, jahr, kw, {
+        adminName,
+        ktx: { mitarbeiter, teilgebiete, abrechnungsperioden },
+      }, grund);
+      // Nur „entfällt" ändert den Betrag.
+      if (art === 'entfaellt') await handleBerechnen();
+    } catch (err) {
+      alert('Speichern fehlgeschlagen: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setBonusFrageSpeichert(false);
+    }
+  }
 
   // Abgemeldete MAs, die in einer Periode NACH ihrer Abmeldung Beträge
   // bekommen (z. B. als Springer eingeplant, noch Standardausträger).
@@ -1688,6 +1766,56 @@ function AbrechnungInhalt() {
             </div>
           )}
 
+          {/* Rückfrage: Tätigkeitsbonus in KWs ohne erfasste Arbeitszeit */}
+          {bonusOhneZeitFragen.length > 0 && (
+            <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm">
+              <div className="font-semibold text-amber-900 mb-1">
+                ⏱ Tätigkeitsbonus ohne erfasste Arbeitszeit — Bonus gewähren?
+              </div>
+              <p className="text-xs text-amber-800 mb-2">
+                Diese Mitarbeiter erhalten einen Tätigkeitsbonus je Ausgabe, haben in den
+                genannten KWs aber keine Arbeitszeit erfasst. Bitte entscheiden — es wird
+                nichts automatisch geändert.
+                {userRole !== 'admin' && ' Entscheiden kann nur der Admin.'}
+              </p>
+              <ul className="space-y-1 text-amber-900">
+                {bonusOhneZeitFragen.flatMap(({ ma, kws }) =>
+                  kws.map(({ jahr, kw }) => (
+                    <li key={`${ma.id}-${jahr}-${kw}`} className="flex flex-wrap items-center gap-2">
+                      <span>
+                        <span className="font-medium">{ma.name}</span>
+                        <span className="text-gray-500"> ({ma.nummer})</span>
+                        {` — KW ${kw}/${jahr}`}
+                      </span>
+                      {userRole === 'admin' && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => beantworteBonusFrage(ma, 'gewaehrt', jahr, kw)}
+                            disabled={bonusFrageSpeichert}
+                            className="text-xs px-2 py-0.5 rounded border border-green-300 bg-white text-green-800 hover:bg-green-50 disabled:opacity-40"
+                            title="Bonus trotz fehlender Arbeitszeit zahlen — die Frage erscheint dann nicht mehr"
+                          >
+                            Ja, gewähren
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => beantworteBonusFrage(ma, 'entfaellt', jahr, kw)}
+                            disabled={bonusFrageSpeichert}
+                            className="text-xs px-2 py-0.5 rounded border border-red-300 bg-white text-red-700 hover:bg-red-50 disabled:opacity-40"
+                            title="Für diese Ausgabe keinen Tätigkeitsbonus zahlen"
+                          >
+                            Nein, entfällt
+                          </button>
+                        </>
+                      )}
+                    </li>
+                  )),
+                )}
+              </ul>
+            </div>
+          )}
+
           {/* Warnung: abgemeldete Mitarbeiter mit Betrag nach ihrer Abmeldung */}
           {abgemeldeteWarnung.length > 0 && (
             <div className="mb-4 rounded-lg border border-red-400 bg-red-50 px-4 py-3 text-sm">
@@ -2103,6 +2231,7 @@ function AbrechnungInhalt() {
                           <DetailAnsicht
                             ergebnis={er}
                             periode={selectedPeriode}
+                            kwsMitArbeitszeit={arbeitszeitKwsJeMa.get(er.mitarbeiter.id)}
                             onVorschussChange={handleBerechnen}
                           />
                         </td>
@@ -2795,10 +2924,13 @@ function StueckzahlAnpassungDialog({
 function DetailAnsicht({
   ergebnis: er,
   periode,
+  kwsMitArbeitszeit,
   onVorschussChange,
 }: {
   ergebnis: MitarbeiterAbrechnung;
   periode?: Abrechnungsperiode;
+  /** KWs mit erfasster Arbeitszeit — für die Tätigkeitsbonus-Rückfrage. */
+  kwsMitArbeitszeit?: Set<string>;
   onVorschussChange?: () => void;
 }) {
   // Wenn die Periode abgeschlossen ist, sollen KEINERLEI Manipulationen mehr
@@ -2862,6 +2994,7 @@ function DetailAnsicht({
         <TaetigkeitsbonusTabelle
           ergebnis={er}
           istGesperrt={istGesperrt || !periode}
+          kwsMitArbeitszeit={kwsMitArbeitszeit}
           onChange={onVorschussChange ?? (() => {})}
         />
       )}
@@ -3233,58 +3366,109 @@ function DetailAnsicht({
 
 // ---- Vorschuss-Verwaltung in Detail-Ansicht -----------------
 
+// ---- Tätigkeitsbonus je Ausgabe: Entscheidungen in der Abrechnung ----------
+
+/** Schlüssel „Jahr-KW" (ISO-Woche) für Ausgaben und Arbeitszeiten. */
+function kwSchluessel(jahr: number, kw: number): string {
+  return `${jahr}-${kw}`;
+}
+
+/**
+ * Entscheidung zum Tätigkeitsbonus einer Ausgabe am MA speichern (mit
+ * Änderungsprotokoll): „entfällt" (Ausnahme), „zahlen" (Ausnahme aufheben)
+ * oder „gewährt" (Bonus trotz fehlender Arbeitszeit bestätigt).
+ */
+async function setzeBonusEntscheidung(
+  ma: Mitarbeiter,
+  art: 'entfaellt' | 'zahlen' | 'gewaehrt',
+  jahr: number,
+  kw: number,
+  opts: Parameters<typeof aktualisiereMitarbeiterMitProtokoll>[2],
+  grund?: string,
+): Promise<void> {
+  const ohne = <T extends { jahr: number; kw: number }>(liste: T[] | undefined) =>
+    (liste ?? []).filter((x) => !(x.jahr === jahr && x.kw === kw));
+  let daten: Partial<Mitarbeiter>;
+  if (art === 'entfaellt') {
+    daten = { ausgabenBonusAusnahmen: [...ohne(ma.ausgabenBonusAusnahmen), { jahr, kw, ...(grund ? { grund } : {}) }] };
+  } else if (art === 'zahlen') {
+    const rest = ohne(ma.ausgabenBonusAusnahmen);
+    daten = { ausgabenBonusAusnahmen: rest.length > 0 ? rest : undefined };
+  } else {
+    daten = { ausgabenBonusOhneZeitGewaehrt: [...ohne(ma.ausgabenBonusOhneZeitGewaehrt), { jahr, kw }] };
+  }
+  await aktualisiereMitarbeiterMitProtokoll(ma, daten, opts);
+}
+
+/** Grund für „Bonus entfällt" abfragen — null = abgebrochen. */
+function frageGrundEntfaellt(jahr: number, kw: number, vorschlag = 'nicht anwesend'): string | null {
+  const eingabe = prompt(`Tätigkeitsbonus KW ${kw}/${jahr} entfällt.\n\nGrund (optional, z. B. „nicht anwesend"):`, vorschlag);
+  return eingabe === null ? null : eingabe.trim();
+}
+
+/** Ist die KW komplett vorbei? Erst dann fragen, ob Arbeitszeit fehlt. */
+function kwAbgelaufen(jahr: number, kw: number): boolean {
+  // Donnerstag der KW (UTC) + 4 Tage = Montag der Folgewoche.
+  return donnerstagDerKW(kw, jahr).getTime() + 4 * 86_400_000 <= Date.now();
+}
+
+/** Wurde der Bonus dieser Ausgabe trotz fehlender Arbeitszeit bewusst gewährt? */
+function bonusOhneZeitGewaehrt(ma: Mitarbeiter | undefined, jahr: number, kw: number): boolean {
+  return !!ma?.ausgabenBonusOhneZeitGewaehrt?.some((x) => x.jahr === jahr && x.kw === kw);
+}
+
 /**
  * Min-Boni (Tätigkeitsbonus) je Ausgabe der Periode. Der Admin kann einzelne
  * Ausgaben ausnehmen („entfällt", z. B. MA nicht anwesend) oder wieder
- * zahlen lassen. Gespeichert wird am MA (`ausgabenBonusAusnahmen`, mit
- * Änderungsprotokoll); danach wird neu berechnet.
+ * zahlen lassen. Ausgaben ohne erfasste Arbeitszeit werden markiert und
+ * erfragt („gewähren?") — geändert wird nur auf Klick. Gespeichert wird am
+ * MA (mit Änderungsprotokoll); nach „entfällt"/„zahlen" wird neu berechnet.
  */
 function TaetigkeitsbonusTabelle({
   ergebnis: er,
   istGesperrt,
+  kwsMitArbeitszeit,
   onChange,
 }: {
   ergebnis: MitarbeiterAbrechnung;
   istGesperrt: boolean;
+  /** KWs („Jahr-KW") mit erfasster Arbeitszeit des MA — undefined = noch nicht geladen. */
+  kwsMitArbeitszeit?: Set<string>;
   onChange: () => void;
 }) {
   const { userRole, adminName, mitarbeiter, teilgebiete, abrechnungsperioden } = useApp();
   const darfAendern = userRole === 'admin' && !istGesperrt;
   const [speichert, setSpeichert] = useState(false);
+  // Aktueller Stand aus dem Listener — nicht der MA-Stand der Berechnung.
+  const maAktuell = mitarbeiter.find((m) => m.id === er.mitarbeiter.id);
 
-  async function setzeAusnahmen(aendern: (liste: AusgabenBonusAusnahme[]) => AusgabenBonusAusnahme[]) {
-    // Aktueller Stand aus dem Listener — nicht der MA-Stand der Berechnung.
-    const ma = mitarbeiter.find((m) => m.id === er.mitarbeiter.id);
-    if (!ma) return;
-    const neu = aendern(ma.ausgabenBonusAusnahmen ?? []);
+  async function entscheide(art: 'entfaellt' | 'zahlen' | 'gewaehrt', jahr: number, kw: number) {
+    if (!maAktuell) return;
+    const grund = art === 'entfaellt' ? frageGrundEntfaellt(jahr, kw) : undefined;
+    if (grund === null) return;
     setSpeichert(true);
     try {
-      await aktualisiereMitarbeiterMitProtokoll(
-        ma,
-        { ausgabenBonusAusnahmen: neu.length > 0 ? neu : undefined },
-        { adminName, ktx: { mitarbeiter, teilgebiete, abrechnungsperioden } },
-      );
-      onChange();
+      await setzeBonusEntscheidung(maAktuell, art, jahr, kw, {
+        adminName,
+        ktx: { mitarbeiter, teilgebiete, abrechnungsperioden },
+      }, grund);
+      // „gewährt" ändert keinen Betrag — keine Neuberechnung nötig.
+      if (art !== 'gewaehrt') onChange();
     } catch (err) {
       alert('Speichern fehlgeschlagen: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
       setSpeichert(false);
     }
   }
-
-  async function entfaellt(jahr: number, kw: number) {
-    const eingabe = prompt(`Tätigkeitsbonus KW ${kw}/${jahr} entfällt.\n\nGrund (optional, z. B. „nicht anwesend"):`, 'nicht anwesend');
-    if (eingabe === null) return;
-    const grund = eingabe.trim();
-    await setzeAusnahmen((liste) => [
-      ...liste.filter((x) => !(x.jahr === jahr && x.kw === kw)),
-      { jahr, kw, ...(grund ? { grund } : {}) },
-    ]);
-  }
-
-  async function zahlen(jahr: number, kw: number) {
-    await setzeAusnahmen((liste) => liste.filter((x) => !(x.jahr === jahr && x.kw === kw)));
-  }
+  const entfaellt = (jahr: number, kw: number) => entscheide('entfaellt', jahr, kw);
+  const zahlen = (jahr: number, kw: number) => entscheide('zahlen', jahr, kw);
+  /** Ausgabe ohne Arbeitszeit, für die noch nicht entschieden wurde. */
+  const ohneZeitOffen = (jahr: number, kw: number) =>
+    !istGesperrt &&
+    !!kwsMitArbeitszeit &&
+    kwAbgelaufen(jahr, kw) &&
+    !kwsMitArbeitszeit.has(kwSchluessel(jahr, kw)) &&
+    !bonusOhneZeitGewaehrt(maAktuell, jahr, kw);
 
   const aktionBtn = 'text-[11px] px-1.5 py-0.5 rounded border disabled:opacity-40';
 
@@ -3311,31 +3495,56 @@ function TaetigkeitsbonusTabelle({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {er.ausgabenBoni.map((b) => (
-              <tr key={b.id}>
-                <td className="px-2 py-1.5 text-gray-500">{b.kw}/{b.jahr}</td>
-                <td className="px-2 py-1.5 text-right text-gray-700 font-mono">{b.minuten}</td>
-                <td className="px-2 py-1.5 text-gray-700">
-                  {b.kommentar ?? <span className="text-gray-300">—</span>}
-                </td>
-                <td className="px-2 py-1.5 text-right font-semibold text-purple-700">
-                  {eur(b.lohn)}
-                </td>
-                {darfAendern && (
-                  <td className="px-2 py-1.5 text-right">
-                    <button
-                      type="button"
-                      onClick={() => entfaellt(b.jahr, b.kw)}
-                      disabled={speichert}
-                      className={`${aktionBtn} border-red-200 text-red-700 hover:bg-red-50`}
-                      title="Für diese Ausgabe keinen Tätigkeitsbonus zahlen"
-                    >
-                      entfällt
-                    </button>
+            {er.ausgabenBoni.map((b) => {
+              const offen = ohneZeitOffen(b.jahr, b.kw);
+              const gewaehrt = bonusOhneZeitGewaehrt(maAktuell, b.jahr, b.kw);
+              return (
+                <tr key={b.id} className={offen ? 'bg-amber-50' : ''}>
+                  <td className="px-2 py-1.5 text-gray-500">{b.kw}/{b.jahr}</td>
+                  <td className="px-2 py-1.5 text-right text-gray-700 font-mono">{b.minuten}</td>
+                  <td className="px-2 py-1.5 text-gray-700">
+                    {b.kommentar ?? <span className="text-gray-300">—</span>}
+                    {offen && (
+                      <div className="text-amber-800 font-medium">
+                        ⚠ Keine Arbeitszeit erfasst — Bonus gewähren?
+                      </div>
+                    )}
+                    {gewaehrt && (
+                      <div className="text-gray-500" title="Bonus trotz fehlender Arbeitszeit bewusst gewährt">
+                        ✓ ohne Arbeitszeit gewährt
+                      </div>
+                    )}
                   </td>
-                )}
-              </tr>
-            ))}
+                  <td className="px-2 py-1.5 text-right font-semibold text-purple-700">
+                    {eur(b.lohn)}
+                  </td>
+                  {darfAendern && (
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                      {offen && (
+                        <button
+                          type="button"
+                          onClick={() => entscheide('gewaehrt', b.jahr, b.kw)}
+                          disabled={speichert}
+                          className={`${aktionBtn} mr-1 border-green-200 text-green-700 hover:bg-green-50`}
+                          title="Bonus trotz fehlender Arbeitszeit zahlen — die Rückfrage erscheint dann nicht mehr"
+                        >
+                          gewähren
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => entfaellt(b.jahr, b.kw)}
+                        disabled={speichert}
+                        className={`${aktionBtn} border-red-200 text-red-700 hover:bg-red-50`}
+                        title="Für diese Ausgabe keinen Tätigkeitsbonus zahlen"
+                      >
+                        entfällt
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
             {(er.ausgabenBoniEntfallen ?? []).map((b, i) => (
               <tr key={`entfallen-${b.jahr}-${b.kw}-${i}`} className="text-gray-400">
                 <td className="px-2 py-1.5">{b.kw}/{b.jahr}</td>

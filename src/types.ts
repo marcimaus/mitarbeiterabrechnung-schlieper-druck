@@ -277,6 +277,12 @@ export interface Mitarbeiter {
    */
   ausgabenBonusAusnahmen?: AusgabenBonusAusnahme[];
   /**
+   * Ausgaben, in denen der MA keine Arbeitszeit erfasst hat, für die der
+   * Tätigkeitsbonus aber bewusst gewährt wird (Antwort „Ja" auf die Rückfrage
+   * in der Abrechnung) — die Rückfrage erscheint dann nicht mehr.
+   */
+  ausgabenBonusOhneZeitGewaehrt?: { jahr: number; kw: number }[];
+  /**
    * Befreiung von Sozialversicherung liegt vor.
    * Nur bei diesen Mitarbeitern ist Brutto = Netto und die Auszahlung kann direkt berechnet werden.
    */
