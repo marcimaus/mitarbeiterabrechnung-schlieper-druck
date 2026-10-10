@@ -1,26 +1,42 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
 }
 
+// Stapel der offenen Modals — Escape schließt nur das oberste, damit ein
+// darübergelegtes Modal (z. B. Protokoll über dem Formular) nicht auch das
+// darunterliegende Formular samt ungespeicherter Eingaben schließt.
+const offeneModals: symbol[] = [];
+
 export default function Modal({ isOpen, onClose, title, children, size = 'md' }: Props) {
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   useEffect(() => {
     if (!isOpen) return;
+    const id = Symbol('modal');
+    offeneModals.push(id);
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && offeneModals[offeneModals.length - 1] === id) onCloseRef.current();
     };
     document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [isOpen, onClose]);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      const idx = offeneModals.indexOf(id);
+      if (idx >= 0) offeneModals.splice(idx, 1);
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
-  const widthClass = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl' }[size];
+  const widthClass = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' }[size];
 
   return (
     <div

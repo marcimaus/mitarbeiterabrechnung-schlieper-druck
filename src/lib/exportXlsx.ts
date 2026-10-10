@@ -1,13 +1,66 @@
 // Excel-Export der Monatsabrechnung mit ExcelJS
 
 import ExcelJS from 'exceljs';
-import type { Abrechnungsperiode } from '../types';
-import type { MitarbeiterAbrechnung } from './abrechnungslogik';
-import { formatierDatum } from './zeiterfassung';
+import type {
+  Abrechnungsperiode,
+  Mitarbeiter,
+  MitarbeiterMemo,
+  MemoKategorieEintrag,
+  Teilgebiet,
+  Parameter,
+  VariablerPeriodenZusatz,
+  StueckzahlAnpassung,
+  LohnkontoBuchung,
+} from '../types';
+import { memoKategorieLabel, ROLLEN_LABELS } from '../types';
+import { effektiveParameter, effektiveTeilgebiete, eur } from './abrechnungslogik';
+import type { MitarbeiterAbrechnung, PeriodeData } from './abrechnungslogik';
+import { formatierDatum, berechneNettoMinuten } from './zeiterfassung';
+import { zeitfensterText } from './vorarbeit';
+import { abmeldungenDerPeriode } from './abmeldungen';
+import { fuegeBerechnungJeMaHinzu } from './exportBerechnungJeMa';
+
+// Einheitliche Kopfzeilen-Formatierung für die Archiv-Blätter.
+const HEADER_BLAU = 'FF1D4ED8';
+function styleHeaderRow(
+  ws: ExcelJS.Worksheet,
+  rowNr: number,
+  anzahlSpalten: number,
+  farbe = HEADER_BLAU,
+): void {
+  const row = ws.getRow(rowNr);
+  for (let c = 1; c <= anzahlSpalten; c++) {
+    const cell = row.getCell(c);
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: farbe } };
+  }
+}
+
+const EUR_FMT = '#,##0.00 "€"';
+
+/**
+ * Zusätzlicher Kontext für den Archiv-Export: alle Bewegungs- und Stammdaten
+ * einer Periode, damit der Export ohne erneutes Öffnen der Periode beantwortbar
+ * bleibt. Alle Felder optional — fehlt eines, wird das jeweilige Blatt
+ * übersprungen (Abwärtskompatibilität).
+ */
+export interface AbrechnungExportKontext {
+  periodeData?: PeriodeData;
+  alleMitarbeiter?: Mitarbeiter[];
+  teilgebiete?: Teilgebiet[];
+  parameter?: Parameter;
+  variablePeriodenZusaetze?: VariablerPeriodenZusatz[];
+  stueckzahlAnpassungen?: StueckzahlAnpassung[];
+  /** Alle Lohnkonto-Buchungen (alle Perioden) — für das Blatt „Lohnkonten". */
+  lohnkontoBuchungen?: LohnkontoBuchung[];
+  /** Alle Perioden — zur zeitlichen Einordnung der Lohnkonto-Buchungen. */
+  abrechnungsperioden?: Abrechnungsperiode[];
+}
 
 export async function exportiereAbrechnung(
   periode: Abrechnungsperiode,
-  ergebnisse: MitarbeiterAbrechnung[]
+  ergebnisse: MitarbeiterAbrechnung[],
+  kontext: AbrechnungExportKontext = {},
 ): Promise<void> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Schlieper-Druck Mitarbeiterabrechnung';
@@ -21,12 +74,20 @@ export async function exportiereAbrechnung(
   wsUe.columns = [
     { header: 'Nr.', key: 'nr', width: 8 },
     { header: 'Name', key: 'name', width: 28 },
+    { header: 'Minijob', key: 'minijob', width: 10 },
+    { header: 'SV-frei', key: 'svfrei', width: 10 },
     { header: 'Austragen (€)', key: 'austragen', width: 16 },
     { header: 'Zusammentragen (€)', key: 'zusammentragen', width: 20 },
     { header: 'Zeiterfassung (€)', key: 'zeiterfassung', width: 18 },
+    { header: 'Min-Boni (€)', key: 'minboni', width: 14 },
+    { header: 'Bonus Zeit (€)', key: 'bonuszeit', width: 16 },
+    { header: 'Sonderzahlung (€)', key: 'sonderzahlung', width: 17 },
     { header: 'Fixes Gehalt (€)', key: 'fix', width: 16 },
     { header: 'Fahrtkosten (€)', key: 'fahrtkosten', width: 16 },
-    { header: 'Gesamt (€)', key: 'gesamt', width: 14 },
+    { header: 'Brutto (€)', key: 'gesamt', width: 14 },
+    { header: 'Auszahlung (€)', key: 'auszahlung', width: 16 },
+    { header: 'Sonderzahlung: Anmerkung Lohnbüro', key: 'szLohnbuero', width: 34 },
+    { header: 'Sonderzahlung: Anmerkung intern', key: 'szIntern', width: 34 },
   ];
 
   // Titel
@@ -38,30 +99,53 @@ export async function exportiereAbrechnung(
   wsUe.spliceRows(3, 0, []);
 
   // Header-Zeile (Row 4)
+  const headers = ['Nr.', 'Name', 'Minijob', 'SV-frei', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Min-Boni (€)', 'Bonus Zeit (€)', 'Sonderzahlung (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Brutto (€)', 'Auszahlung (€)', 'Sonderzahlung: Anmerkung Lohnbüro', 'Sonderzahlung: Anmerkung intern'];
   const headerRow = wsUe.getRow(4);
-  ['Nr.', 'Name', 'Austragen (€)', 'Zusammentragen (€)', 'Zeiterfassung (€)', 'Fixes Gehalt (€)', 'Fahrtkosten (€)', 'Gesamt (€)'].forEach((h, i) => {
+  headers.forEach((h, i) => {
     const cell = headerRow.getCell(i + 1);
     cell.value = h;
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D4ED8' } };
-    cell.alignment = { horizontal: i > 1 ? 'right' : 'left' };
+    cell.alignment = { horizontal: i > 3 && i < 14 ? 'right' : 'left' };
   });
 
   ergebnisse.forEach((er, idx) => {
+    const istSvBefreit = !!er.mitarbeiter.sozialversicherungsBefreit;
+    // WICHTIG: Es wird IMMER die an das Lohnbüro übermittelte Brutto-Summe
+    // (bruttoLohnbuero) exportiert — Lohnkonto-Verschiebungen tauchen im
+    // Export bewusst NICHT auf.
+    const bruttoExport = er.bruttoLohnbuero;
     const r = wsUe.addRow([
       er.mitarbeiter.nummer,
       er.mitarbeiter.name,
+      er.mitarbeiter.istMinijob ? 'Ja' : '',
+      istSvBefreit ? 'Ja' : '',
       er.austraegerGesamt,
       er.zusammentragenGesamt,
       er.zeitLohn,
+      er.ausgabenBoniLohnGesamt,
+      er.bonusZeiterfassungEur ?? 0,
+      er.sonderzahlung ?? 0,
       er.fixesGehalt,
       er.fahrtkostenGesamt,
-      er.gesamt,
+      bruttoExport,
+      istSvBefreit ? bruttoExport - er.vorschussSumme : null,
+      er.sonderzahlungAnmerkungLohnbuero ?? '',
+      er.sonderzahlungAnmerkungIntern ?? '',
     ]);
-    // Zahlenformat
-    for (let c = 3; c <= 8; c++) {
+    // Zahlenformat Spalten 5..14 (numeric)
+    for (let c = 5; c <= 14; c++) {
       r.getCell(c).numFmt = '#,##0.00 "€"';
       r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    // Auszahlung leer bei nicht-SV-befreit: Hinweistext (Spalte 14)
+    if (!istSvBefreit) {
+      r.getCell(14).value = 'Lohnbüro';
+      r.getCell(14).font = { italic: true, color: { argb: 'FF9CA3AF' } };
+      r.getCell(14).numFmt = '@';
+    }
+    if (er.mitarbeiter.istMinijob) {
+      r.getCell(3).font = { bold: true, color: { argb: 'FFB45309' } };
     }
     if (idx % 2 === 1) {
       r.eachCell((cell) => {
@@ -74,15 +158,23 @@ export async function exportiereAbrechnung(
   const sumRow = wsUe.addRow([
     '',
     'GESAMT',
+    '',
+    '',
     ergebnisse.reduce((s, e) => s + e.austraegerGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.zusammentragenGesamt, 0),
     ergebnisse.reduce((s, e) => s + e.zeitLohn, 0),
+    ergebnisse.reduce((s, e) => s + e.ausgabenBoniLohnGesamt, 0),
+    ergebnisse.reduce((s, e) => s + (e.bonusZeiterfassungEur ?? 0), 0),
+    ergebnisse.reduce((s, e) => s + (e.sonderzahlung ?? 0), 0),
     ergebnisse.reduce((s, e) => s + e.fixesGehalt, 0),
     ergebnisse.reduce((s, e) => s + e.fahrtkostenGesamt, 0),
-    ergebnisse.reduce((s, e) => s + e.gesamt, 0),
+    ergebnisse.reduce((s, e) => s + e.bruttoLohnbuero, 0),
+    ergebnisse
+      .filter((e) => e.mitarbeiter.sozialversicherungsBefreit)
+      .reduce((s, e) => s + (e.bruttoLohnbuero - e.vorschussSumme), 0),
   ]);
   sumRow.getCell(2).font = { bold: true };
-  for (let c = 3; c <= 8; c++) {
+  for (let c = 5; c <= 14; c++) {
     sumRow.getCell(c).numFmt = '#,##0.00 "€"';
     sumRow.getCell(c).font = { bold: true };
     sumRow.getCell(c).alignment = { horizontal: 'right' };
@@ -93,6 +185,22 @@ export async function exportiereAbrechnung(
   });
 
   wsUe.views = [{ state: 'frozen', ySplit: 4 }];
+
+  // ====================================================
+  // Blatt 2: Berechnung je MA — vollständiger Rechenweg je Mitarbeiter
+  // (analog Abrechnungsvorschau), damit die Abrechnung ohne App
+  // nachvollziehbar ist. Braucht die Periodendaten + Stammdaten.
+  // ====================================================
+  if (kontext.periodeData && kontext.parameter && kontext.teilgebiete) {
+    fuegeBerechnungJeMaHinzu(wb, {
+      periode,
+      ergebnisse,
+      data: kontext.periodeData,
+      params: effektiveParameter(kontext.parameter, periode),
+      teilgebiete: effektiveTeilgebiete(kontext.teilgebiete, periode),
+      alleMitarbeiter: kontext.alleMitarbeiter ?? [],
+    });
+  }
 
   // ====================================================
   // Blatt 2: Austräger-Details
@@ -159,22 +267,29 @@ export async function exportiereAbrechnung(
     { header: 'Pause (min)', key: 'pause', width: 12 },
     { header: 'Netto (h)', key: 'netto', width: 10 },
     { header: 'Lohn (€)', key: 'lohn', width: 12 },
+    { header: 'Abgerechnet', key: 'abger', width: 13 },
+    { header: 'Hinweis', key: 'hinweis', width: 30 },
   ];
 
-  wsZe.getRow(1).eachCell((cell) => {
-    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1D4ED8' } };
-  });
+  styleHeaderRow(wsZe, 1, 11);
 
   for (const er of ergebnisse) {
-    for (const az of er.arbeitszeiten) {
-      const nettoMin = er.zeitStunden > 0
-        ? (az.endTime ? (az.endTime - az.startTime) / 60_000 - az.gesamtPauseMinuten : 0)
-        : 0;
-      const nettoH = Math.max(0, nettoMin) / 60;
-      const stundenlohn = er.zeitLohn > 0 && er.zeitStunden > 0
-        ? er.zeitLohn / er.zeitStunden
-        : 0;
+    const stundenlohn = er.zeitLohn > 0 && er.zeitStunden > 0
+      ? er.zeitLohn / er.zeitStunden
+      : 0;
+    // Beide Listen: gelohnte UND nicht-abgerechnete Zeiten — „alle Zeiten".
+    const zeilen = [
+      ...er.arbeitszeiten.map((az) => ({ az, abgerechnet: true })),
+      ...er.arbeitszeitenNichtAbgerechnet.map((az) => ({ az, abgerechnet: false })),
+    ];
+    for (const { az, abgerechnet } of zeilen) {
+      const nettoH = Math.max(0, berechneNettoMinuten(az)) / 60;
+      const k = az.vorarbeitKappung;
+      const hinweis = az.nichtBeruecksichtigen
+        ? `nicht berücksichtigt${az.nichtBeruecksichtigenGrund ? ': ' + az.nichtBeruecksichtigenGrund : ''}`
+        : k
+          ? `Zeitfenster ${zeitfensterText(k)}: erfasst ${formatierDatum(k.originalStart)} ${new Date(k.originalStart).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}–${new Date(k.originalEnd).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}, Rest als Zusammentragen`
+          : '';
       const r = wsZe.addRow([
         er.mitarbeiter.name,
         er.mitarbeiter.nummer,
@@ -186,17 +301,467 @@ export async function exportiereAbrechnung(
           : '—',
         Math.round(az.gesamtPauseMinuten),
         nettoH,
-        nettoH * stundenlohn,
+        abgerechnet ? nettoH * stundenlohn : 0,
+        abgerechnet ? 'Ja' : 'Nein',
+        hinweis,
       ]);
       r.getCell(8).numFmt = '0.00';
-      r.getCell(9).numFmt = '#,##0.00 "€"';
+      r.getCell(9).numFmt = EUR_FMT;
       r.getCell(8).alignment = { horizontal: 'right' };
       r.getCell(9).alignment = { horizontal: 'right' };
+      if (!abgerechnet) {
+        r.getCell(10).font = { color: { argb: 'FFB45309' } };
+      }
     }
   }
 
   wsZe.views = [{ state: 'frozen', ySplit: 1 }];
-  wsZe.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+  wsZe.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 11 } };
+
+  // ====================================================
+  // Blatt 4: Zusammentragen
+  // ====================================================
+  const wsZt = wb.addWorksheet('Zusammentragen');
+  wsZt.columns = [
+    { header: 'Name', key: 'name', width: 25 },
+    { header: 'Nr.', key: 'nr', width: 8 },
+    { header: 'KW', key: 'kw', width: 6 },
+    { header: 'Teilgebiet', key: 'tg', width: 18 },
+    { header: 'Stückzahl', key: 'stk', width: 11 },
+    { header: 'Stapel', key: 'stapel', width: 9 },
+    { header: 'Vorarbeit', key: 'vor', width: 10 },
+    { header: 'Int. Beilagen', key: 'intb', width: 12 },
+    { header: 'Ext. Beilagen', key: 'extb', width: 12 },
+    { header: 'Zeit (h)', key: 'zeit', width: 10 },
+    { header: 'Lohn (€)', key: 'lohn', width: 12 },
+  ];
+  styleHeaderRow(wsZt, 1, 11);
+  for (const er of ergebnisse) {
+    for (const z of er.zusammentragenEinsaetze) {
+      const r = wsZt.addRow([
+        er.mitarbeiter.name,
+        er.mitarbeiter.nummer,
+        z.kw,
+        z.teilgebietName ?? '—',
+        z.stueckzahl ?? null,
+        z.stapelBearbeitet,
+        z.istVorarbeit ? 'Ja' : '',
+        z.intBeilagenAnzahl ?? null,
+        z.extBeilagenAnzahl ?? null,
+        z.stunden ?? null,
+        z.lohn,
+      ]);
+      r.getCell(10).numFmt = '0.00';
+      r.getCell(11).numFmt = EUR_FMT;
+      for (let c = 5; c <= 11; c++) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+  }
+  wsZt.views = [{ state: 'frozen', ySplit: 1 }];
+  wsZt.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 11 } };
+
+  // ====================================================
+  // Blatt 5: Fahrten (Fahrtkosten der abgerechneten MA)
+  // ====================================================
+  const wsFa = wb.addWorksheet('Fahrten');
+  wsFa.columns = [
+    { header: 'Datum', key: 'datum', width: 14 },
+    { header: 'Name', key: 'name', width: 25 },
+    { header: 'Nr.', key: 'nr', width: 8 },
+    { header: 'Strecke (km)', key: 'km', width: 13 },
+    { header: 'Satz (€/km)', key: 'satz', width: 12 },
+    { header: 'Betrag (€)', key: 'betrag', width: 13 },
+    { header: 'Ziel / Touren', key: 'ziel', width: 30 },
+    { header: 'Bemerkung', key: 'bem', width: 30 },
+  ];
+  styleHeaderRow(wsFa, 1, 8);
+  let fahrtSumKm = 0;
+  let fahrtSumBetrag = 0;
+  const fahrtZeilen = ergebnisse
+    .flatMap((er) => er.fahrten.map((f) => ({ er, f })))
+    .sort((a, b) => a.f.datum.localeCompare(b.f.datum));
+  for (const { er, f } of fahrtZeilen) {
+    const satz = er.fahrtSatzEurProKm;
+    const betrag = f.streckKm * satz;
+    fahrtSumKm += f.streckKm;
+    fahrtSumBetrag += betrag;
+    const r = wsFa.addRow([
+      formatierDatum(new Date(f.datum + 'T00:00:00').getTime()),
+      er.mitarbeiter.name,
+      er.mitarbeiter.nummer,
+      f.streckKm,
+      satz,
+      betrag,
+      f.ziel || (f.tourIds && f.tourIds.length ? `Touren: ${f.tourIds.join(', ')}` : '—'),
+      f.bemerkung ?? '',
+    ]);
+    r.getCell(4).numFmt = '#,##0.0';
+    r.getCell(5).numFmt = EUR_FMT;
+    r.getCell(6).numFmt = EUR_FMT;
+    for (let c = 4; c <= 6; c++) r.getCell(c).alignment = { horizontal: 'right' };
+  }
+  if (fahrtZeilen.length > 0) {
+    const sr = wsFa.addRow(['', '', 'Σ Gesamt', fahrtSumKm, '', fahrtSumBetrag, '', '']);
+    sr.getCell(3).font = { bold: true };
+    sr.getCell(4).numFmt = '#,##0.0';
+    sr.getCell(6).numFmt = EUR_FMT;
+    for (const c of [4, 6]) {
+      sr.getCell(c).font = { bold: true };
+      sr.getCell(c).alignment = { horizontal: 'right' };
+    }
+  }
+  wsFa.views = [{ state: 'frozen', ySplit: 1 }];
+  wsFa.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 8 } };
+
+  // ====================================================
+  // Blatt 6: Vorschüsse, Boni, Sonderzahlungen & Lohnkonto
+  // ====================================================
+  const wsVo = wb.addWorksheet('Vorschüsse & Boni');
+  wsVo.columns = [
+    { header: 'Name', key: 'name', width: 25 },
+    { header: 'Nr.', key: 'nr', width: 8 },
+    { header: 'Art', key: 'art', width: 26 },
+    { header: 'Betrag (€)', key: 'betrag', width: 13 },
+    { header: 'Kommentar / Anmerkung Lohnbüro', key: 'kommentar', width: 40 },
+    { header: 'Anmerkung intern', key: 'intern', width: 40 },
+  ];
+  styleHeaderRow(wsVo, 1, 6);
+  for (const er of ergebnisse) {
+    const ma = er.mitarbeiter;
+    const zeile = (art: string, betrag: number, kommentar?: string, intern?: string) => {
+      const r = wsVo.addRow([ma.name, ma.nummer, art, betrag, kommentar ?? '', intern ?? '']);
+      r.getCell(4).numFmt = EUR_FMT;
+      r.getCell(4).alignment = { horizontal: 'right' };
+    };
+    for (const v of er.vorschuesse) zeile('Vorschuss', -v.betragEur, v.bemerkung);
+    if (er.bonus) zeile('Periodenzusatz / Bonus', er.bonus, er.bonusKommentar);
+    if (er.sonderzahlung) {
+      zeile('Einmalige Sonderzahlung', er.sonderzahlung, er.sonderzahlungAnmerkungLohnbuero, er.sonderzahlungAnmerkungIntern);
+    }
+    for (const b of er.ausgabenBoni) {
+      zeile(`Tätigkeitsbonus (KW ${b.kw}, ${b.minuten} Min)`, b.lohn, b.kommentar);
+    }
+    for (const lk of er.lohnkontoBuchungenPeriode) {
+      const art = lk.art === 'verschiebung' ? 'Lohnkonto-Verschiebung' : 'Lohnkonto-Verrechnung';
+      const betrag = lk.art === 'verschiebung' ? -lk.betragEur : lk.betragEur;
+      zeile(art, betrag, lk.kommentar);
+    }
+  }
+  wsVo.views = [{ state: 'frozen', ySplit: 1 }];
+  wsVo.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 6 } };
+
+  // ====================================================
+  // Blatt 7: Lohnkonten — Salden je MA + Buchungsverlauf
+  // ====================================================
+  if (kontext.lohnkontoBuchungen && kontext.lohnkontoBuchungen.length > 0) {
+    fuegeLohnkontenHinzu(
+      wb,
+      periode,
+      ergebnisse,
+      kontext.lohnkontoBuchungen,
+      kontext.abrechnungsperioden ?? [periode],
+      kontext.alleMitarbeiter ?? ergebnisse.map((e) => e.mitarbeiter),
+    );
+  }
+
+  // ====================================================
+  // Kontext-basierte Archiv-Blätter (Stammdaten der Periode)
+  // ====================================================
+  const { periodeData, alleMitarbeiter, teilgebiete, parameter, stueckzahlAnpassungen } = kontext;
+
+  const tgName = (id: string): string =>
+    teilgebiete?.find((t) => t.id === id)?.name ?? id;
+  const maName = (id: string | null | undefined): string => {
+    if (!id) return '—';
+    const m = alleMitarbeiter?.find((x) => x.id === id);
+    return m ? `${m.name} (${m.nummer})` : id;
+  };
+
+  // ---- Blatt 7: Mitarbeiter-Stammdaten (der abgerechneten MA) ----
+  {
+    const wsSt = wb.addWorksheet('Mitarbeiter-Stammdaten');
+    wsSt.columns = [
+      { header: 'Nr.', key: 'nr', width: 8 },
+      { header: 'Name', key: 'name', width: 26 },
+      { header: 'Geburtsdatum', key: 'geb', width: 13 },
+      { header: 'Straße', key: 'str', width: 24 },
+      { header: 'PLZ', key: 'plz', width: 8 },
+      { header: 'Ort', key: 'ort', width: 16 },
+      { header: 'Telefon', key: 'tel', width: 15 },
+      { header: 'Mobil', key: 'mob', width: 15 },
+      { header: 'E-Mail', key: 'email', width: 26 },
+      { header: 'Rollen', key: 'rollen', width: 24 },
+      { header: 'Stundenlohn ind. (€)', key: 'slohn', width: 16 },
+      { header: 'Festgehalt', key: 'fest', width: 11 },
+      { header: 'Festgehalt (€)', key: 'feste', width: 14 },
+      { header: 'Wochenstd.', key: 'wstd', width: 11 },
+      { header: 'Monatsstd.', key: 'mstd', width: 11 },
+      { header: 'Minijob', key: 'mini', width: 9 },
+      { header: 'SV-frei', key: 'sv', width: 9 },
+      { header: 'Lohngrenze ind. (€)', key: 'lgrenze', width: 16 },
+      { header: 'Fahrtkosten €/km', key: 'fkm', width: 15 },
+      { header: 'Bonus-Min/Ausgabe', key: 'bmin', width: 16 },
+      { header: 'Anmeldestatus', key: 'anm', width: 26 },
+      { header: 'Abgemeldet', key: 'abg', width: 11 },
+    ];
+    styleHeaderRow(wsSt, 1, 22);
+    const sortiertMa = [...ergebnisse].sort((a, b) =>
+      a.mitarbeiter.nummer.localeCompare(b.mitarbeiter.nummer, 'de', { numeric: true }),
+    );
+    for (const er of sortiertMa) {
+      const m = er.mitarbeiter;
+      const r = wsSt.addRow([
+        m.nummer,
+        m.name,
+        m.geburtsdatum ?? '',
+        m.adresse?.strasse ?? '',
+        m.adresse?.plz ?? '',
+        m.adresse?.ort ?? '',
+        m.telefon ?? '',
+        m.mobilnummer ?? '',
+        m.email ?? '',
+        (m.rollen ?? []).map((rr) => ROLLEN_LABELS[rr] ?? rr).join(', '),
+        m.stundenlohnIndividuell ?? null,
+        m.hatFestgehalt ? 'Ja' : '',
+        m.hatFestgehalt ? (m.festgehaltEur ?? null) : null,
+        m.wochenstundenFestgehalt ?? null,
+        m.monatsstundenFestgehalt ?? null,
+        m.istMinijob ? 'Ja' : '',
+        m.sozialversicherungsBefreit ? 'Ja' : '',
+        m.lohngrenzeIndividuellEur ?? null,
+        m.fahrkostenEurProKm ?? null,
+        m.ausgabenBonusMinuten ?? null,
+        m.anmeldungStatus ?? (m.nochNichtAngemeldet ? 'noch nicht angemeldet' : ''),
+        m.abgemeldet ? 'Ja' : '',
+      ]);
+      for (const c of [11, 13, 18, 19]) r.getCell(c).numFmt = EUR_FMT;
+      for (const c of [11, 13, 14, 15, 18, 19, 20]) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    wsSt.views = [{ state: 'frozen', ySplit: 1, xSplit: 2 }];
+    wsSt.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 22 } };
+  }
+
+  // ---- Blatt 8: Teilgebiete (Strecken & Stückzahlen) ----
+  // Verwendete Werte: bevorzugt der beim Monatswechsel fixierte Snapshot,
+  // sonst der aktuelle Stammdaten-Stand. Die Quelle wird je Zeile vermerkt.
+  if (teilgebiete && teilgebiete.length > 0) {
+    const tgSnaps = periode.monatswechselSnapshot?.teilgebietSnapshots;
+    const snapMap = new Map((tgSnaps ?? []).map((s) => [s.id, s]));
+    const wsTg = wb.addWorksheet('Teilgebiete');
+    wsTg.columns = [
+      { header: 'Name', key: 'name', width: 16 },
+      { header: 'PLZ', key: 'plz', width: 8 },
+      { header: 'Tour', key: 'tour', width: 10 },
+      { header: 'Standardausträger', key: 'sa', width: 26 },
+      { header: 'Stückzahl (verw.)', key: 'stk', width: 15 },
+      { header: 'Wegstrecke (m, verw.)', key: 'weg', width: 18 },
+      { header: 'Anz. Straßen', key: 'anzstr', width: 12 },
+      { header: 'Σ Straßen-Stk.', key: 'sumstr', width: 14 },
+      { header: 'Sonderauslagen', key: 'sonder', width: 13 },
+      { header: 'Auslagestelle', key: 'ausl', width: 12 },
+      { header: 'Aktiv', key: 'aktiv', width: 8 },
+      { header: 'Quelle Werte', key: 'quelle', width: 16 },
+    ];
+    styleHeaderRow(wsTg, 1, 12);
+    const sortiertTg = [...teilgebiete].sort((a, b) =>
+      a.name.localeCompare(b.name, 'de', { numeric: true }),
+    );
+    for (const tg of sortiertTg) {
+      const snap = snapMap.get(tg.id);
+      const stk = snap?.stueckzahl ?? tg.stueckzahl;
+      const weg = snap?.wegstreckeM ?? tg.wegstreckeM;
+      const saId = snap?.standardAustraegerId ?? tg.standardAustraegerId;
+      const sumStr = (tg.strassen ?? []).reduce((s, x) => s + (x.stueckzahl || 0), 0);
+      const sumSonder = (tg.sonderauslagen ?? []).reduce((s, x) => s + (x.stueckzahl || 0), 0);
+      const r = wsTg.addRow([
+        tg.name,
+        tg.plz,
+        tg.tourId ?? '',
+        maName(saId),
+        stk,
+        weg,
+        (tg.strassen ?? []).length,
+        sumStr,
+        sumSonder,
+        tg.istAuslagestelle ? 'Ja' : '',
+        tg.isActive ? 'Ja' : '',
+        snap ? 'Monatswechsel-Snapshot' : 'aktuell',
+      ]);
+      for (const c of [5, 6, 7, 8, 9]) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    wsTg.views = [{ state: 'frozen', ySplit: 1 }];
+    wsTg.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 12 } };
+
+    // ---- Blatt 9: Straßen-Detail (Stückzahlen je Straße) ----
+    const wsStr = wb.addWorksheet('Straßen-Detail');
+    wsStr.columns = [
+      { header: 'Teilgebiet', key: 'tg', width: 16 },
+      { header: 'Straße', key: 'str', width: 32 },
+      { header: 'Stückzahl', key: 'stk', width: 11 },
+      { header: 'Plus-Code', key: 'pc', width: 18 },
+    ];
+    styleHeaderRow(wsStr, 1, 4);
+    for (const tg of sortiertTg) {
+      for (const s of tg.strassen ?? []) {
+        const r = wsStr.addRow([tg.name, s.strassenname, s.stueckzahl, s.plusCode ?? '']);
+        r.getCell(3).alignment = { horizontal: 'right' };
+      }
+      for (const so of tg.sonderauslagen ?? []) {
+        const r = wsStr.addRow([tg.name, `[Sonderauslage] ${so.bezeichnung}`, so.stueckzahl, so.adresse ?? '']);
+        r.getCell(3).alignment = { horizontal: 'right' };
+      }
+    }
+    wsStr.views = [{ state: 'frozen', ySplit: 1 }];
+    wsStr.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 4 } };
+
+    // Vorgemerkte Stückzahl-Anpassungen (noch nicht übernommen) — als Hinweis.
+    if (stueckzahlAnpassungen && stueckzahlAnpassungen.length > 0) {
+      wsTg.addRow([]);
+      const hr = wsTg.addRow(['Vorgemerkte Stückzahl-Anpassungen (noch nicht übernommen)']);
+      hr.getCell(1).font = { bold: true, color: { argb: 'FFB45309' } };
+      const hr2 = wsTg.addRow(['Teilgebiet', 'neue Stückzahl', 'Bemerkung']);
+      hr2.eachCell((c) => (c.font = { bold: true }));
+      for (const a of stueckzahlAnpassungen) {
+        wsTg.addRow([tgName(a.teilgebietId), a.neueStueckzahl, a.bemerkung ?? '']);
+      }
+    }
+  }
+
+  // ---- Blatt 10: Ausgaben + Blatt 11: Beilagenaufträge ----
+  if (periodeData) {
+    const ausgabenSort = [...periodeData.ausgaben].sort((a, b) => a.kw - b.kw);
+    const beilagenProAusgabe = new Map<string, number>();
+    for (const b of periodeData.beilagen) {
+      beilagenProAusgabe.set(b.ausgabeId, (beilagenProAusgabe.get(b.ausgabeId) ?? 0) + 1);
+    }
+
+    const wsAg = wb.addWorksheet('Ausgaben');
+    wsAg.columns = [
+      { header: 'KW', key: 'kw', width: 6 },
+      { header: 'Jahr', key: 'jahr', width: 8 },
+      { header: 'Status', key: 'status', width: 14 },
+      { header: 'Seitenzahl', key: 'seiten', width: 11 },
+      { header: 'Anz. Stapel', key: 'stapel', width: 11 },
+      { header: 'Grammatur (g/m²)', key: 'gramm', width: 15 },
+      { header: 'Format (mm)', key: 'format', width: 14 },
+      { header: 'Vorarbeit freig.', key: 'vorarbeit', width: 14 },
+      { header: 'Anz. Beilagen', key: 'anzb', width: 13 },
+    ];
+    styleHeaderRow(wsAg, 1, 9);
+    for (const a of ausgabenSort) {
+      const r = wsAg.addRow([
+        a.kw,
+        a.jahr,
+        a.status,
+        a.seitenzahl,
+        a.stapelAnzahl,
+        a.grammaturGqm,
+        a.seitenformatMm ? `${a.seitenformatMm.breite}×${a.seitenformatMm.hoehe}` : '',
+        a.vorarbeitFreigegeben ? 'Ja' : '',
+        beilagenProAusgabe.get(a.id) ?? 0,
+      ]);
+      for (const c of [1, 2, 4, 5, 6, 9]) r.getCell(c).alignment = { horizontal: 'right' };
+    }
+    wsAg.views = [{ state: 'frozen', ySplit: 1 }];
+    wsAg.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+
+    // Beilagenaufträge
+    const kwVonAusgabe = new Map(periodeData.ausgaben.map((a) => [a.id, a.kw]));
+    const wsBe = wb.addWorksheet('Beilagenaufträge');
+    wsBe.columns = [
+      { header: 'KW', key: 'kw', width: 6 },
+      { header: 'Arbeitstitel', key: 'titel', width: 26 },
+      { header: 'Kunde', key: 'kunde', width: 24 },
+      { header: 'int/ext', key: 'kz', width: 8 },
+      { header: 'Format', key: 'format', width: 10 },
+      { header: 'Gewicht (g/Stk)', key: 'gewicht', width: 14 },
+      { header: 'Anz. Teilgebiete', key: 'anztg', width: 14 },
+      { header: 'Gesamtauflage', key: 'auflage', width: 14 },
+      { header: 'Teilgebiete', key: 'tgs', width: 50 },
+    ];
+    styleHeaderRow(wsBe, 1, 9);
+    const beilagenSort = [...periodeData.beilagen].sort((a, b) => {
+      const ka = kwVonAusgabe.get(a.ausgabeId) ?? 0;
+      const kb = kwVonAusgabe.get(b.ausgabeId) ?? 0;
+      return ka !== kb ? ka - kb : a.kundenname.localeCompare(b.kundenname, 'de');
+    });
+    for (const b of beilagenSort) {
+      const tgIds = b.teilgebietIds ?? [];
+      const auflage = tgIds.reduce((s, id) => {
+        const tg = teilgebiete?.find((t) => t.id === id);
+        return s + (tg?.stueckzahl ?? 0);
+      }, 0);
+      const r = wsBe.addRow([
+        kwVonAusgabe.get(b.ausgabeId) ?? '',
+        b.arbeitstitel,
+        b.kundenname,
+        b.kennzeichen,
+        b.format,
+        b.gewichtGStk,
+        tgIds.length,
+        teilgebiete ? auflage : null,
+        tgIds.map((id) => tgName(id)).join(', '),
+      ]);
+      for (const c of [1, 6, 7, 8]) r.getCell(c).alignment = { horizontal: 'right' };
+      r.getCell(9).alignment = { wrapText: true, vertical: 'top' };
+    }
+    wsBe.views = [{ state: 'frozen', ySplit: 1 }];
+    wsBe.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+  }
+
+  // ---- Blatt 12: Verwendete Parameter ----
+  if (parameter) {
+    // Bevorzugt der zum Monatswechsel fixierte Parameter-Snapshot, sonst der
+    // bei Periodenanlage gespeicherte, sonst der aktuelle Stand.
+    const snap = periode.monatswechselSnapshot?.paramSnapshot ?? periode.paramSnapshot;
+    const quelle = periode.monatswechselSnapshot?.paramSnapshot
+      ? 'Monatswechsel-Snapshot'
+      : periode.paramSnapshot
+        ? 'Snapshot bei Periodenanlage'
+        : 'aktueller Stand';
+    const wert = <K extends keyof Parameter>(k: K): Parameter[K] =>
+      (snap && k in snap ? (snap as Parameter)[k] : parameter[k]);
+
+    const wsPa = wb.addWorksheet('Parameter');
+    wsPa.getCell('A1').value = 'Verwendete Abrechnungs-Parameter';
+    wsPa.getCell('A1').font = { bold: true, size: 14 };
+    wsPa.getCell('A2').value = `Quelle: ${quelle}`;
+    wsPa.getCell('A2').font = { italic: true, size: 10, color: { argb: 'FF888888' } };
+    const headerRowPa = 4;
+    wsPa.getRow(headerRowPa).values = ['Parameter', 'Wert', 'Einheit'];
+    styleHeaderRow(wsPa, headerRowPa, 3);
+    wsPa.columns = [{ width: 52 }, { width: 16 }, { width: 14 }];
+
+    const rows: [string, string | number, string][] = [
+      ['Laufgeschwindigkeit', wert('laufgeschwindigkeitMProH'), 'm/h'],
+      ['Steckzeit', wert('steckzeitStkProH'), 'Stk/h'],
+      ['Stundenlohn Erwachsene (Austragen)', wert('stundenlohnErwachseneAustr'), '€/h'],
+      ['Stundenlohn Minderjährige (Austragen)', wert('stundenlohnMinderjAustr'), '€/h'],
+      ['Mindeststundenlohn (Warnschwelle)', wert('mindeststundenlohn'), '€/h'],
+      ['Zusammentragen: erste 2 Stapel', wert('zusammentragGeschwErste2StapelStkProH'), 'Stk/h'],
+      ['Zusammentragen: weitere Stapel', wert('zusammentragGeschwWeitereStapelStkProH'), 'Stk/h'],
+      ['Externe Beilage einlegen', wert('externeBeilageEinlegeGeschwStkProH'), 'Stk/h'],
+      ['Stundenlohn Erwachsene (Zusammentragen)', wert('stundenlohnErwachseneZusammen'), '€/h'],
+      ['Stundenlohn Minderjährige (Zusammentragen)', wert('stundenlohnMinderjZusammen'), '€/h'],
+      ['Springer-Zuschlag', wert('springerZuschlagProzent'), '%'],
+      ['Gewichtszulage Anzeigenblatt', wert('gewichtszulageAnzeigenblattEurKg'), '€/kg'],
+      ['Gewichtszulage Beilagen', wert('gewichtszulageBeilagenEurKg'), '€/kg'],
+      ['Standard-Grammatur', wert('standardGrammurGqm'), 'g/m²'],
+      ['Standard-Format Breite', wert('standardSeitenformatBreiteMm'), 'mm'],
+      ['Standard-Format Höhe', wert('standardSeitenformatHoeheMm'), 'mm'],
+      ['Fahrtkosten', wert('fahrkostenEurProKm'), '€/km'],
+      ['Minijob-Grenze', wert('minijobGrenzeEurProMonat'), '€/Monat'],
+      ['Bonus Zeiterfassung Austragen', wert('bonusZeiterfassungEur') ?? 0, '€/Einsatz'],
+      ['Abrechnung Austragen nach Ist-Zeit', wert('austragenNachIstZeit') ? 'Ja' : 'Nein', ''],
+      ['Abrechnung Zusammentragen nach Ist-Zeit', wert('zusammentragenNachIstZeit') ? 'Ja' : 'Nein', ''],
+    ];
+    let pr = headerRowPa + 1;
+    for (const [label, value, einheit] of rows) {
+      wsPa.getRow(pr).values = [label, value, einheit];
+      wsPa.getRow(pr).getCell(2).alignment = { horizontal: 'right' };
+      pr++;
+    }
+    wsPa.views = [{ state: 'frozen', ySplit: headerRowPa }];
+  }
 
   // ====================================================
   // Download auslösen
@@ -209,6 +774,536 @@ export async function exportiereAbrechnung(
   const a = document.createElement('a');
   a.href = url;
   a.download = `Abrechnung_${periode.bezeichnung.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ============================================================
+// Lohnkonten — Blätter „Lohnkonten" (Salden je MA) und
+// „Lohnkonto-Buchungen" (Verlauf mit laufendem Saldo)
+// ============================================================
+//
+// Saldo-Logik wie in `berechneAbrechnung`: Verschiebung erhöht das Guthaben
+// des MA, Verrechnung baut es ab; „vor der Periode" zählen alle Buchungen
+// zeitlich früherer Perioden. Gerechnet in Cent, sonst Float-Drift.
+// Es werden ALLE MA mit Buchungen aufgeführt — auch inaktive oder in dieser
+// Periode nicht abgerechnete, damit kein offenes Guthaben untergeht.
+function fuegeLohnkontenHinzu(
+  wb: ExcelJS.Workbook,
+  periode: Abrechnungsperiode,
+  ergebnisse: MitarbeiterAbrechnung[],
+  buchungen: LohnkontoBuchung[],
+  perioden: Abrechnungsperiode[],
+  alleMitarbeiter: Mitarbeiter[],
+): void {
+  const periodeById = new Map(perioden.map((p) => [p.id, p]));
+  periodeById.set(periode.id, periode);
+  const schluessel = (p: Abrechnungsperiode) => p.jahr * 12 + p.monat;
+  const aktuell = schluessel(periode);
+  const cent = (betrag: number) => Math.round(betrag * 100);
+  const wirkung = (b: LohnkontoBuchung) => (b.art === 'verschiebung' ? cent(b.betragEur) : -cent(b.betragEur));
+  /** −1 = frühere Periode, 0 = diese, 1 = spätere, null = Periode unbekannt. */
+  const lage = (b: LohnkontoBuchung): -1 | 0 | 1 | null => {
+    const p = periodeById.get(b.abrechnungsperiodeId);
+    if (!p) return null;
+    return p.id === periode.id ? 0 : schluessel(p) < aktuell ? -1 : 1;
+  };
+  const ergebnisById = new Map(ergebnisse.map((e) => [e.mitarbeiter.id, e]));
+  const maById = new Map(alleMitarbeiter.map((m) => [m.id, m]));
+  for (const e of ergebnisse) if (!maById.has(e.mitarbeiter.id)) maById.set(e.mitarbeiter.id, e.mitarbeiter);
+
+  const jeMa = new Map<string, LohnkontoBuchung[]>();
+  for (const b of buchungen) jeMa.set(b.mitarbeiterId, [...(jeMa.get(b.mitarbeiterId) ?? []), b]);
+  const maIds = [...jeMa.keys()].sort((a, b) =>
+    (maById.get(a)?.nummer ?? a).localeCompare(maById.get(b)?.nummer ?? b, 'de', { numeric: true }),
+  );
+  const chronologisch = (a: LohnkontoBuchung, b: LohnkontoBuchung) => {
+    const pa = periodeById.get(a.abrechnungsperiodeId);
+    const pb = periodeById.get(b.abrechnungsperiodeId);
+    if (pa && pb && schluessel(pa) !== schluessel(pb)) return schluessel(pa) - schluessel(pb);
+    if (pa && !pb) return -1;
+    if (!pa && pb) return 1;
+    return a.erstelltAm - b.erstelltAm;
+  };
+
+  // ---- Blatt „Lohnkonten": Salden je MA ----
+  const ws = wb.addWorksheet('Lohnkonten');
+  ws.columns = [
+    { width: 10 }, { width: 28 }, { width: 14 }, { width: 14 }, { width: 14 },
+    { width: 14 }, { width: 14 }, { width: 14 }, { width: 48 },
+  ];
+  ws.getCell('A1').value = `Lohnkonten — ${periode.bezeichnung}`;
+  ws.getCell('A1').font = { bold: true, size: 14 };
+  ws.getCell('A2').value =
+    'Verschiebung: Betrag wird in dieser Periode nicht ausgezahlt, sondern dem Lohnkonto gutgeschrieben (Bruttolohn an Lohnbüro sinkt). ' +
+    'Verrechnung: Guthaben wird ausgezahlt (Bruttolohn an Lohnbüro steigt). Saldo > 0 = Guthaben des Mitarbeiters. ' +
+    'Lohnkonto-Buchungen selbst werden nicht an das Lohnbüro übermittelt. Einzelbuchungen: Blatt „Lohnkonto-Buchungen".';
+  ws.getCell('A2').font = { italic: true, size: 9, color: { argb: 'FF6B7280' } };
+  ws.mergeCells('A2:I2');
+  ws.getRow(2).alignment = { wrapText: true, vertical: 'top' };
+  ws.getRow(2).height = 40;
+  const kopf = 4;
+  ws.getRow(kopf).values = [
+    'Nr.', 'Name', 'Saldo vor Periode (€)', 'Verschiebung Periode (€)', 'Verrechnung Periode (€)',
+    'Saldo nach Periode (€)', 'Buchungen spätere Perioden (€)', 'Saldo aktuell (€)', 'Hinweis',
+  ];
+  styleHeaderRow(ws, kopf, 9);
+  ws.getRow(kopf).alignment = { wrapText: true, vertical: 'middle' };
+  ws.getRow(kopf).height = 32;
+
+  const summe = { vor: 0, versch: 0, verr: 0, nach: 0, spaeter: 0, aktuell: 0 };
+  let r = kopf + 1;
+  for (const maId of maIds) {
+    const liste = jeMa.get(maId)!;
+    const ma = maById.get(maId);
+    let vor = 0, versch = 0, verr = 0, spaeter = 0, unbekannt = 0;
+    for (const b of liste) {
+      const l = lage(b);
+      if (l === -1) vor += wirkung(b);
+      else if (l === 0) {
+        if (b.art === 'verschiebung') versch += cent(b.betragEur);
+        else verr += cent(b.betragEur);
+      } else if (l === 1) spaeter += wirkung(b);
+      else unbekannt += wirkung(b);
+    }
+    const nach = vor + versch - verr;
+    const aktuellSaldo = nach + spaeter + unbekannt;
+    const hinweise: string[] = [];
+    if (!ma) hinweise.push('Mitarbeiter nicht mehr vorhanden');
+    else if (!ma.isActive || ma.abgemeldet) hinweise.push('inaktiv/abgemeldet');
+    const er = ergebnisById.get(maId);
+    if (!er && nach !== 0) hinweise.push('nicht in dieser Abrechnung enthalten');
+    if (er && cent(er.lohnkontoSaldoNachPeriode) !== nach) {
+      hinweise.push(`Abrechnung rechnete mit Saldo ${eur(er.lohnkontoSaldoNachPeriode)} — Buchungen seitdem geändert`);
+    }
+    if (unbekannt !== 0) hinweise.push(`${eur(unbekannt / 100)} aus Buchungen ohne bekannte Periode (nur im aktuellen Saldo)`);
+    if (aktuellSaldo < 0) hinweise.push('negativer Saldo — mehr verrechnet als zurückgelegt');
+
+    const row = ws.getRow(r);
+    row.values = [
+      ma?.nummer ?? '', ma?.name ?? maId,
+      vor / 100, versch / 100, verr / 100, nach / 100, spaeter / 100, aktuellSaldo / 100,
+      hinweise.join('; '),
+    ];
+    for (let c = 3; c <= 8; c++) {
+      row.getCell(c).numFmt = EUR_FMT;
+      row.getCell(c).alignment = { horizontal: 'right' };
+    }
+    row.getCell(6).font = { bold: true };
+    row.getCell(9).alignment = { wrapText: true, vertical: 'top' };
+    if (hinweise.length) row.getCell(9).font = { color: { argb: 'FFB45309' } };
+    summe.vor += vor; summe.versch += versch; summe.verr += verr;
+    summe.nach += nach; summe.spaeter += spaeter; summe.aktuell += aktuellSaldo;
+    r++;
+  }
+  const sr = ws.getRow(r);
+  sr.values = ['', 'Σ Gesamt', summe.vor / 100, summe.versch / 100, summe.verr / 100, summe.nach / 100, summe.spaeter / 100, summe.aktuell / 100];
+  for (let c = 1; c <= 9; c++) {
+    sr.getCell(c).font = { bold: true };
+    sr.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
+    sr.getCell(c).border = { top: { style: 'medium', color: { argb: 'FF1D4ED8' } } };
+  }
+  for (let c = 3; c <= 8; c++) {
+    sr.getCell(c).numFmt = EUR_FMT;
+    sr.getCell(c).alignment = { horizontal: 'right' };
+  }
+  ws.views = [{ state: 'frozen', ySplit: kopf, xSplit: 2 }];
+  ws.autoFilter = { from: { row: kopf, column: 1 }, to: { row: kopf, column: 9 } };
+
+  // ---- Blatt „Lohnkonto-Buchungen": Verlauf je MA mit laufendem Saldo ----
+  const wsB = wb.addWorksheet('Lohnkonto-Buchungen');
+  wsB.columns = [
+    { header: 'Nr.', width: 10 },
+    { header: 'Name', width: 28 },
+    { header: 'Periode', width: 16 },
+    { header: 'Bezug', width: 16 },
+    { header: 'Verschiebung (€)', width: 15 },
+    { header: 'Verrechnung (€)', width: 15 },
+    { header: 'Saldo nach Buchung (€)', width: 15 },
+    { header: 'Gebucht am', width: 12 },
+    { header: 'Kommentar', width: 48 },
+  ];
+  styleHeaderRow(wsB, 1, 9);
+  wsB.getRow(1).alignment = { wrapText: true, vertical: 'middle' };
+  wsB.getRow(1).height = 32;
+  const bezugText = { [-1]: 'frühere Periode', 0: 'diese Periode', 1: 'spätere Periode' } as const;
+  for (const maId of maIds) {
+    const ma = maById.get(maId);
+    let saldo = 0;
+    for (const b of [...jeMa.get(maId)!].sort(chronologisch)) {
+      saldo += wirkung(b);
+      const l = lage(b);
+      const row = wsB.addRow([
+        ma?.nummer ?? '',
+        ma?.name ?? maId,
+        periodeById.get(b.abrechnungsperiodeId)?.bezeichnung ?? '— unbekannt —',
+        l === null ? 'unbekannt' : bezugText[l],
+        b.art === 'verschiebung' ? b.betragEur : null,
+        b.art === 'verrechnung' ? b.betragEur : null,
+        saldo / 100,
+        new Date(b.erstelltAm).toLocaleDateString('de-DE'),
+        b.kommentar ?? '',
+      ]);
+      for (const c of [5, 6, 7]) {
+        row.getCell(c).numFmt = EUR_FMT;
+        row.getCell(c).alignment = { horizontal: 'right' };
+      }
+      row.getCell(9).alignment = { wrapText: true, vertical: 'top' };
+      if (l === 0) row.eachCell((cell) => (cell.font = { bold: true }));
+      if (l === 1) row.eachCell((cell) => (cell.font = { italic: true, color: { argb: 'FF9CA3AF' } }));
+    }
+  }
+  wsB.views = [{ state: 'frozen', ySplit: 1, xSplit: 2 }];
+  wsB.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+}
+
+// ============================================================
+// Lohnübermittlung — schlanker Export für das Lohnbüro
+// ============================================================
+//
+// Inhalt (laut Vorgabe):
+//   - Periode (Header)
+//   - je MA: Nummer, Name, Brutto (exkl. FaKo), Fahrtkosten, Bruttolohn
+//     (= bruttoLohnbuero, also nach Verrechnung Lohnkonto, ohne Lohnkonto
+//     explizit zu erwähnen; Brutto exkl. FaKo + Fahrtkosten = Bruttolohn),
+//     Vorschuss, Auszahlung (nur bei SV-befreiten MAs; sonst ermittelt das
+//     Lohnbüro den Zahlbetrag nach Abzügen)
+//   - gibt es in der Periode einmalige Sonderzahlungen, kommt die Spalte
+//     „Einmalige Sonderzahlung" hinzu (Brutto exkl. FaKo und Sonderzahlung +
+//     Sonderzahlung + Fahrtkosten = Bruttolohn) und unter der Tabelle der
+//     Block „Einmalige Sonderzahlungen" mit der Anmerkung fürs Lohnbüro
+//     (die interne Anmerkung bleibt draußen)
+//   - danach: „Vorläufig nicht abmelden", Memos
+//   - ganz unten: abzumeldende Mitarbeiter (wie im Feld „Abmeldungen ans
+//     Lohnbüro" ausgewählt)
+//
+// Spaltenbreiten: Die Zahlenspalten bleiben schmal; alle längeren Texte der
+// Blöcke unterhalb der Tabelle stehen in verbundenen Zellen über mehrere
+// Spalten (mit Zeilenumbruch), damit sie die Spalten nicht aufweiten.
+//
+export async function exportiereLohnuebermittlung(
+  periode: Abrechnungsperiode,
+  ergebnisse: MitarbeiterAbrechnung[],
+  alleMitarbeiter: Mitarbeiter[],
+  memos: MitarbeiterMemo[] = [],
+  memoKategorienEigene: MemoKategorieEintrag[] = [],
+): Promise<void> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Schlieper-Druck Mitarbeiterabrechnung';
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet('Lohnübermittlung');
+  // Spalte „Einmalige Sonderzahlung" nur, wenn es in der Periode eine gibt.
+  const mitSonderzahlung = ergebnisse.some((e) => (e.sonderzahlung ?? 0) !== 0);
+  const LETZTE = mitSonderzahlung ? 'H' : 'G';
+  const ANZ_SPALTEN = mitSonderzahlung ? 8 : 7;
+  ws.columns = [
+    { width: 14 }, // A Mitarbeiter-Nr.
+    { width: 30 }, // B Name
+    { width: 13 }, // C Brutto (exkl. FaKo [und Sonderzahlung])
+    ...(mitSonderzahlung ? [{ width: 13 }] : []), // D Einmalige Sonderzahlung
+    { width: 13 }, // Fahrtkosten
+    { width: 13 }, // Bruttolohn
+    { width: 13 }, // Vorschuss
+    { width: 13 }, // Auszahlung
+  ];
+  // Breite der Spalten C..letzte zusammen (Zeichen) — für die Zeilenhöhe von
+  // umbrochenen Texten in verbundenen Zellen.
+  const BREITE_C_BIS_LETZTE = mitSonderzahlung ? 78 : 65;
+
+  /** Text über A..letzte Spalte verbinden, umbrechen und Zeilenhöhe schätzen. */
+  function textZeile(rowNr: number, text: string, font: Partial<ExcelJS.Font>) {
+    ws.getCell(`A${rowNr}`).value = text;
+    ws.getCell(`A${rowNr}`).font = font;
+    ws.mergeCells(`A${rowNr}:${LETZTE}${rowNr}`);
+    ws.getRow(rowNr).alignment = { wrapText: true, vertical: 'middle' };
+    const zeilen = Math.max(1, Math.ceil(text.length / 105));
+    if (zeilen > 1) ws.getRow(rowNr).height = 15 * zeilen;
+  }
+  function kopfzeile(rowNr: number, werte: string[], farbe: string) {
+    const row = ws.getRow(rowNr);
+    row.values = werte;
+    for (let c = 1; c <= ANZ_SPALTEN; c++) {
+      const cell = row.getCell(c);
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: farbe } };
+    }
+  }
+
+  // Header-Block
+  ws.getCell('A1').value = `Lohnübermittlung — ${periode.bezeichnung}`;
+  ws.getCell('A1').font = { bold: true, size: 14 };
+  ws.mergeCells(`A1:${LETZTE}1`);
+  ws.getCell('A2').value = `Erstellt: ${new Date().toLocaleDateString('de-DE')}`;
+  ws.getCell('A2').font = { italic: true, size: 9, color: { argb: 'FF888888' } };
+  ws.mergeCells(`A2:${LETZTE}2`);
+
+  // Spaltenüberschriften — ab Zeile 4, umbrochen statt breiter Spalten
+  const headerRow = 4;
+  kopfzeile(headerRow, [
+    'Mitarbeiter-Nr.',
+    'Name',
+    mitSonderzahlung ? 'Brutto (exkl. FaKo und Sonderzahlung) (€)' : 'Brutto (exkl. FaKo) (€)',
+    ...(mitSonderzahlung ? ['Einmalige Sonderzahlung (€) ²'] : []),
+    'Fahrtkosten (€)',
+    'Bruttolohn (€)',
+    'Vorschuss (€)',
+    'Auszahlung (€) ¹',
+  ], 'FFE8EEF7');
+  ws.getRow(headerRow).alignment = { wrapText: true, vertical: 'middle' };
+  for (let c = 3; c <= ANZ_SPALTEN; c++) {
+    ws.getRow(headerRow).getCell(c).alignment = { wrapText: true, vertical: 'middle', horizontal: 'right' };
+  }
+  ws.getRow(headerRow).height = mitSonderzahlung ? 45 : 32;
+
+  // Reihenfolge wie in der Ansicht „Abrechnung": `ergebnisse` ist bereits von
+  // `berechneAbrechnung` sortiert (Festgehalt → Stunden → Saldo → Brutto desc).
+  // Diese Reihenfolge wird 1:1 übernommen.
+  const sortiert = ergebnisse;
+  const rund = (x: number) => Number(x.toFixed(2));
+
+  let r = headerRow + 1;
+  let sumOhneFaKo = 0;
+  let sumSonderzahlung = 0;
+  let sumFaKo = 0;
+  let sumBrutto = 0;
+  let sumVorschuss = 0;
+  let sumAuszahlung = 0;
+  for (const e of sortiert) {
+    // Auszahlung nur bei SV-befreiten MAs (Brutto = Netto, keine Abzüge).
+    // Bei allen anderen ermittelt das Lohnbüro den Zahlbetrag → Zelle leer.
+    const istSvBefreit = !!e.mitarbeiter.sozialversicherungsBefreit;
+    const brutto = e.bruttoLohnbuero ?? 0;
+    const faKo = e.fahrtkostenGesamt ?? 0;
+    const sonderzahlung = e.sonderzahlung ?? 0;
+    // Alle Lohnbestandteile ohne Fahrtkosten und Sonderzahlung (Fix,
+    // Austragen, Zusammentragen, Vorarbeit, Sonstiges, Boni …) — ergänzt sich
+    // mit Sonderzahlung und Fahrtkosten zum Bruttolohn.
+    const ohneFaKo = brutto - faKo - sonderzahlung;
+    const vorschuss = e.vorschussSumme ?? 0;
+    const auszahlung = istSvBefreit ? brutto - vorschuss : null;
+    ws.getRow(r).values = [
+      e.mitarbeiter.nummer,
+      e.mitarbeiter.name,
+      rund(ohneFaKo),
+      ...(mitSonderzahlung ? [sonderzahlung ? rund(sonderzahlung) : null] : []),
+      rund(faKo),
+      rund(brutto),
+      rund(vorschuss),
+      auszahlung === null ? null : rund(auszahlung),
+    ];
+    for (let c = 3; c <= ANZ_SPALTEN; c++) {
+      ws.getRow(r).getCell(c).numFmt = EUR_FMT;
+      ws.getRow(r).getCell(c).alignment = { horizontal: 'right' };
+    }
+    sumOhneFaKo += ohneFaKo;
+    sumSonderzahlung += sonderzahlung;
+    sumFaKo += faKo;
+    sumBrutto += brutto;
+    sumVorschuss += vorschuss;
+    sumAuszahlung += auszahlung ?? 0;
+    r++;
+  }
+
+  // Summenzeile
+  const sumRow = r;
+  ws.getRow(sumRow).values = [
+    '',
+    'Σ Gesamt',
+    rund(sumOhneFaKo),
+    ...(mitSonderzahlung ? [rund(sumSonderzahlung)] : []),
+    rund(sumFaKo),
+    rund(sumBrutto),
+    rund(sumVorschuss),
+    rund(sumAuszahlung),
+  ];
+  ws.getRow(sumRow).font = { bold: true };
+  ws.getRow(sumRow).border = {
+    top: { style: 'thin' },
+    bottom: { style: 'double' },
+  };
+  for (let c = 3; c <= ANZ_SPALTEN; c++) {
+    ws.getRow(sumRow).getCell(c).numFmt = EUR_FMT;
+    ws.getRow(sumRow).getCell(c).alignment = { horizontal: 'right' };
+  }
+  textZeile(
+    sumRow + 1,
+    '¹ Auszahlung nur bei sozialversicherungsbefreiten Mitarbeitern (Bruttolohn − Vorschuss); bei allen anderen ermittelt das Lohnbüro den Zahlbetrag.',
+    { italic: true, size: 9, color: { argb: 'FF777777' } },
+  );
+  if (mitSonderzahlung) {
+    textZeile(
+      sumRow + 2,
+      '² Einmalige Zahlung — im Bruttolohn enthalten. Anlass siehe „Einmalige Sonderzahlungen" unten.',
+      { italic: true, size: 9, color: { argb: 'FF777777' } },
+    );
+  }
+
+  ws.views = [{ state: 'frozen', ySplit: headerRow }];
+
+  let blockRow = sumRow + 4;
+
+  // ====================================================
+  // Einmalige Sonderzahlungen — Betrag + Anmerkung Lohnbüro
+  // ====================================================
+  // Die „Anmerkung intern" wird bewusst NICHT übermittelt.
+  const sonderzahlungen = sortiert.filter((e) => (e.sonderzahlung ?? 0) !== 0);
+  if (sonderzahlungen.length > 0) {
+    textZeile(blockRow, `Einmalige Sonderzahlungen (${sonderzahlungen.length})`, { bold: true, size: 12 });
+    blockRow++;
+    textZeile(
+      blockRow,
+      'Einmalbeträge, die im Bruttolohn oben enthalten sind — bitte als einmalige Zahlung abrechnen.',
+      { italic: true, size: 10, color: { argb: 'FF6B7280' } },
+    );
+    blockRow++;
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Betrag (€)', 'Anmerkung'], 'FFF5D0FE');
+    ws.mergeCells(`D${blockRow}:${LETZTE}${blockRow}`);
+    blockRow++;
+    for (const e of sonderzahlungen) {
+      const anmerkung = e.sonderzahlungAnmerkungLohnbuero ?? '';
+      ws.getRow(blockRow).values = [e.mitarbeiter.nummer, e.mitarbeiter.name, rund(e.sonderzahlung ?? 0), anmerkung];
+      ws.getRow(blockRow).getCell(3).numFmt = EUR_FMT;
+      ws.getRow(blockRow).getCell(3).alignment = { horizontal: 'right', vertical: 'top' };
+      ws.mergeCells(`D${blockRow}:${LETZTE}${blockRow}`);
+      ws.getCell(`D${blockRow}`).alignment = { wrapText: true, vertical: 'top' };
+      const zeilen = Math.max(1, Math.ceil(anmerkung.length / (BREITE_C_BIS_LETZTE - 13)));
+      if (zeilen > 1) ws.getRow(blockRow).height = Math.min(240, 15 * zeilen);
+      blockRow++;
+    }
+    blockRow += 2;
+  }
+
+  // ====================================================
+  // Vorläufig nicht abmelden
+  // ====================================================
+  // (Eine Liste „Anzumeldende Mitarbeiter" wird bewusst NICHT mehr
+  // ausgegeben.)
+  //
+  // „Vorläufig nicht abmelden" — Bedarfs-Springer, die das Lohnbüro
+  // NICHT automatisch abmelden soll. Werden in jeder Übermittlung als
+  // Erinnerungsblock aufgeführt — unabhängig davon, ob sie in dieser
+  // Periode eine Auszahlung haben. Nur aktive, noch nicht abgemeldete
+  // MAs werden gelistet (sonst inkonsistent zum Aktiv-Status).
+  const nichtAbmeldenHinweis = alleMitarbeiter
+    .filter((m) => m.vorlaeufigNichtAbmelden && m.isActive && !m.abgemeldet)
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
+  if (nichtAbmeldenHinweis.length > 0) {
+    textZeile(blockRow, 'Vorläufig NICHT abmelden — bitte angemeldet lassen', { bold: true, size: 12 });
+    blockRow++;
+    textZeile(
+      blockRow,
+      'Diese Mitarbeiter sollen beim Lohnbüro angemeldet bleiben (Bedarfs-Springer). Auch wenn mehrere Monate ohne Auszahlung folgen, bitte nicht automatisch abmelden.',
+      { italic: true, size: 10, color: { argb: 'FF7A4F00' } },
+    );
+    blockRow++;
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Hinweis'], 'FFFFF4CC');
+    ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
+    blockRow++;
+    for (const m of nichtAbmeldenHinweis) {
+      ws.getRow(blockRow).values = [m.nummer, m.name, 'vorläufig nicht abmelden'];
+      ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
+      blockRow++;
+    }
+    blockRow += 2;
+  }
+
+  // ====================================================
+  // Memos zur Lohnübermittlung (Abrechnungsvorbereitung)
+  // ====================================================
+  // Admin-only-Memos (nurAdmin=true) sind enthalten — das Lohnbüro
+  // bekommt alle Memos, die zur Periode gehören.
+  const periodenMemos = memos
+    .filter((memo) => memo.abrechnungsperiodeId === periode.id)
+    .sort((a, b) => {
+      const ma = alleMitarbeiter.find((m) => m.id === a.mitarbeiterId);
+      const mb = alleMitarbeiter.find((m) => m.id === b.mitarbeiterId);
+      const na = ma?.name ?? '';
+      const nb = mb?.name ?? '';
+      return na.localeCompare(nb, 'de');
+    });
+  if (periodenMemos.length > 0) {
+    textZeile(blockRow, `Memos zur Lohnübermittlung (${periodenMemos.length})`, { bold: true, size: 12 });
+    blockRow++;
+    textZeile(
+      blockRow,
+      'Hinweise / Mitteilungen zu einzelnen Mitarbeitern — z. B. IBAN-/Adress-Änderungen, Krankmeldungen, Auswertungsanfragen.',
+      { italic: true, size: 10, color: { argb: 'FF6B7280' } },
+    );
+    blockRow++;
+    // Kategorie + Memo-Text gemeinsam in C..G (verbunden), damit die
+    // Zahlenspalten oben schmal bleiben.
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Kategorie / Memo'], 'FFDBEAFE');
+    ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
+    blockRow++;
+    for (const memo of periodenMemos) {
+      const ma = alleMitarbeiter.find((m) => m.id === memo.mitarbeiterId);
+      const kategorie = memoKategorieLabel(memo.kategorie, memoKategorienEigene);
+      ws.getRow(blockRow).values = [ma?.nummer ?? '', ma?.name ?? '— gelöscht —'];
+      ws.getCell(`C${blockRow}`).value = {
+        richText: [
+          { text: `${kategorie}: `, font: { bold: true } },
+          { text: memo.text },
+        ],
+      };
+      ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
+      ws.getRow(blockRow).alignment = { wrapText: true, vertical: 'top' };
+      // Höhe grob proportional zur Textlänge — Excel passt die Höhe bei
+      // verbundenen Zellen nicht automatisch an, daher pragmatisch geschätzt.
+      const laenge = kategorie.length + 2 + memo.text.length;
+      const zeilen = Math.max(1, Math.ceil(laenge / BREITE_C_BIS_LETZTE))
+        + (memo.text.match(/\n/g)?.length ?? 0);
+      ws.getRow(blockRow).height = Math.min(240, 15 * zeilen);
+      blockRow++;
+    }
+    blockRow += 2;
+  }
+
+  // ====================================================
+  // Abzumeldende Mitarbeiter — ganz unten
+  // ====================================================
+  // Genau die Mitarbeiter aus dem Feld „🚪 Abmeldungen ans Lohnbüro" der
+  // Periode: nach dem Abschluss der fixierte Snapshot, davor die vom Admin
+  // ausgewählten (bzw. als ersetzt markierten) MAs. Die reinen Vorschläge
+  // der App (aktive MA ohne Betrag) erscheinen nicht.
+  const abzumelden = [...abmeldungenDerPeriode(periode, alleMitarbeiter)]
+    .sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  if (abzumelden.length > 0) {
+    textZeile(blockRow, `Abzumeldende Mitarbeiter (${abzumelden.length})`, { bold: true, size: 12 });
+    blockRow++;
+    textZeile(
+      blockRow,
+      'Bitte zum angegebenen Datum beim Lohnbüro abmelden (Auswahl unter „Abmeldungen ans Lohnbüro" in der Abrechnung).',
+      { italic: true, size: 10, color: { argb: 'FF777777' } },
+    );
+    blockRow++;
+    kopfzeile(blockRow, ['Mitarbeiter-Nr.', 'Name', 'Abmeldung zum'], 'FFFFE9E0');
+    ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
+    blockRow++;
+    for (const eintrag of abzumelden) {
+      ws.getRow(blockRow).values = [
+        eintrag.nummer,
+        eintrag.name,
+        eintrag.abmeldedatum.split('-').reverse().join('.'),
+      ];
+      ws.mergeCells(`C${blockRow}:${LETZTE}${blockRow}`);
+      blockRow++;
+    }
+  }
+
+  // Druck: eine Seite breit, Querformat nicht nötig (7–8 schmale Spalten).
+  ws.pageSetup = { fitToPage: true, fitToWidth: 1, fitToHeight: 0, orientation: 'portrait' };
+
+  // Download
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Lohnuebermittlung_${periode.bezeichnung.replace(/\s/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
 }
