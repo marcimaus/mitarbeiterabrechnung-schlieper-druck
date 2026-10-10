@@ -864,7 +864,7 @@ function AbrechnungInhalt() {
               if (gesehen.has(k)) return false;
               gesehen.add(k);
               return (
-                kwAbgelaufen(b.jahr, b.kw) &&
+                rueckfrageFaellig(b.jahr, b.kw) &&
                 !kwsMitZeit.has(k) &&
                 !bonusOhneZeitGewaehrt(ma, b.jahr, b.kw) &&
                 !ma.ausgabenBonusAusnahmen?.some((x) => x.jahr === b.jahr && x.kw === b.kw)
@@ -3406,10 +3406,14 @@ function frageGrundEntfaellt(jahr: number, kw: number, vorschlag = 'nicht anwese
   return eingabe === null ? null : eingabe.trim();
 }
 
-/** Ist die KW komplett vorbei? Erst dann fragen, ob Arbeitszeit fehlt. */
-function kwAbgelaufen(jahr: number, kw: number): boolean {
-  // Donnerstag der KW (UTC) + 4 Tage = Montag der Folgewoche.
-  return donnerstagDerKW(kw, jahr).getTime() + 4 * 86_400_000 <= Date.now();
+/**
+ * Ab dem Donnerstag der KW (Erscheinungstag) fragen, ob Arbeitszeit fehlt —
+ * bis dahin ist das Zusammentragen erledigt.
+ */
+function rueckfrageFaellig(jahr: number, kw: number): boolean {
+  // donnerstagDerKW liefert UTC-Mitternacht → lokale Mitternacht des Donnerstags.
+  const d = donnerstagDerKW(kw, jahr);
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()).getTime() <= Date.now();
 }
 
 /** Wurde der Bonus dieser Ausgabe trotz fehlender Arbeitszeit bewusst gewährt? */
@@ -3466,7 +3470,7 @@ function TaetigkeitsbonusTabelle({
   const ohneZeitOffen = (jahr: number, kw: number) =>
     !istGesperrt &&
     !!kwsMitArbeitszeit &&
-    kwAbgelaufen(jahr, kw) &&
+    rueckfrageFaellig(jahr, kw) &&
     !kwsMitArbeitszeit.has(kwSchluessel(jahr, kw)) &&
     !bonusOhneZeitGewaehrt(maAktuell, jahr, kw);
 
