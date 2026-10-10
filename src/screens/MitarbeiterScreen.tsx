@@ -101,6 +101,11 @@ const DEFAULT_FORM: Omit<Mitarbeiter, 'id' | 'erstelltAm' | 'aktualisiertAm' | '
   abweichendeLieferadresse: { strasse: '', plz: '', ort: '', telefon: '', memo: '' },
 };
 
+const ABHOLER_KONFLIKT_TEXT =
+  '„Abholer" und „Abweichende Lieferadresse" sind beide gesetzt — ein Abholer holt seinen Stapel im Werk ab, ' +
+  'eine abweichende Lieferadresse bedeutet Belieferung. Bitte eins von beiden entfernen. ' +
+  '(Soll nur für einzelne Teilgebiete geliefert werden: Reiter „Lieferadressen je TG" nutzen.)';
+
 /** Leere Lieferadresse mit ausschließlich String-Feldern (Firestore-sicher). */
 const LEERE_LIEFERADRESSE = { strasse: '', plz: '', ort: '', telefon: '', memo: '' };
 
@@ -1207,6 +1212,13 @@ function MitarbeiterForm({
     );
     if (nummerBelegt) { setError(`Mitarbeiternummer ${form.nummer.trim()} ist bereits vergeben.`); return; }
     if (form.rollen.length === 0) { setError('Mindestens eine Rolle muss ausgewählt werden.'); return; }
+    // „Abholer" und „Abweichende Lieferadresse" widersprechen sich (Abholung im
+    // Werk vs. Belieferung) — nur eins von beiden zulassen.
+    if (form.istAbholer && form.abweichendeLieferadresseAktiv) {
+      setTab('stammdaten');
+      setError(ABHOLER_KONFLIKT_TEXT);
+      return;
+    }
 
     // Solange „noch nicht angemeldet": Pflichtprüfungen für Geburtsdatum und
     // Eltern-/Erziehungsberechtigten-Daten aussetzen — die Daten werden noch
@@ -2937,6 +2949,11 @@ function MitarbeiterForm({
             📦 Abholer — holt den Stapel selbst im Werk ab
           </span>
         </label>
+        {form.istAbholer && form.abweichendeLieferadresseAktiv && (
+          <p className="mt-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+            ⚠ {ABHOLER_KONFLIKT_TEXT}
+          </p>
+        )}
       </FormField>
 
       {/* Online-Erfassung — steuert QR-Code + gemeldete Werte auf dem Lieferschein */}
